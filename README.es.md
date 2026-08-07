@@ -1,3 +1,5 @@
+*[English version](README.md)*
+
 # postmarketOS en el Xiaomi POCO X3 NFC (`surya`, SM7150)
 
 Parches y configuración que convierten postmarketOS en el POCO X3 NFC en un teléfono realmente
@@ -56,7 +58,7 @@ El paquete del kernel es una capa sobre el de postmarketOS. Se copia encima del 
 como siempre:
 
 ```sh
-git clone https://github.com/<usuario>/surya-pmos
+git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
 # 1. Kernel: los 115 parches, la receta y la configuración
@@ -78,6 +80,86 @@ pmbootstrap install
 *«Failed to umount … /mnt/pmbootstrap/packages»*. Hay que hacer `pmbootstrap shutdown` en medio.
 
 ⚠️ **Si un paquete no se recompila**, sube su `pkgrel`: pmbootstrap dice «up to date» y se lo salta.
+
+## Instalarlo en el móvil
+
+### 1. Desbloquear el gestor de arranque
+
+El procedimiento de Xiaomi: cuenta Mi, herramienta Mi Unlock y un periodo de espera de varios días.
+No hay atajo, y nada de lo de abajo funciona hasta que esté hecho.
+
+### 2. Averiguar qué pantalla lleva tu móvil
+
+El POCO X3 NFC se vendió con **dos paneles distintos**, Huaxing y Tianma, y cada uno necesita su
+propio gestor de arranque y su propio árbol de dispositivos. Si te equivocas, el móvil arranca con
+**la pantalla en negro** — no está estropeado, simplemente no muestra nada.
+
+No hay forma fiable de saberlo desde fuera, así que el método práctico es probar: graba uno y, si la
+pantalla sigue negra, graba el otro. No afecta a nada más. Con postmarketOS ya en marcha, el propio
+móvil lo dice:
+
+```sh
+cat /proc/device-tree/model      # → Xiaomi POCO X3 NFC (Huaxing)
+```
+
+### 3. Conseguir u-boot
+
+postmarketOS arranca en este SoC a través de u-boot, que a su vez encadena systemd-boot. Las
+imágenes ya compiladas las publica el proyecto sm7150-mainline, **una por panel**:
+
+**https://github.com/sm7150-mainline/u-boot/releases**
+
+```
+u-boot-sm7150-xiaomi-surya-huaxing.img
+u-boot-sm7150-xiaomi-surya-tianma.img
+```
+
+### 4. Imágenes vbmeta vacías para desactivar el arranque verificado
+
+Hay que desactivar Android Verified Boot, y para eso hace falta una imagen vbmeta que grabar. No
+busques la de fábrica: genera unas vacías con
+[`avbtool`](https://android.googlesource.com/platform/external/avb/) (Apache-2.0):
+
+```sh
+python3 avbtool.py make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta.img
+cp vbmeta.img vbmeta_system.img
+```
+
+### 5. Grabar
+
+Con el móvil en fastboot (**Bajar volumen + Encendido** desde apagado):
+
+```sh
+# el gestor de arranque de TU panel
+fastboot flash boot u-boot-sm7150-xiaomi-surya-huaxing.img
+
+# los overlays de fábrica del árbol de dispositivos tienen que irse,
+# o pelean con el de mainline
+fastboot erase dtbo
+
+# desactivar el arranque verificado en las dos particiones vbmeta
+fastboot flash vbmeta        vbmeta.img        --disable-verity --disable-verification
+fastboot flash vbmeta_system vbmeta_system.img --disable-verity --disable-verification
+
+# la imagen de postmarketOS compilada antes
+pmbootstrap flasher flash_rootfs
+
+fastboot reboot
+```
+
+### Si algo sale mal
+
+**Mantén pulsados Subir y Bajar volumen a la vez mientras arranca** y u-boot ofrece un menú de
+recuperación que incluye **almacenamiento masivo USB**: el móvil aparece en tu ordenador como un
+disco y puedes reparar la instalación sin volver a grabar nada. Esto ha salvado este porte más de
+una vez.
+
+⚠️ Ten en cuenta que **este móvil no se apaga nunca del todo**: u-boot lo reinicia, incluso desde su
+propio menú. No interpretes un reinicio como que no ha llegado a apagarse.
+
+⚠️ postmarketOS se instala en una partición propia y **no borra la partición `vendor` de fábrica**,
+que es lo que permite llegar después a los blobs del fabricante (ver [`docs/blobs.md`](docs/blobs.md)).
+No la borres.
 
 ## Instalar la configuración del dispositivo
 

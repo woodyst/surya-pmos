@@ -1,3 +1,5 @@
+*[Versión en español](README.es.md)*
+
 # postmarketOS on the Xiaomi POCO X3 NFC (`surya`, SM7150)
 
 Patches and configuration that turn mainline postmarketOS on the POCO X3 NFC into a phone you can
@@ -55,7 +57,7 @@ The kernel package here is an overlay on postmarketOS'. Copy it over the aport, 
 usual:
 
 ```sh
-git clone https://github.com/<user>/surya-pmos
+git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
 # 1. Kernel: 115 patches, the recipe and the config
@@ -78,6 +80,84 @@ pmbootstrap install
 
 ⚠️ **If a package will not rebuild**, bump its `pkgrel`: pmbootstrap reports "up to date" and skips
 it otherwise.
+
+## Flashing it onto the phone
+
+### 1. Unlock the bootloader
+
+Xiaomi's own procedure: a Mi account, the Mi Unlock tool and a waiting period of several days. There
+is no way around it, and nothing below works until it is done.
+
+### 2. Find out which display your phone has
+
+The POCO X3 NFC ships with **two different panels**, Huaxing and Tianma, and each needs its own
+bootloader and its own device tree. Get it wrong and the phone boots to a **black screen** — it is
+not bricked, it just shows nothing.
+
+There is no reliable way to tell from the outside, so the practical method is trial: flash one, and
+if the display stays black, flash the other. Nothing else is affected. Once postmarketOS is
+running, the phone tells you:
+
+```sh
+cat /proc/device-tree/model      # → Xiaomi POCO X3 NFC (Huaxing)
+```
+
+### 3. Get u-boot
+
+postmarketOS on this SoC boots through u-boot, which then chainloads systemd-boot. Prebuilt images
+come from the sm7150-mainline project — **one per panel**:
+
+**https://github.com/sm7150-mainline/u-boot/releases**
+
+```
+u-boot-sm7150-xiaomi-surya-huaxing.img
+u-boot-sm7150-xiaomi-surya-tianma.img
+```
+
+### 4. Empty vbmeta images to disable verified boot
+
+Android Verified Boot has to be turned off, which needs a vbmeta image to flash. Do not hunt for
+the stock one: generate empty ones with
+[`avbtool`](https://android.googlesource.com/platform/external/avb/) (Apache-2.0):
+
+```sh
+python3 avbtool.py make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta.img
+cp vbmeta.img vbmeta_system.img
+```
+
+### 5. Flash
+
+With the phone in fastboot (**Volume Down + Power** from a powered-off state):
+
+```sh
+# bootloader for YOUR panel
+fastboot flash boot u-boot-sm7150-xiaomi-surya-huaxing.img
+
+# the stock device tree overlays must go, or they fight the mainline one
+fastboot erase dtbo
+
+# disable verified boot on both vbmeta partitions
+fastboot flash vbmeta        vbmeta.img        --disable-verity --disable-verification
+fastboot flash vbmeta_system vbmeta_system.img --disable-verity --disable-verification
+
+# the postmarketOS image built earlier
+pmbootstrap flasher flash_rootfs
+
+fastboot reboot
+```
+
+### If something goes wrong
+
+**Hold Volume Up and Volume Down together while it boots** and u-boot offers a recovery menu,
+including **USB mass storage**: the phone appears on your computer as a disk and you can repair the
+install without reflashing. This has saved this port more than once.
+
+⚠️ Note that **this phone never really powers off**: u-boot reboots it, even from its own menu.
+Do not read a reboot as a failure to shut down.
+
+⚠️ postmarketOS installs into a partition of its own **and does not erase the factory `vendor`
+partition**, which is what makes the vendor blobs reachable later (see
+[`docs/blobs.md`](docs/blobs.md)). Do not wipe it.
 
 ## Installing the device configuration
 
