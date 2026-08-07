@@ -1,0 +1,69 @@
+From feed68a65b0cd33eeefedb3005080b39a294a1d1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 21:21:54 +0200
+Subject: [PATCH 084/106] ASoC: qdsp6: q6routing: tell the voice stream before
+ wiring the graph
+
+The vendor driver starts in-call record or playback on the voice stream
+before it registers the front-end on the backend, so the DSP is already
+expecting the stream by the time the graph carries it. Do the same, and
+the reverse on teardown.
+
+This alone does not make injected audio reach the modem, but it removes
+one difference from the reference flow.
+---
+ sound/soc/qcom/qdsp6/q6routing.c | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 06983a442..4574401eb 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -514,31 +514,34 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 		if (session->port_id == be_id)
+ 			return 0;
+ 
+-		session->port_id = be_id;
+-		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
+-
+ 		/*
+-		 * Routing a record port is what asks the voice stream for its
+-		 * copy of the call - the vendor stack triggers it from here
+-		 * too, with the direction implied by which port got routed.
++		 * Routing one of the voice pseudo ports is what asks the voice
++		 * stream for its copy of the call, or offers it something to
++		 * mix in. The vendor stack triggers it from here too, and does
++		 * it *before* wiring the front-end into the backend - so the
++		 * DSP is already expecting the stream by the time the graph
++		 * carries it.
+ 		 */
+ 		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
+ 			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
+ 						    true);
+ 		else if (be_id == VOICE_PLAYBACK_TX)
+ 			q6voice_incall_playback_route(true);
++
++		session->port_id = be_id;
++		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
+ 	} else {
+ 		if (session->port_id == -1 || session->port_id != be_id)
+ 			return 0;
+ 
+-		session->port_id = -1;
+-		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
+-
+ 		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
+ 			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
+ 						    false);
+ 		else if (be_id == VOICE_PLAYBACK_TX)
+ 			q6voice_incall_playback_route(false);
++
++		session->port_id = -1;
++		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
+ 	}
+ 
+ 	return 1;
+-- 
+2.43.0
+

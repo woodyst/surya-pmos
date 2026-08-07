@@ -1,0 +1,178 @@
+From 0814472708c182d013691d525401cad31ad7ed9e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 14 Jul 2026 16:31:11 +0200
+Subject: [PATCH 022/106] ASoC: tas2562: write the digital volume as one burst,
+ not four bytes
+
+The amp was completely silent while looking perfectly healthy: ACTIVE, no
+latched faults, correct clocks, gain at maximum, and a DSP happily
+streaming PCM at it. Its digital volume was zero, so every sample was
+multiplied by zero.
+
+The volume is a single 32-bit coefficient. Coefficient registers only
+accept one four-byte burst: written a byte at a time - which is exactly
+what this driver did, four snd_soc_component_write() calls - the chip acks
+every transfer over i2c and silently keeps none of them. Confirmed on a
+Xiaomi surya (POCO X3 NFC) by reading the registers straight off both amps
+over i2c: they stay 0x00000000 after any number of byte-wise writes, and
+take the value immediately when the same four bytes are sent as one block.
+With the volume actually set, the amps' own I/V sense feedback shows the
+speaker current jump from the noise floor to a clean tone, and the phone
+plays sound for the first time.
+
+The regmap defaults made it worse than a plain missing write: they claim
+DVC_CFG1 powers up at 0x40, which it does not, and since defaults only
+seed the cache, a userspace write of the unity value (0x40000000, top byte
+0x40) matched the stale cached byte and got dropped as redundant. So the
+one byte that mattered was never even attempted.
+
+Write all four bytes in one burst, as the vendor driver does, drop the
+bogus defaults so the cache reflects reality, and set the volume at probe
+so the part is not born mute.
+---
+ sound/soc/codecs/tas2562.c | 80 +++++++++++++++++++++++++-------------
+ sound/soc/codecs/tas2562.h |  7 ++++
+ 2 files changed, 59 insertions(+), 28 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 5e4bafe9e..b3b5f0c62 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -579,6 +579,36 @@ static int tas2562_load_init(struct tas2562_data *tas2562)
+ 	return 0;
+ }
+ 
++static int tas2562_set_volume(struct tas2562_data *tas2562, int volume_lvl)
++{
++	u32 reg_val = float_vol_db_lookup[volume_lvl / 2];
++	__be32 dvc = cpu_to_be32(reg_val);
++	int ret;
++
++	/*
++	 * The digital volume is one 32-bit coefficient, and the coefficient
++	 * registers only take a single four-byte burst: written a byte at a
++	 * time the chip acks every transfer and silently keeps none of them,
++	 * leaving the volume at zero - which multiplies every sample by zero
++	 * and mutes the amp outright, with nothing anywhere reporting a fault.
++	 *
++	 * It has to be regmap_raw_write() with the cache bypassed, not
++	 * regmap_bulk_write(): with a cache configured, bulk_write has to
++	 * maintain that cache and so falls back to writing one register at a
++	 * time, which is precisely the pattern the hardware ignores.
++	 */
++	regcache_cache_bypass(tas2562->regmap, true);
++	ret = regmap_raw_write(tas2562->regmap, TAS2562_DVC_CFG1,
++			       &dvc, sizeof(dvc));
++	regcache_cache_bypass(tas2562->regmap, false);
++	if (ret)
++		return ret;
++
++	tas2562->volume_lvl = volume_lvl;
++
++	return 0;
++}
++
+ static int tas2562_codec_probe(struct snd_soc_component *component)
+ {
+ 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+@@ -601,6 +631,18 @@ static int tas2562_codec_probe(struct snd_soc_component *component)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/*
++	 * The chip powers up with a digital volume of zero - every sample is
++	 * multiplied by 0, so the amp plays absolute silence no matter how
++	 * healthy the rest of the pipeline looks. The regmap defaults used to
++	 * claim otherwise, which made it worse: a userspace write of the unity
++	 * value would match the (wrong) cached one and get dropped, leaving the
++	 * hardware muted forever. Set it explicitly.
++	 */
++	ret = tas2562_set_volume(tas2562, TAS2562_DVC_LEVEL_0DB);
++	if (ret < 0)
++		return ret;
++
+ 	return tas2562_load_init(tas2562);
+ }
+ 
+@@ -750,30 +792,8 @@ static int tas2562_volume_control_put(struct snd_kcontrol *kcontrol,
+ {
+ 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+ 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+-	int ret;
+-	u32 reg_val;
+-
+-	reg_val = float_vol_db_lookup[ucontrol->value.integer.value[0]/2];
+-	ret = snd_soc_component_write(component, TAS2562_DVC_CFG4,
+-				      (reg_val & 0xff));
+-	if (ret)
+-		return ret;
+-	ret = snd_soc_component_write(component, TAS2562_DVC_CFG3,
+-				      ((reg_val >> 8) & 0xff));
+-	if (ret)
+-		return ret;
+-	ret = snd_soc_component_write(component, TAS2562_DVC_CFG2,
+-				      ((reg_val >> 16) & 0xff));
+-	if (ret)
+-		return ret;
+-	ret = snd_soc_component_write(component, TAS2562_DVC_CFG1,
+-				      ((reg_val >> 24) & 0xff));
+-	if (ret)
+-		return ret;
+ 
+-	tas2562->volume_lvl = ucontrol->value.integer.value[0];
+-
+-	return 0;
++	return tas2562_set_volume(tas2562, ucontrol->value.integer.value[0]);
+ }
+ 
+ /* Digital Volume Control. From 0 dB to -110 dB in 1 dB steps */
+@@ -792,7 +812,15 @@ static const struct snd_kcontrol_new vsense_switch =
+ static const struct snd_kcontrol_new tas2562_snd_controls[] = {
+ 	SOC_SINGLE_TLV("Amp Gain Volume", TAS2562_PB_CFG1, 1, 0x1c, 0,
+ 		       tas2562_dac_tlv),
+-	SOC_SINGLE_EXT_TLV("Digital Volume Control", TAS2562_DVC_CFG1, 0, 110, 0,
++	/*
++	 * Capped at the last entry of float_vol_db_lookup[] rather than the 110
++	 * this used to advertise: the table holds 55 entries and is indexed by
++	 * volume/2, so 110 indexed one past its end - and alsactl cheerfully
++	 * restores a stored 110 on every boot, reading whatever happens to
++	 * follow the table and writing it to the amp as a volume.
++	 */
++	SOC_SINGLE_EXT_TLV("Digital Volume Control", TAS2562_DVC_CFG1, 0,
++			   TAS2562_DVC_LEVEL_0DB, 0,
+ 			   tas2562_volume_control_get, tas2562_volume_control_put,
+ 			   dvc_tlv),
+ };
+@@ -922,10 +950,6 @@ static const struct reg_default tas2562_reg_defaults[] = {
+ 	{ TAS2562_PB_CFG1, 0x20 },
+ 	{ TAS2562_TDM_CFG0, 0x09 },
+ 	{ TAS2562_TDM_CFG1, 0x02 },
+-	{ TAS2562_DVC_CFG1, 0x40 },
+-	{ TAS2562_DVC_CFG2, 0x40 },
+-	{ TAS2562_DVC_CFG3, 0x00 },
+-	{ TAS2562_DVC_CFG4, 0x00 },
+ };
+ 
+ static const struct regmap_config tas2562_regmap_config = {
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index 3644fd0c2..7e02ec915 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -114,6 +114,13 @@
+ #define TAS2562_DVC_CFG3	TAS2562_REG(2, 0x0e)
+ #define TAS2562_DVC_CFG4	TAS2562_REG(2, 0x0f)
+ 
++/*
++ * Index into float_vol_db_lookup[] (2 dB per step) that yields unity gain
++ * (0x40000000). The table has 55 entries, so this is its last one - note the
++ * mixer control advertises a maximum of 110, which would index past the end.
++ */
++#define TAS2562_DVC_LEVEL_0DB	108
++
+ #define TAS2562_RESET	BIT(0)
+ 
+ #define TAS2562_MODE_MASK	GENMASK(1,0)
+-- 
+2.43.0
+

@@ -1,0 +1,87 @@
+From 85a7d2cdab5666039f0962b0f27d30371f80dcf0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 23:29:26 +0200
+Subject: [PATCH 076/106] ASoC: qdsp6: fix in-call record/playback stop opcodes
+
+VSS_IRECORD_CMD_STOP and VSS_IPLAYBACK_CMD_STOP are not START+1 or
+START-1: they live in a different opcode range (0x11237 and 0x11239).
+Sending the wrong ones made every stop fail with ADSP_EUNSUPPORTED, so
+the DSP kept a phantom recording alive and the next start landed on
+dirty state - which is what made an uplink tap swallow the microphone
+instead of copying it.
+
+With the right opcodes both taps work at the same time on a live VoLTE
+call: uplink and downlink each deliver audio and the far end keeps
+hearing everything (verified end to end, measured at the other phone).
+
+Also expose rec_port_id/rec_mode as module parameters, since finding the
+combination the DSP wants otherwise needs a rebuild per attempt.
+---
+ sound/soc/qcom/qdsp6/q6cvs.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.c b/sound/soc/qcom/qdsp6/q6cvs.c
+index f59766590..9eac17c21 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.c
++++ b/sound/soc/qcom/qdsp6/q6cvs.c
+@@ -120,11 +120,13 @@ MODULE_LICENSE("GPL v2");
+  * three for call recording and for "in-call music delivery".
+  */
+ #define VSS_IRECORD_CMD_START			0x000112BE
+-#define VSS_IRECORD_CMD_STOP			0x000112BF
++/* Not START+1: the stop opcodes sit in a different range entirely. */
++#define VSS_IRECORD_CMD_STOP			0x00011237
+ #define VSS_IRECORD_PORT_ID_DEFAULT		0x0000FFFF
+ #define VSS_IRECORD_TAP_POINT_NONE		0x00010F78
+ #define VSS_IRECORD_TAP_POINT_STREAM_END	0x00010F79
+ #define VSS_IRECORD_MODE_TX_RX_STEREO		0x00010F7A
++#define VSS_IRECORD_MODE_TX_RX_MIXING		0x00010F7B
+ 
+ struct vss_irecord_cmd_start_t {
+ 	u32 rx_tap_point;
+@@ -144,6 +146,21 @@ struct cvs_start_record_cmd {
+  * @rx: tap the downlink (what the far end says) to pseudo port 0x8003
+  * @tx: tap the uplink (the microphone) to pseudo port 0x8004
+  */
++/*
++ * Tapping the uplink has been seen to take the microphone away from the modem
++ * instead of copying it, while the downlink copies cleanly. These let the
++ * port/mode fields be varied at runtime to find out which combination the DSP
++ * expects for a Tx tap; 0 keeps the documented default (per-direction pseudo
++ * ports, mode ignored).
++ */
++static u16 rec_port_id = VSS_IRECORD_PORT_ID_DEFAULT;
++module_param(rec_port_id, ushort, 0644);
++MODULE_PARM_DESC(rec_port_id, "AFE port for in-call record (0xFFFF = per-direction default)");
++
++static uint rec_mode;
++module_param(rec_mode, uint, 0644);
++MODULE_PARM_DESC(rec_mode, "in-call record mode (0 = default, 0x10F7A stereo, 0x10F7B mixing)");
++
+ int q6cvs_start_record(struct q6voice_session *cvs, bool rx, bool tx)
+ {
+ 	struct cvs_start_record_cmd cmd;
+@@ -160,8 +177,8 @@ int q6cvs_start_record(struct q6voice_session *cvs, bool rx, bool tx)
+ 	 * The default keeps the two directions on their own pseudo ports;
+ 	 * naming a port here is only for mixing both into one stereo stream.
+ 	 */
+-	cmd.rec.port_id = VSS_IRECORD_PORT_ID_DEFAULT;
+-	cmd.rec.mode = 0;
++	cmd.rec.port_id = rec_port_id;
++	cmd.rec.mode = rec_mode;
+ 
+ 	return q6voice_common_send(cvs, &cmd.hdr);
+ }
+@@ -179,7 +196,7 @@ int q6cvs_stop_record(struct q6voice_session *cvs)
+ EXPORT_SYMBOL_GPL(q6cvs_stop_record);
+ 
+ #define VSS_IPLAYBACK_CMD_START		0x000112BD
+-#define VSS_IPLAYBACK_CMD_STOP		0x000112BC
++#define VSS_IPLAYBACK_CMD_STOP		0x00011239
+ #define VSS_IPLAYBACK_PORT_ID_VOICE	0x00008005
+ 
+ struct vss_iplayback_cmd_start_t {
+-- 
+2.43.0
+

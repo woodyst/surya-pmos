@@ -1,0 +1,629 @@
+From 8d7c60e7c314e5a75d6a9857225c04f6e3e556f8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 20:09:57 +0200
+Subject: [PATCH 071/106] ASoC: qcom: tomas de audio de llamada (in-call
+ record/playback)
+
+En este SoC la voz nunca cruza la CPU: modem -> DSP -> puertos fisicos.
+El DSP sabe copiar la conversacion a pseudo-puertos (0x8003 bajada,
+0x8004 subida) y mezclar en la subida lo que llegue por 0x8005, que es
+como el stack de fabrica graba llamadas y las puentea a un auricular
+Bluetooth por HCI.
+
+- q6cvs: comandos VSS_IRECORD_CMD_START/STOP y VSS_IPLAYBACK_CMD_START/STOP
+- q6afe: los tres pseudo-puertos, sin configuracion y con su comando
+  propio de arranque (AFE_PSEUDOPORT_CMD_START)
+- q6dsp-lpass-ports/q6afe-dai: DAIs y widgets DAPM
+- q6routing: controles VOC_REC_DL / VOC_REC_UL en cada front-end
+- common.c: 'qcom,dpcm-backend' para declarar un backend sin codec
+  (el otro extremo de un pseudo-puerto esta dentro del DSP)
+- q6voice: activa las tomas al descolgar (parametro incall_taps)
+
+Estado: la tarjeta arranca con todo, los controles existen y el PCM ya
+ABRE (antes daba EINVAL), pero el DSP todavia no entrega datos.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    |  42 +++++++
+ drivers/slimbus/stream.c                      |   8 +-
+ .../sound/qcom,q6dsp-lpass-ports.h            |   8 ++
+ include/linux/slimbus.h                       |   9 ++
+ sound/soc/qcom/common.c                       |  12 ++
+ sound/soc/qcom/common.h                       |   2 +-
+ sound/soc/qcom/qdsp6/q6afe-dai.c              |   7 ++
+ sound/soc/qcom/qdsp6/q6afe.c                  |  81 ++++++++++++
+ sound/soc/qcom/qdsp6/q6cvs.c                  | 117 ++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6cvs.h                  |   4 +
+ sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c      |  46 +++++++
+ sound/soc/qcom/qdsp6/q6routing.c              |   8 ++
+ sound/soc/qcom/qdsp6/q6voice.c                |  30 +++++
+ 13 files changed, 371 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 29b4a8537..ac0a1006d 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -178,6 +178,48 @@ codec {
+ 			};
+ 		};
+ 
++		/*
++		 * The DSP's copy of a phone call. These are backends with no
++		 * codec: the far side of each is inside the DSP itself, which
++		 * copies the conversation into the record ports and mixes the
++		 * playback port into what the far end hears.
++		 */
++		voice-rec-dl-dai-link {
++			link-name = "Voice Downlink Capture";
++			qcom,dpcm-backend;
++			cpu {
++				sound-dai = <&q6afedai VOICE_RECORD_RX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++		};
++
++		voice-rec-ul-dai-link {
++			link-name = "Voice Uplink Capture";
++			qcom,dpcm-backend;
++			cpu {
++				sound-dai = <&q6afedai VOICE_RECORD_TX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++		};
++
++		voice-farend-dai-link {
++			link-name = "Voice Farend Playback";
++			qcom,dpcm-backend;
++			cpu {
++				sound-dai = <&q6afedai VOICE_PLAYBACK_TX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++		};
++
+ 		i2s-dai-link {
+ 			link-name = "I2S Playback";
+ 			cpu {
+diff --git a/drivers/slimbus/stream.c b/drivers/slimbus/stream.c
+index b4e70a7ed..c3695c5b5 100644
+--- a/drivers/slimbus/stream.c
++++ b/drivers/slimbus/stream.c
+@@ -230,7 +230,10 @@ int slim_stream_prepare(struct slim_stream_runtime *rt,
+ 		return prrate;
+ 	}
+ 
+-	if (cfg->rate % ctrl->a_framer->superfreq) {
++	if (cfg->prot) {
++		/* The device driver knows what its hardware needs. */
++		rt->prot = cfg->prot - 1;
++	} else if (cfg->rate % ctrl->a_framer->superfreq) {
+ 		/*
+ 		 * data rate not exactly multiple of super frame,
+ 		 * use PUSH/PULL protocol
+@@ -252,7 +255,8 @@ int slim_stream_prepare(struct slim_stream_runtime *rt,
+ 		port->id = port_id;
+ 		port->ch.prrate = prrate;
+ 		port->ch.id = cfg->chs[i];
+-		port->ch.data_fmt = SLIM_CH_DATA_FMT_NOT_DEFINED;
++		port->ch.data_fmt = cfg->data_fmt ? cfg->data_fmt - 1
++						  : SLIM_CH_DATA_FMT_NOT_DEFINED;
+ 		port->ch.aux_fmt = SLIM_CH_AUX_FMT_NOT_APPLICABLE;
+ 		port->ch.state = SLIM_CH_STATE_ALLOCATED;
+ 
+diff --git a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+index 2c92caf6e..62490463e 100644
+--- a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
++++ b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+@@ -167,6 +167,14 @@
+  */
+ #define SLIMBUS_7_RX		150
+ #define SLIMBUS_7_TX		151
++/*
++ * Pseudo ports the DSP uses to make a phone call reachable from the CPU:
++ * the conversation is copied to VOICE_RECORD_{RX,TX}, and anything written to
++ * VOICE_PLAYBACK_TX is mixed into what the far end hears.
++ */
++#define VOICE_RECORD_RX		152
++#define VOICE_RECORD_TX		153
++#define VOICE_PLAYBACK_TX	154
+ 
+ #define LPASS_CLK_ID_PRI_MI2S_IBIT	1
+ #define LPASS_CLK_ID_PRI_MI2S_EBIT	2
+diff --git a/include/linux/slimbus.h b/include/linux/slimbus.h
+index a4608d9a9..9e71fb549 100644
+--- a/include/linux/slimbus.h
++++ b/include/linux/slimbus.h
+@@ -140,6 +140,15 @@ struct slim_stream_config {
+ 	/* Max 32 ports per device */
+ 	unsigned long port_mask;
+ 	int direction;
++	/*
++	 * Optional overrides. Some devices (e.g. the WCN399x Bluetooth audio
++	 * interface) only move data on channels defined the way their vendor
++	 * driver defines them: pushed protocol with LPCM content, even at
++	 * rates an isochronous channel could carry. 0 keeps the automatic
++	 * choice, so existing users are unaffected.
++	 */
++	int prot;		/* enum slim_transport_protocol + 1, 0 = auto */
++	int data_fmt;		/* SLIM_CH_DATA_FMT_* + 1, 0 = default */
+ };
+ 
+ /*
+diff --git a/sound/soc/qcom/common.c b/sound/soc/qcom/common.c
+index cf1f3a767..a6dcbec31 100644
+--- a/sound/soc/qcom/common.c
++++ b/sound/soc/qcom/common.c
+@@ -152,6 +152,18 @@ int qcom_snd_parse_of(struct snd_soc_card *card)
+ 				link->no_pcm = 1;
+ 				link->ignore_pmdown_time = 1;
+ 			}
++		} else if (of_property_read_bool(np, "qcom,dpcm-backend")) {
++			/*
++			 * A backend with nothing on the far side. The DSP's
++			 * voice record and playback ports are like this: they
++			 * exist inside the DSP, so there is no codec to name,
++			 * but they still have to be backends or no frontend
++			 * can be routed to them.
++			 */
++			link->codecs	 = &snd_soc_dummy_dlc;
++			link->num_codecs = 1;
++			link->no_pcm = 1;
++			link->ignore_pmdown_time = 1;
+ 		} else {
+ 			/* DPCM frontend */
+ 			link->codecs	 = &snd_soc_dummy_dlc;
+diff --git a/sound/soc/qcom/common.h b/sound/soc/qcom/common.h
+index e34d2a87f..7c4086bb4 100644
+--- a/sound/soc/qcom/common.h
++++ b/sound/soc/qcom/common.h
+@@ -7,7 +7,7 @@
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <sound/soc.h>
+ 
+-#define LPASS_MAX_PORT			(SLIMBUS_7_TX + 1)
++#define LPASS_MAX_PORT			(VOICE_PLAYBACK_TX + 1)
+ 
+ int qcom_snd_parse_of(struct snd_soc_card *card);
+ int qcom_snd_wcd_jack_setup(struct snd_soc_pcm_runtime *rtd,
+diff --git a/sound/soc/qcom/qdsp6/q6afe-dai.c b/sound/soc/qcom/qdsp6/q6afe-dai.c
+index ce5d64f90..52703be8c 100644
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -540,6 +540,9 @@ static const struct snd_soc_dapm_route q6afe_dapm_routes[] = {
+ 	{"SLIMBUS_5_TX", NULL, "Slimbus5 Capture"},
+ 	{"SLIMBUS_6_TX", NULL, "Slimbus6 Capture"},
+ 	{"SLIMBUS_7_TX", NULL, "Slimbus7 Capture"},
++	{"VOICE_RECORD_RX", NULL, "Voice Downlink Capture"},
++	{"VOICE_RECORD_TX", NULL, "Voice Uplink Capture"},
++	{"Voice Farend Playback", NULL, "VOICE_PLAYBACK_TX"},
+ 
+ 	{"Primary MI2S Playback", NULL, "PRI_MI2S_RX"},
+ 	{"Secondary MI2S Playback", NULL, "SEC_MI2S_RX"},
+@@ -798,6 +801,10 @@ static const struct snd_soc_dapm_widget q6afe_dai_widgets[] = {
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_5_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_6_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_7_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	/* The DSP's copy of a call: two taps out, one injection in. */
++	SND_SOC_DAPM_AIF_OUT("VOICE_RECORD_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_OUT("VOICE_RECORD_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_IN("VOICE_PLAYBACK_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SEN_MI2S_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SEN_MI2S_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("QUIN_MI2S_RX", NULL,
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 4e00e4c23..1bf6ab9cc 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -122,6 +122,15 @@
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX      0x400d
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX      0x400e
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX      0x400f
++/*
++ * Pseudo ports. They have no hardware behind them: the DSP copies the voice
++ * stream into 0x8003/0x8004 so the CPU can read the call, and mixes whatever
++ * arrives on 0x8005 into the uplink. They take no port configuration and are
++ * started with their own command instead of the usual device start.
++ */
++#define AFE_PORT_ID_VOICE_RECORD_RX              0x8003
++#define AFE_PORT_ID_VOICE_RECORD_TX              0x8004
++#define AFE_PORT_ID_VOICE_PLAYBACK_TX            0x8005
+ #define AFE_PORT_ID_PRIMARY_MI2S_RX         0x1000
+ #define AFE_PORT_ID_PRIMARY_MI2S_TX         0x1001
+ #define AFE_PORT_ID_SECONDARY_MI2S_RX       0x1002
+@@ -707,6 +716,12 @@ static struct afe_port_map port_maps[AFE_PORT_MAX] = {
+ 				SLIMBUS_6_TX, 0, 1},
+ 	[SLIMBUS_7_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX,
+ 				SLIMBUS_7_TX, 0, 1},
++	[VOICE_RECORD_RX] = { AFE_PORT_ID_VOICE_RECORD_RX,
++				VOICE_RECORD_RX, 0, 1},
++	[VOICE_RECORD_TX] = { AFE_PORT_ID_VOICE_RECORD_TX,
++				VOICE_RECORD_TX, 0, 1},
++	[VOICE_PLAYBACK_TX] = { AFE_PORT_ID_VOICE_PLAYBACK_TX,
++				VOICE_PLAYBACK_TX, 1, 1},
+ 	[PRIMARY_MI2S_RX] = { AFE_PORT_ID_PRIMARY_MI2S_RX,
+ 				PRIMARY_MI2S_RX, 1, 1},
+ 	[PRIMARY_MI2S_TX] = { AFE_PORT_ID_PRIMARY_MI2S_TX,
+@@ -1325,6 +1340,60 @@ EXPORT_SYMBOL_GPL(q6afe_port_set_sysclk);
+  *
+  * Return: Will be an negative on packet size on success.
+  */
++/*
++ * Pseudo ports carry no hardware configuration and use their own start/stop
++ * command; sending them a device config would be rejected by the DSP.
++ */
++static bool q6afe_port_is_pseudo(int port_id)
++{
++	return port_id == AFE_PORT_ID_VOICE_RECORD_RX ||
++	       port_id == AFE_PORT_ID_VOICE_RECORD_TX ||
++	       port_id == AFE_PORT_ID_VOICE_PLAYBACK_TX;
++}
++
++#define AFE_PSEUDOPORT_CMD_START	0x000100cf
++#define AFE_PSEUDOPORT_CMD_STOP		0x000100d0
++
++struct afe_pseudoport_cmd {
++	u16 port_id;
++	u16 timing;	/* 0 = as fast as the data comes, 1 = AV timer */
++} __packed;
++
++static int q6afe_pseudoport_cmd(struct q6afe_port *port, u32 opcode)
++{
++	struct afe_pseudoport_cmd *cmd;
++	struct q6afe *afe = port->afe;
++	struct apr_pkt *pkt;
++	int pkt_size, ret;
++
++	pkt_size = APR_HDR_SIZE + sizeof(*cmd);
++	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
++	if (!p)
++		return -ENOMEM;
++
++	pkt = p;
++	cmd = p + APR_HDR_SIZE;
++
++	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					   APR_HDR_LEN(APR_HDR_SIZE),
++					   APR_PKT_VER);
++	pkt->hdr.pkt_size = pkt_size;
++	pkt->hdr.src_port = 0;
++	pkt->hdr.dest_port = 0;
++	pkt->hdr.token = port->token;
++	pkt->hdr.opcode = opcode;
++
++	cmd->port_id = port->id;
++	cmd->timing = 1;
++
++	ret = afe_apr_send_pkt(afe, pkt, port, opcode);
++	if (ret)
++		dev_err(afe->dev, "AFE pseudo port 0x%x cmd 0x%x failed %d\n",
++			port->id, opcode, ret);
++
++	return ret;
++}
++
+ int q6afe_port_stop(struct q6afe_port *port)
+ {
+ 	struct afe_port_cmd_device_stop *stop;
+@@ -1340,6 +1409,9 @@ int q6afe_port_stop(struct q6afe_port *port)
+ 		return -EINVAL;
+ 	}
+ 
++	if (q6afe_port_is_pseudo(port_id))
++		return q6afe_pseudoport_cmd(port, AFE_PSEUDOPORT_CMD_STOP);
++
+ 	pkt_size = APR_HDR_SIZE + sizeof(*stop);
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+@@ -1726,6 +1798,9 @@ int q6afe_port_start(struct q6afe_port *port)
+ 	struct apr_pkt *pkt;
+ 	int pkt_size;
+ 
++	if (q6afe_port_is_pseudo(port_id))
++		return q6afe_pseudoport_cmd(port, AFE_PSEUDOPORT_CMD_START);
++
+ 	ret  = q6afe_port_set_param_v2(port, &port->port_cfg, param_id,
+ 				       AFE_MODULE_AUDIO_DEV_INTERFACE,
+ 				       sizeof(port->port_cfg));
+@@ -1809,6 +1884,12 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_HDMI_OVER_DP_RX:
+ 		cfg_type = AFE_PARAM_ID_HDMI_CONFIG;
+ 		break;
++	case AFE_PORT_ID_VOICE_RECORD_RX:
++	case AFE_PORT_ID_VOICE_RECORD_TX:
++	case AFE_PORT_ID_VOICE_PLAYBACK_TX:
++		/* no configuration: the DSP owns both ends of a pseudo port */
++		cfg_type = 0;
++		break;
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_TX:
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.c b/sound/soc/qcom/qdsp6/q6cvs.c
+index 4b08f8b52..f59766590 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.c
++++ b/sound/soc/qcom/qdsp6/q6cvs.c
+@@ -105,3 +105,120 @@ module_apr_driver(qcom_q6cvs_driver);
+ MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
+ MODULE_DESCRIPTION("Q6 Core Voice Stream");
+ MODULE_LICENSE("GPL v2");
++
++/*
++ * In-call recording and playback.
++ *
++ * These are what make the call's audio reachable from the CPU at all. On this
++ * SoC the voice path never crosses the CPU - modem to DSP to the physical
++ * ports - so anything that needs the conversation as PCM (a recorder, or
++ * bridging the call to a Bluetooth headset over HCI) has nowhere to tap.
++ *
++ * The DSP can copy the stream to pseudo ports for exactly this: 0x8003 carries
++ * what the far end says, 0x8004 what the microphone picks up, and 0x8005 is an
++ * input mixed into what the far end hears. The vendor stack uses the same
++ * three for call recording and for "in-call music delivery".
++ */
++#define VSS_IRECORD_CMD_START			0x000112BE
++#define VSS_IRECORD_CMD_STOP			0x000112BF
++#define VSS_IRECORD_PORT_ID_DEFAULT		0x0000FFFF
++#define VSS_IRECORD_TAP_POINT_NONE		0x00010F78
++#define VSS_IRECORD_TAP_POINT_STREAM_END	0x00010F79
++#define VSS_IRECORD_MODE_TX_RX_STEREO		0x00010F7A
++
++struct vss_irecord_cmd_start_t {
++	u32 rx_tap_point;
++	u32 tx_tap_point;
++	u16 port_id;
++	u32 mode;
++} __packed;
++
++struct cvs_start_record_cmd {
++	struct apr_hdr hdr;
++	struct vss_irecord_cmd_start_t rec;
++} __packed;
++
++/**
++ * q6cvs_start_record() - start copying the conversation to the record ports
++ * @cvs: the stream session
++ * @rx: tap the downlink (what the far end says) to pseudo port 0x8003
++ * @tx: tap the uplink (the microphone) to pseudo port 0x8004
++ */
++int q6cvs_start_record(struct q6voice_session *cvs, bool rx, bool tx)
++{
++	struct cvs_start_record_cmd cmd;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IRECORD_CMD_START;
++
++	cmd.rec.rx_tap_point = rx ? VSS_IRECORD_TAP_POINT_STREAM_END
++				  : VSS_IRECORD_TAP_POINT_NONE;
++	cmd.rec.tx_tap_point = tx ? VSS_IRECORD_TAP_POINT_STREAM_END
++				  : VSS_IRECORD_TAP_POINT_NONE;
++	/*
++	 * The default keeps the two directions on their own pseudo ports;
++	 * naming a port here is only for mixing both into one stereo stream.
++	 */
++	cmd.rec.port_id = VSS_IRECORD_PORT_ID_DEFAULT;
++	cmd.rec.mode = 0;
++
++	return q6voice_common_send(cvs, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_start_record);
++
++int q6cvs_stop_record(struct q6voice_session *cvs)
++{
++	struct apr_hdr hdr = {
++		.pkt_size = sizeof(hdr),
++		.opcode = VSS_IRECORD_CMD_STOP,
++	};
++
++	return q6voice_common_send(cvs, &hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_stop_record);
++
++#define VSS_IPLAYBACK_CMD_START		0x000112BD
++#define VSS_IPLAYBACK_CMD_STOP		0x000112BC
++#define VSS_IPLAYBACK_PORT_ID_VOICE	0x00008005
++
++struct vss_iplayback_cmd_start_t {
++	u16 port_id;
++} __packed;
++
++struct cvs_start_playback_cmd {
++	struct apr_hdr hdr;
++	struct vss_iplayback_cmd_start_t play;
++} __packed;
++
++/**
++ * q6cvs_start_playback() - mix audio from pseudo port 0x8005 into the uplink
++ * @cvs: the stream session
++ *
++ * Whatever is written to that port is heard by the far end, which is how a
++ * Bluetooth headset's microphone can reach the call without the DSP ever
++ * talking to the headset itself.
++ */
++int q6cvs_start_playback(struct q6voice_session *cvs)
++{
++	struct cvs_start_playback_cmd cmd;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IPLAYBACK_CMD_START;
++	cmd.play.port_id = VSS_IPLAYBACK_PORT_ID_VOICE;
++
++	return q6voice_common_send(cvs, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_start_playback);
++
++int q6cvs_stop_playback(struct q6voice_session *cvs)
++{
++	struct apr_hdr hdr = {
++		.pkt_size = sizeof(hdr),
++		.opcode = VSS_IPLAYBACK_CMD_STOP,
++	};
++
++	return q6voice_common_send(cvs, &hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_stop_playback);
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.h b/sound/soc/qcom/qdsp6/q6cvs.h
+index f5f4a0dac..3256625ea 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.h
++++ b/sound/soc/qcom/qdsp6/q6cvs.h
+@@ -8,5 +8,9 @@ struct q6voice_session;
+ 
+ struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path);
+ int q6cvs_mute(struct q6voice_session *cvs, u16 direction, bool mute);
++int q6cvs_start_record(struct q6voice_session *cvs, bool rx, bool tx);
++int q6cvs_stop_record(struct q6voice_session *cvs);
++int q6cvs_start_playback(struct q6voice_session *cvs);
++int q6cvs_stop_playback(struct q6voice_session *cvs);
+ 
+ #endif /*_Q6_CVS_H */
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+index 0e7948351..d5508245a 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+@@ -412,7 +412,50 @@ static struct snd_soc_dai_driver q6dsp_audio_fe_dais[] = {
+ 			.rate_min = 8000,
+ 			.rate_max = 192000,
+ 		},
++		}, {
++		/*
++		 * Pseudo ports: the DSP's copy of a phone call. Mono 8/16 kHz
++		 * because that is what the vocoder produces.
++		 */
++		.name = "VOICE_RECORD_RX",
++		.id = VOICE_RECORD_RX,
++		.capture = {
++			.stream_name = "Voice Downlink Capture",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
++		},
++	}, {
++		.name = "VOICE_RECORD_TX",
++		.id = VOICE_RECORD_TX,
++		.capture = {
++			.stream_name = "Voice Uplink Capture",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
++		},
+ 	}, {
++		.name = "VOICE_PLAYBACK_TX",
++		.id = VOICE_PLAYBACK_TX,
++		.playback = {
++			.stream_name = "Voice Farend Playback",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
++		},
++}, {
+ 		.playback = {
+ 			.stream_name = "Primary MI2S Playback",
+ 			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
+@@ -740,6 +783,9 @@ struct snd_soc_dai_driver *q6dsp_audio_ports_set_config(struct device *dev,
+ 		case SLIMBUS_7_TX:
+ 			q6dsp_audio_fe_dais[i].ops = cfg->q6slim_ops;
+ 			break;
++		case VOICE_RECORD_RX ... VOICE_PLAYBACK_TX:
++			/* nothing to configure: the DSP owns both ends */
++			break;
+ 		case SENARY_MI2S_RX ... SENARY_MI2S_TX:
+ 		case QUINARY_MI2S_RX ... QUINARY_MI2S_TX:
+ 		case PRIMARY_MI2S_RX ... QUATERNARY_MI2S_TX:
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 362a3d79b..fea2e02d3 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -77,6 +77,8 @@
+ 	{ mix_name, "SLIMBUS_5_TX", "SLIMBUS_5_TX" },		\
+ 	{ mix_name, "SLIMBUS_6_TX", "SLIMBUS_6_TX" },		\
+ 	{ mix_name, "SLIMBUS_7_TX", "SLIMBUS_7_TX" },		\
++	{ mix_name, "VOC_REC_DL", "VOICE_RECORD_RX" },		\
++	{ mix_name, "VOC_REC_UL", "VOICE_RECORD_TX" },		\
+ 	{ mix_name, "PRIMARY_TDM_TX_0", "PRIMARY_TDM_TX_0"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_1", "PRIMARY_TDM_TX_1"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_2", "PRIMARY_TDM_TX_2"},	\
+@@ -170,6 +172,12 @@
+ 	SOC_SINGLE_EXT("SLIMBUS_7_TX", SLIMBUS_7_TX,			\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("VOC_REC_DL", VOICE_RECORD_RX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("VOC_REC_UL", VOICE_RECORD_TX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
+ 	SOC_SINGLE_EXT("PRIMARY_TDM_TX_0", PRIMARY_TDM_TX_0,		\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 0a6d6d57e..2dc0e1bc2 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -44,6 +44,15 @@ struct q6voice {
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+ };
+ 
++/*
++ * Whether to copy the call to the pseudo ports at setup. On by default: it
++ * costs nothing when nobody reads them, and it is what lets userspace record
++ * a call or bridge it to a Bluetooth headset.
++ */
++static bool incall_taps = true;
++module_param(incall_taps, bool, 0644);
++MODULE_PARM_DESC(incall_taps, "copy call audio to the record/playback pseudo ports");
++
+ static int q6voice_path_start(struct q6voice_path *p)
+ {
+ 	struct device *dev = p->v->dev;
+@@ -124,6 +133,27 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		goto start_err;
+ 	}
+ 
++	/*
++	 * Make the conversation reachable from the CPU. Without this the call
++	 * exists only between the modem and the DSP, so nothing can record it
++	 * or carry it anywhere else - a Bluetooth headset included, since the
++	 * headset's own link is driven by the CPU.
++	 *
++	 * Best effort on purpose: a DSP that refuses the taps must not stop a
++	 * call that is otherwise working.
++	 */
++	if (incall_taps) {
++		ret = q6cvs_start_record(p->runtime->sessions[Q6VOICE_SERVICE_CVS],
++					 true, true);
++		if (ret)
++			dev_dbg(dev, "in-call record taps not started: %d\n", ret);
++
++		ret = q6cvs_start_playback(p->runtime->sessions[Q6VOICE_SERVICE_CVS]);
++		if (ret)
++			dev_dbg(dev, "in-call playback not started: %d\n", ret);
++		ret = 0;
++	}
++
+ 	return ret;
+ 
+ start_err:
+-- 
+2.43.0
+

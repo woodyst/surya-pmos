@@ -1,0 +1,49 @@
+From 88645423ce6bcbec026371db259def1d96376e3c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 14:17:04 +0200
+Subject: [PATCH 095/106] Bluetooth: check the right bit for Write Synchronous
+ Flow Control Enable
+
+Octet 10 of the supported commands starts at Read Transmit Power Level
+(0x0c2d), so Write Synchronous Flow Control Enable (0x0c2f) is bit 2.
+Bit 4 is Host Buffer Size.
+
+The only driver setting HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED so far has been
+hci_vhci, which claims every command, so the wrong bit never showed.
+
+Checked against a WCN3990, which sets bit 2 and clears bit 4: asked by
+hand it answers HCI_OP_WRITE_SYNC_FLOWCTL with success and then reports
+synchronous flow control as enabled, while the kernel had never sent the
+command.
+---
+ net/bluetooth/hci_sync.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/net/bluetooth/hci_sync.c b/net/bluetooth/hci_sync.c
+index fd3aacdea..5c1dfcb8b 100644
+--- a/net/bluetooth/hci_sync.c
++++ b/net/bluetooth/hci_sync.c
+@@ -3868,8 +3868,17 @@ static int hci_write_sync_flowctl_sync(struct hci_dev *hdev)
+ 	struct hci_cp_write_sync_flowctl cp;
+ 	int err;
+ 
+-	/* Check if the controller supports SCO and HCI_OP_WRITE_SYNC_FLOWCTL */
+-	if (!lmp_sco_capable(hdev) || !(hdev->commands[10] & BIT(4)) ||
++	/*
++	 * Check if the controller supports SCO and HCI_OP_WRITE_SYNC_FLOWCTL.
++	 *
++	 * Octet 10 of the supported commands starts at Read Transmit Power
++	 * Level (0x0c2d), so Write Synchronous Flow Control Enable (0x0c2f) is
++	 * bit 2, not bit 4 - bit 4 is Host Buffer Size. The only user of the
++	 * quirk so far has been hci_vhci, which claims every command, so the
++	 * wrong bit never showed. A WCN3990 sets bit 2 and clears bit 4, and
++	 * answers HCI_OP_WRITE_SYNC_FLOWCTL with success.
++	 */
++	if (!lmp_sco_capable(hdev) || !(hdev->commands[10] & BIT(2)) ||
+ 	    !hci_test_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED))
+ 		return 0;
+ 
+-- 
+2.43.0
+

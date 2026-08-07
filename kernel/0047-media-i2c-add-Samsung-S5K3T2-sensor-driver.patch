@@ -1,0 +1,1555 @@
+From 8a80156b3416280f8d3af728eb7237320f783ea8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 10:23:15 +0200
+Subject: [PATCH 047/106] media: i2c: add Samsung S5K3T2 sensor driver
+
+The 20MP front sensor of the Xiaomi POCO X3 NFC (surya). There is no
+driver for this part anywhere, so the register tables, the power up
+sequence, the I2C address and the lane count all come from the sensor
+module data the vendor firmware ships for this board
+(/mnt/vendor/lib/camera/com.qti.sensormodule.j20c_ofilm_s5k3t2_front.bin;
+the sunny module carries identical tables).
+
+The data cross-checks: the mode's PLL - 19.2MHz / 3 * 185 / (1 * 7), four
+pixels a clock - over the mode's own line length and frame length gives
+29.90fps, which is exactly the frame rate the same data declares as a
+double, and the sensor's frame counter then ticks at that rate on the
+hardware.
+
+The sensor shares CSIPHY1 with the ultrawide camera through a board mux.
+The vendor's power up sequences pick between the two with the pin this
+driver calls select: this sensor asks for 0, the ultrawide for 1.
+---
+ drivers/media/i2c/Kconfig  |   10 +
+ drivers/media/i2c/Makefile |    1 +
+ drivers/media/i2c/s5k3t2.c | 1484 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 1495 insertions(+)
+ create mode 100644 drivers/media/i2c/s5k3t2.c
+
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+index 06ec2ac4d..58b390e02 100644
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -797,6 +797,16 @@ config VIDEO_S5K5BAF
+ 	  This is a V4L2 sensor driver for Samsung S5K5BAF 2M
+ 	  camera sensor with an embedded SoC image signal processor.
+ 
++config VIDEO_S5K3T2
++	tristate "Samsung S5K3T2 sensor support"
++	depends on OF_GPIO
++	help
++	  This is a Video4Linux2 sensor driver for the Samsung
++	  S5K3T2 camera.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called s5k3t2.
++
+ config VIDEO_S5K3L6XX
+ 	tristate "Samsung S5K3L6XX sensor support"
+ 	depends on I2C && VIDEO_DEV
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+index 3e72d3bf1..cc5d870df 100644
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -130,6 +130,7 @@ obj-$(CONFIG_VIDEO_RJ54N1) += rj54n1cb0c.o
+ obj-$(CONFIG_VIDEO_S5C73M3) += s5c73m3/
+ obj-$(CONFIG_VIDEO_S5K3L6XX) += s5k3l6xx.o
+ obj-$(CONFIG_VIDEO_S5K3M5) += s5k3m5.o
++obj-$(CONFIG_VIDEO_S5K3T2) += s5k3t2.o
+ obj-$(CONFIG_VIDEO_S5K5BAF) += s5k5baf.o
+ obj-$(CONFIG_VIDEO_S5K6A3) += s5k6a3.o
+ obj-$(CONFIG_VIDEO_S5KJN1) += s5kjn1.o
+diff --git a/drivers/media/i2c/s5k3t2.c b/drivers/media/i2c/s5k3t2.c
+new file mode 100644
+index 000000000..4eeadc645
+--- /dev/null
++++ b/drivers/media/i2c/s5k3t2.c
+@@ -0,0 +1,1484 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Samsung S5K3T2 Camera Sensor Driver
++ *
++ * The register tables and the timing below were taken from the sensor module
++ * data the vendor firmware ships for the Xiaomi POCO X3 NFC (surya), and are
++ * cross-checked against the frame rates that same data declares.
++ */
++#include <linux/unaligned.h>
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-fwnode.h>
++#include <media/v4l2-subdev.h>
++
++/* Streaming Mode */
++#define S5K3T2_REG_MODE_SELECT	0x0100
++#define S5K3T2_MODE_STANDBY	0x00
++#define S5K3T2_MODE_STREAMING	0x01
++
++/* Lines per frame */
++#define S5K3T2_REG_LPFR		0x0340
++
++/* Chip ID */
++#define S5K3T2_REG_ID		0x0000
++#define S5K3T2_ID		0x3142
++
++/* Exposure control */
++#define S5K3T2_REG_EXPOSURE_CIT	0x0202
++#define S5K3T2_EXPOSURE_MIN	6
++#define S5K3T2_EXPOSURE_OFFSET	5
++#define S5K3T2_EXPOSURE_STEP	1
++#define S5K3T2_EXPOSURE_DEFAULT	0x0800
++
++/*
++ * Analog gain control. Samsung codes the gain as 32 times the real value, so
++ * 0x20 is 1x. The vendor data does not carry a maximum for this part; 16x is
++ * the usual ceiling for a sensor of this generation and is used here.
++ */
++#define S5K3T2_REG_AGAIN	0x0204
++#define S5K3T2_AGAIN_MIN	0x20
++#define S5K3T2_AGAIN_MAX	0x200
++#define S5K3T2_AGAIN_STEP	1
++#define S5K3T2_AGAIN_DEFAULT	0x20
++
++/* Group hold register */
++#define S5K3T2_REG_HOLD		0x0104
++
++/* Input clock rate */
++#define S5K3T2_INCLK_RATE	19200000
++
++/*
++ * The vendor data asks for a delay after the soft reset in the init table. It
++ * spells the field in microseconds and puts 3 in it, which cannot be right for
++ * a reset; Samsung's own setfiles for this family wait 3ms, so wait that.
++ */
++#define S5K3T2_RESET_DELAY_US	3000
++
++/*
++ * CSI2 HW configuration. The sensor is wired with four data lanes: both the
++ * vendor's lane assignment (0x3210) and CSI_LANE_MODE (0x0114 = 0x0300, the
++ * high byte being the useful one as Samsung writes it as a word) say so.
++ *
++ * The link frequency is the second PLL of the mode table:
++ * 19.2MHz / 3 (0x030e) * 140 (0x0310) = 896MHz, i.e. 1792Mbps per lane. That
++ * clears the 1612Mbps per lane this mode needs to push a line out within its
++ * line time, with the ~11% margin a real design has.
++ */
++#define S5K3T2_LINK_FREQ	896000000
++#define S5K3T2_NUM_DATA_LANES	4
++
++#define S5K3T2_REG_MIN		0x00
++#define S5K3T2_REG_MAX		0xffff
++
++/**
++ * struct s5k3t2_reg - s5k3t2 sensor register
++ * @address: Register address
++ * @val: Register value
++ */
++struct s5k3t2_reg {
++	u16 address;
++	u16 val;
++};
++
++/**
++ * struct s5k3t2_reg_list - s5k3t2 sensor register list
++ * @num_of_regs: Number of registers in the list
++ * @regs: Pointer to register list
++ */
++struct s5k3t2_reg_list {
++	u32 num_of_regs;
++	const struct s5k3t2_reg *regs;
++};
++
++/**
++ * struct s5k3t2_mode - s5k3t2 sensor mode structure
++ * @width: Frame width
++ * @height: Frame height
++ * @code: Format code
++ * @hblank: Horizontal blanking in lines
++ * @vblank: Vertical blanking in lines
++ * @vblank_min: Minimum vertical blanking in lines
++ * @vblank_max: Maximum vertical blanking in lines
++ * @pclk: Sensor pixel clock
++ * @link_freq_idx: Link frequency index
++ * @reg_list: Register list for sensor mode
++ */
++struct s5k3t2_mode {
++	u32 width;
++	u32 height;
++	u32 code;
++	u32 hblank;
++	u32 vblank;
++	u32 vblank_min;
++	u32 vblank_max;
++	u64 pclk;
++	u32 link_freq_idx;
++	struct s5k3t2_reg_list reg_list;
++};
++
++/*
++ * The downstream kernel labels the 2.8V rail behind the "camera_vdig" GPIO
++ * regulator as vdig, but 2.8V is not a digital core voltage; it is described
++ * here as what its regulator name says it is. The other analogue rail comes
++ * from AVDD1 of the board's WL2866D camera PMIC, which downstream drives out
++ * of band instead of through the regulator framework.
++ */
++static const char * const s5k3t2_supply_names[] = {
++	"dovdd",	/* Digital I/O power */
++	"avdd",		/* Analog power */
++	"avdd2",	/* Second analogue power */
++};
++
++/**
++ * struct s5k3t2 - s5k3t2 sensor device structure
++ * @dev: Pointer to generic device
++ * @client: Pointer to i2c client
++ * @sd: V4L2 sub-device
++ * @pad: Media pad. Only one pad supported
++ * @reset_gpio: Sensor reset gpio
++ * @select_gpio: CSIPHY mux select gpio
++ * @inclk: Sensor input clock
++ * @supplies: Regulator supplies
++ * @ctrl_handler: V4L2 control handler
++ * @link_freq_ctrl: Pointer to link frequency control
++ * @pclk_ctrl: Pointer to pixel clock control
++ * @hblank_ctrl: Pointer to horizontal blanking control
++ * @vblank_ctrl: Pointer to vertical blanking control
++ * @exp_ctrl: Pointer to exposure control
++ * @again_ctrl: Pointer to analog gain control
++ * @vblank: Vertical blanking in lines
++ * @cur_mode: Pointer to current selected sensor mode
++ * @mutex: Mutex for serializing sensor controls
++ */
++struct s5k3t2 {
++	struct device *dev;
++	struct i2c_client *client;
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++	struct gpio_desc *reset_gpio;
++	struct gpio_desc *select_gpio;
++	struct clk *inclk;
++	struct regulator_bulk_data supplies[ARRAY_SIZE(s5k3t2_supply_names)];
++	struct v4l2_ctrl_handler ctrl_handler;
++	struct v4l2_ctrl *link_freq_ctrl;
++	struct v4l2_ctrl *pclk_ctrl;
++	struct v4l2_ctrl *hblank_ctrl;
++	struct v4l2_ctrl *vblank_ctrl;
++	struct {
++		struct v4l2_ctrl *exp_ctrl;
++		struct v4l2_ctrl *again_ctrl;
++	};
++	u32 vblank;
++	const struct s5k3t2_mode *cur_mode;
++	struct mutex mutex;
++};
++
++static const s64 link_freq[] = {
++	S5K3T2_LINK_FREQ,
++};
++
++/*
++ * Global setting table, extracted verbatim from the factory sensor module blob
++ * /mnt/vendor/lib/camera/com.qti.sensormodule.j20c_ofilm_s5k3t2_front.bin (the
++ * sunny module ships the same tables).
++ *
++ * Samsung reaches most of the sensor through an indirect window: 0x6028 picks
++ * the page, 0x602a the address inside it, and each write to 0x6f12 stores a
++ * word and post-increments. The opening 0x0000 writes are the vendor's magic
++ * identify sequence. None of it is documented, so it is reproduced verbatim in
++ * the vendor's order.
++ */
++static const struct s5k3t2_reg s5k3t2_init_regs[] = {
++	{0x6028, 0x4000},
++	{0x0000, 0x0005},
++	{0x0000, 0x3142},
++	{0x6010, 0x0001},	/* soft reset, see S5K3T2_RESET_DELAY_US */
++	{0x6214, 0xff7d},
++	{0x6218, 0x0000},
++	{0x0a02, 0x003f},
++	{0x6028, 0x2000},
++	{0x602a, 0x3aec},
++	{0x6f12, 0x0000},
++	{0x6f12, 0x0000},
++	{0x6f12, 0x0549},
++	{0x6f12, 0x0448},
++	{0x6f12, 0x054a},
++	{0x6f12, 0xc1f8},
++	{0x6f12, 0x2c05},
++	{0x6f12, 0x101a},
++	{0x6f12, 0xa1f8},
++	{0x6f12, 0x3005},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x7bb8},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x3ca0},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x2670},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x9c00},
++	{0x6f12, 0x70b5},
++	{0x6f12, 0x0646},
++	{0x6f12, 0x4348},
++	{0x6f12, 0x0022},
++	{0x6f12, 0x0168},
++	{0x6f12, 0x0c0c},
++	{0x6f12, 0x8db2},
++	{0x6f12, 0x2946},
++	{0x6f12, 0x2046},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x9bf8},
++	{0x6f12, 0x3046},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x9df8},
++	{0x6f12, 0x3d48},
++	{0x6f12, 0x3e4a},
++	{0x6f12, 0x0830},
++	{0x6f12, 0x0188},
++	{0x6f12, 0x1180},
++	{0x6f12, 0x911c},
++	{0x6f12, 0x4088},
++	{0x6f12, 0x0880},
++	{0x6f12, 0x2946},
++	{0x6f12, 0x2046},
++	{0x6f12, 0xbde8},
++	{0x6f12, 0x7040},
++	{0x6f12, 0x0122},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x89b8},
++	{0x6f12, 0x70b5},
++	{0x6f12, 0x0646},
++	{0x6f12, 0x3548},
++	{0x6f12, 0x0022},
++	{0x6f12, 0x4068},
++	{0x6f12, 0x84b2},
++	{0x6f12, 0x050c},
++	{0x6f12, 0x2146},
++	{0x6f12, 0x2846},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x7ef8},
++	{0x6f12, 0x3046},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x85f8},
++	{0x6f12, 0x3149},
++	{0x6f12, 0x314b},
++	{0x6f12, 0x0120},
++	{0x6f12, 0x0988},
++	{0x6f12, 0x40ea},
++	{0x6f12, 0x0110},
++	{0x6f12, 0x5881},
++	{0x6f12, 0x2f48},
++	{0x6f12, 0x0078},
++	{0x6f12, 0x68b1},
++	{0x6f12, 0x0022},
++	{0x6f12, 0x2e48},
++	{0x6f12, 0x2f49},
++	{0x6f12, 0x80f8},
++	{0x6f12, 0xc428},
++	{0x6f12, 0x0a80},
++	{0x6f12, 0x2e49},
++	{0x6f12, 0x0e78},
++	{0x6f12, 0x36b1},
++	{0x6f12, 0x90f8},
++	{0x6f12, 0xe803},
++	{0x6f12, 0x18b1},
++	{0x6f12, 0x0120},
++	{0x6f12, 0x02e0},
++	{0x6f12, 0x0122},
++	{0x6f12, 0xf0e7},
++	{0x6f12, 0x0020},
++	{0x6f12, 0x4978},
++	{0x6f12, 0x01b1},
++	{0x6f12, 0x42b1},
++	{0x6f12, 0x0021},
++	{0x6f12, 0x40ea},
++	{0x6f12, 0x0110},
++	{0x6f12, 0x5880},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x66f8},
++	{0x6f12, 0x0128},
++	{0x6f12, 0x02d0},
++	{0x6f12, 0x1be0},
++	{0x6f12, 0x0121},
++	{0x6f12, 0xf5e7},
++	{0x6f12, 0x2248},
++	{0x6f12, 0x234a},
++	{0x6f12, 0x234e},
++	{0x6f12, 0xb0f8},
++	{0x6f12, 0x7211},
++	{0x6f12, 0x92f8},
++	{0x6f12, 0x9420},
++	{0x6f12, 0x90f8},
++	{0x6f12, 0x7401},
++	{0x6f12, 0xd140},
++	{0x6f12, 0xd040},
++	{0x6f12, 0x4318},
++	{0x6f12, 0x96f8},
++	{0x6f12, 0x7f63},
++	{0x6f12, 0x581e},
++	{0x6f12, 0x022e},
++	{0x6f12, 0x03d9},
++	{0x6f12, 0x0220},
++	{0x6f12, 0x9040},
++	{0x6f12, 0x181a},
++	{0x6f12, 0x401c},
++	{0x6f12, 0x164a},
++	{0x6f12, 0x703a},
++	{0x6f12, 0x1180},
++	{0x6f12, 0x911c},
++	{0x6f12, 0x0880},
++	{0x6f12, 0x2146},
++	{0x6f12, 0x2846},
++	{0x6f12, 0xbde8},
++	{0x6f12, 0x7040},
++	{0x6f12, 0x0122},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x31b8},
++	{0x6f12, 0x10b5},
++	{0x6f12, 0x0022},
++	{0x6f12, 0xaff2},
++	{0x6f12, 0xb501},
++	{0x6f12, 0x1348},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x3ef8},
++	{0x6f12, 0x064c},
++	{0x6f12, 0x0022},
++	{0x6f12, 0xaff2},
++	{0x6f12, 0xff01},
++	{0x6f12, 0x6060},
++	{0x6f12, 0x1048},
++	{0x6f12, 0x00f0},
++	{0x6f12, 0x36f8},
++	{0x6f12, 0x0f49},
++	{0x6f12, 0x2060},
++	{0x6f12, 0x7a20},
++	{0x6f12, 0x0968},
++	{0x6f12, 0x4883},
++	{0x6f12, 0x10bd},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x3c90},
++	{0x6f12, 0x4000},
++	{0x6f12, 0x950c},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x16f0},
++	{0x6f12, 0x4000},
++	{0x6f12, 0xd000},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x19a0},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x30c0},
++	{0x6f12, 0x4000},
++	{0x6f12, 0x9800},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x1dd0},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x17c0},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x2210},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x2670},
++	{0x6f12, 0x0000},
++	{0x6f12, 0xf45f},
++	{0x6f12, 0x0000},
++	{0x6f12, 0xd957},
++	{0x6f12, 0x2000},
++	{0x6f12, 0x08c0},
++	{0x6f12, 0x49f6},
++	{0x6f12, 0x213c},
++	{0x6f12, 0xc0f2},
++	{0x6f12, 0x000c},
++	{0x6f12, 0x6047},
++	{0x6f12, 0x4df6},
++	{0x6f12, 0x571c},
++	{0x6f12, 0xc0f2},
++	{0x6f12, 0x000c},
++	{0x6f12, 0x6047},
++	{0x6f12, 0x4ff2},
++	{0x6f12, 0x5f4c},
++	{0x6f12, 0xc0f2},
++	{0x6f12, 0x000c},
++	{0x6f12, 0x6047},
++	{0x6f12, 0x44f2},
++	{0x6f12, 0x9b0c},
++	{0x6f12, 0xc0f2},
++	{0x6f12, 0x000c},
++	{0x6f12, 0x6047},
++	{0x6f12, 0x4bf2},
++	{0x6f12, 0xed0c},
++	{0x6f12, 0xc0f2},
++	{0x6f12, 0x000c},
++	{0x6f12, 0x6047},
++	{0x6f12, 0x0000},
++	{0x6028, 0x2000},
++	{0x602a, 0x1014},
++	{0x6f12, 0x0100},
++	{0x6f12, 0x7000},
++	{0x602a, 0x108a},
++	{0x6f12, 0x0006},
++	{0x602a, 0x1092},
++	{0x6f12, 0x0005},
++	{0x602a, 0x1096},
++	{0x6f12, 0x0002},
++	{0x6f12, 0x001a},
++	{0x602a, 0x109c},
++	{0x6f12, 0x0014},
++	{0x602a, 0x10a2},
++	{0x6f12, 0x0022},
++	{0x602a, 0x10ae},
++	{0x6f12, 0x0007},
++	{0x602a, 0x10c2},
++	{0x6f12, 0x001e},
++	{0x602a, 0x10f4},
++	{0x6f12, 0x0003},
++	{0x6f12, 0x0003},
++	{0x602a, 0x110a},
++	{0x6f12, 0x0000},
++	{0x602a, 0x113e},
++	{0x6f12, 0x0001},
++	{0x6f12, 0x014e},
++	{0x602a, 0x13ea},
++	{0x6f12, 0x160f},
++	{0x6f12, 0x0d00},
++	{0x602a, 0x13fa},
++	{0x6f12, 0x009d},
++	{0x6f12, 0x0107},
++	{0x602a, 0x14e2},
++	{0x6f12, 0x04c2},
++	{0x6f12, 0x02ae},
++	{0x6f12, 0x0020},
++	{0x6028, 0x4000},
++	{0xf44a, 0x0010},
++	{0xf46a, 0xb6a0},
++	{0x6028, 0x2000},
++	{0x602a, 0x0f5e},
++	{0x6f12, 0x0200},
++	{0x602a, 0x0f90},
++	{0x6f12, 0x0000},
++	{0x602a, 0x17c0},
++	{0x6f12, 0x0010},
++	{0x6f12, 0x0201},
++	{0x602a, 0x1da2},
++	{0x6f12, 0x0001},
++	{0x6f12, 0x0203},
++	{0x6f12, 0x0405},
++	{0x6f12, 0x0607},
++	{0x6f12, 0x0809},
++	{0x6f12, 0x0a0b},
++	{0x6f12, 0x0c0d},
++	{0x6f12, 0x0e0f},
++	{0x6028, 0x4000},
++	{0x020c, 0x0001},
++	{0x0bc6, 0x0000},
++	{0x0d00, 0x0000},
++};
++
++/*
++ * Sensor mode registers: 5184x3880, the sensor's full 20MP readout.
++ */
++static const struct s5k3t2_reg mode_5184x3880_regs[] = {
++	{0x6028, 0x4000},
++	{0x0136, 0x1300},
++	{0x013e, 0x00c8},
++	{0x0304, 0x0003},
++	{0x0306, 0x00b9},
++	{0x6028, 0x2000},
++	{0x602a, 0x0e0e},
++	{0x6f12, 0x0103},
++	{0x6f12, 0x0000},
++	{0x602a, 0x1078},
++	{0x6f12, 0x04a6},
++	{0x6028, 0x4000},
++	{0x030c, 0x0000},
++	{0x0302, 0x0001},
++	{0x0300, 0x0007},
++	{0x030e, 0x0003},
++	{0x0310, 0x008c},
++	{0x0312, 0x0000},
++	{0x0308, 0x0008},
++	{0x030a, 0x0001},
++	{0x0344, 0x0008},
++	{0x0346, 0x0008},
++	{0x0348, 0x1447},
++	{0x034a, 0x0f2f},
++	{0x034c, 0x1440},
++	{0x034e, 0x0f28},
++	{0x0350, 0x0000},
++	{0x0352, 0x0000},
++	{0x0900, 0x0111},
++	{0x0404, 0x1000},
++	{0x0380, 0x0001},
++	{0x0382, 0x0001},
++	{0x0384, 0x0001},
++	{0x0386, 0x0001},
++	{0x0342, 0x1540},
++	{0x0340, 0x1040},
++	{0x6028, 0x4000},
++	{0x010c, 0x0000},
++	{0x0114, 0x0300},
++	{0x0116, 0x3000},
++	{0x011a, 0x0001},
++	{0x0118, 0x0002},
++	{0x6028, 0x2000},
++	{0x602a, 0x0e92},
++	{0x6f12, 0xffff},
++	{0x602a, 0x165a},
++	{0x6f12, 0x0003},
++	{0x6028, 0x4000},
++	{0x0b04, 0x0001},
++	{0x0b06, 0x0101},
++	{0x0fea, 0x04a0},
++	{0x6028, 0x2000},
++	{0x602a, 0x3c98},
++	{0x6f12, 0x0a58},
++	{0x6f12, 0x1477},
++	{0x602a, 0x1da0},
++	{0x6f12, 0x0010},
++	{0x602a, 0x10ac},
++	{0x6f12, 0x000a},
++	{0x602a, 0x1110},
++	{0x6f12, 0x001d},
++	{0x6f12, 0x003f},
++	{0x602a, 0x13e8},
++	{0x6f12, 0x0804},
++	{0x602a, 0x13f8},
++};
++
++/*
++ * The vendor data declares this mode at 29.90fps, and the mode's own PLL
++ * reproduces that exactly: 19.2MHz / 3 (0x0304) * 185 (0x0306) / (1 (0x0302) *
++ * 7 (0x0300)) is 169.14MHz, four pixels a clock is 676.57MHz, and over the
++ * 5440 (0x0342) by 4160 (0x0340) frame that is 29.90fps.
++ */
++static const struct s5k3t2_mode supported_mode = {
++	.width = 5184,
++	.height = 3880,
++	.hblank = 256,
++	.vblank = 280,
++	.vblank_min = 280,
++	.vblank_max = 61375,
++	.pclk = 676571428,
++	.link_freq_idx = 0,
++	/* Not confirmed: the vendor data does not carry the Bayer order. */
++	.code = MEDIA_BUS_FMT_SGRBG10_1X10,
++	.reg_list = {
++		.num_of_regs = ARRAY_SIZE(mode_5184x3880_regs),
++		.regs = mode_5184x3880_regs,
++	},
++};
++
++static inline struct s5k3t2 *to_s5k3t2(struct v4l2_subdev *subdev)
++{
++	return container_of(subdev, struct s5k3t2, sd);
++}
++
++/**
++ * s5k3t2_read_reg() - Read registers.
++ * @s5k3t2: pointer to s5k3t2 device
++ * @reg: register address
++ * @len: length of bytes to read. Max supported bytes is 4
++ * @val: pointer to register value to be filled.
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_read_reg(struct s5k3t2 *s5k3t2, u16 reg, u32 len, u32 *val)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&s5k3t2->sd);
++	struct i2c_msg msgs[2] = { };
++	u8 addr_buf[2] = { };
++	u8 data_buf[4] = { };
++	int ret;
++
++	if (WARN_ON(len > 4))
++		return -EINVAL;
++
++	put_unaligned_be16(reg, addr_buf);
++
++	/* Write register address */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = 0;
++	msgs[0].len = ARRAY_SIZE(addr_buf);
++	msgs[0].buf = addr_buf;
++
++	/* Read data from register */
++	msgs[1].addr = client->addr;
++	msgs[1].flags = I2C_M_RD;
++	msgs[1].len = len;
++	msgs[1].buf = &data_buf[4 - len];
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	*val = get_unaligned_be32(data_buf);
++
++	return 0;
++}
++
++/**
++ * s5k3t2_write_reg() - Write register
++ * @s5k3t2: pointer to s5k3t2 device
++ * @reg: register address
++ * @len: length of bytes. Max supported bytes is 4
++ * @val: register value
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_write_reg(struct s5k3t2 *s5k3t2, u16 reg, u32 len, u32 val)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&s5k3t2->sd);
++	u8 buf[6] = { };
++
++	if (WARN_ON(len > 4))
++		return -EINVAL;
++
++	put_unaligned_be16(reg, buf);
++	put_unaligned_be32(val << (8 * (4 - len)), buf + 2);
++	if (i2c_master_send(client, buf, len + 2) != len + 2)
++		return -EIO;
++
++	return 0;
++}
++
++/**
++ * s5k3t2_write_regs() - Write a list of registers
++ * @s5k3t2: pointer to s5k3t2 device
++ * @regs: list of registers to be written
++ * @len: length of registers array
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_write_regs(struct s5k3t2 *s5k3t2,
++			     const struct s5k3t2_reg *regs, u32 len)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < len; i++) {
++		ret = s5k3t2_write_reg(s5k3t2, regs[i].address, 2, regs[i].val);
++		if (ret)
++			return ret;
++
++		/* The soft reset is the only entry the vendor data delays on */
++		if (regs[i].address == 0x6010)
++			fsleep(S5K3T2_RESET_DELAY_US);
++	}
++
++	return 0;
++}
++
++/**
++ * s5k3t2_update_controls() - Update control ranges based on streaming mode
++ * @s5k3t2: pointer to s5k3t2 device
++ * @mode: pointer to s5k3t2_mode sensor mode
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_update_controls(struct s5k3t2 *s5k3t2,
++				  const struct s5k3t2_mode *mode)
++{
++	int ret;
++
++	ret = __v4l2_ctrl_s_ctrl(s5k3t2->link_freq_ctrl, mode->link_freq_idx);
++	if (ret)
++		return ret;
++
++	ret = __v4l2_ctrl_s_ctrl(s5k3t2->hblank_ctrl, mode->hblank);
++	if (ret)
++		return ret;
++
++	return __v4l2_ctrl_modify_range(s5k3t2->vblank_ctrl, mode->vblank_min,
++					mode->vblank_max, 1, mode->vblank);
++}
++
++/**
++ * s5k3t2_update_exp_gain() - Set updated exposure and gain
++ * @s5k3t2: pointer to s5k3t2 device
++ * @exposure: updated exposure value
++ * @gain: updated analog gain value
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_update_exp_gain(struct s5k3t2 *s5k3t2, u32 exposure, u32 gain)
++{
++	u32 lpfr;
++	int ret;
++
++	lpfr = s5k3t2->vblank + s5k3t2->cur_mode->height;
++
++	dev_dbg(s5k3t2->dev, "Set exp %u, analog gain %u, lpfr %u",
++		exposure, gain, lpfr);
++
++	ret = s5k3t2_write_reg(s5k3t2, S5K3T2_REG_HOLD, 1, 1);
++	if (ret)
++		return ret;
++
++	ret = s5k3t2_write_reg(s5k3t2, S5K3T2_REG_LPFR, 2, lpfr);
++	if (ret)
++		goto error_release_group_hold;
++
++	ret = s5k3t2_write_reg(s5k3t2, S5K3T2_REG_EXPOSURE_CIT, 2, exposure);
++	if (ret)
++		goto error_release_group_hold;
++
++	ret = s5k3t2_write_reg(s5k3t2, S5K3T2_REG_AGAIN, 2, gain);
++
++error_release_group_hold:
++	s5k3t2_write_reg(s5k3t2, S5K3T2_REG_HOLD, 1, 0);
++
++	return ret;
++}
++
++/**
++ * s5k3t2_set_ctrl() - Set subdevice control
++ * @ctrl: pointer to v4l2_ctrl structure
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct s5k3t2 *s5k3t2 =
++		container_of(ctrl->handler, struct s5k3t2, ctrl_handler);
++	u32 analog_gain;
++	u32 exposure;
++	int ret;
++
++	switch (ctrl->id) {
++	case V4L2_CID_VBLANK:
++		s5k3t2->vblank = s5k3t2->vblank_ctrl->val;
++
++		dev_dbg(s5k3t2->dev, "Received vblank %u, new lpfr %u",
++			s5k3t2->vblank,
++			s5k3t2->vblank + s5k3t2->cur_mode->height);
++
++		ret = __v4l2_ctrl_modify_range(s5k3t2->exp_ctrl,
++					       S5K3T2_EXPOSURE_MIN,
++					       s5k3t2->vblank +
++					       s5k3t2->cur_mode->height -
++					       S5K3T2_EXPOSURE_OFFSET,
++					       1, S5K3T2_EXPOSURE_DEFAULT);
++		break;
++	case V4L2_CID_EXPOSURE:
++		/* Set controls only if sensor is in power on state */
++		if (!pm_runtime_get_if_in_use(s5k3t2->dev))
++			return 0;
++
++		exposure = ctrl->val;
++		analog_gain = s5k3t2->again_ctrl->val;
++
++		dev_dbg(s5k3t2->dev, "Received exp %u, analog gain %u",
++			exposure, analog_gain);
++
++		ret = s5k3t2_update_exp_gain(s5k3t2, exposure, analog_gain);
++
++		pm_runtime_put(s5k3t2->dev);
++
++		break;
++	default:
++		dev_err(s5k3t2->dev, "Invalid control %d", ctrl->id);
++		ret = -EINVAL;
++	}
++
++	return ret;
++}
++
++/* v4l2_ctrl_ops */
++static const struct v4l2_ctrl_ops s5k3t2_ctrl_ops = {
++	.s_ctrl = s5k3t2_set_ctrl,
++};
++
++/**
++ * s5k3t2_enum_mbus_code() - Enumerate V4L2 sub-device mbus codes
++ * @sd: pointer to s5k3t2 V4L2 sub-device structure
++ * @sd_state: V4L2 sub-device configuration
++ * @code: V4L2 sub-device code enumeration need to be filled
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_enum_mbus_code(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_mbus_code_enum *code)
++{
++	if (code->index > 0)
++		return -EINVAL;
++
++	code->code = supported_mode.code;
++
++	return 0;
++}
++
++/**
++ * s5k3t2_enum_frame_size() - Enumerate V4L2 sub-device frame sizes
++ * @sd: pointer to s5k3t2 V4L2 sub-device structure
++ * @sd_state: V4L2 sub-device configuration
++ * @fsize: V4L2 sub-device size enumeration need to be filled
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_enum_frame_size(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_frame_size_enum *fsize)
++{
++	if (fsize->index > 0)
++		return -EINVAL;
++
++	if (fsize->code != supported_mode.code)
++		return -EINVAL;
++
++	fsize->min_width = supported_mode.width;
++	fsize->max_width = fsize->min_width;
++	fsize->min_height = supported_mode.height;
++	fsize->max_height = fsize->min_height;
++
++	return 0;
++}
++
++/**
++ * s5k3t2_fill_pad_format() - Fill subdevice pad format
++ *                            from selected sensor mode
++ * @s5k3t2: pointer to s5k3t2 device
++ * @mode: pointer to s5k3t2_mode sensor mode
++ * @fmt: V4L2 sub-device format need to be filled
++ */
++static void s5k3t2_fill_pad_format(struct s5k3t2 *s5k3t2,
++				   const struct s5k3t2_mode *mode,
++				   struct v4l2_subdev_format *fmt)
++{
++	fmt->format.width = mode->width;
++	fmt->format.height = mode->height;
++	fmt->format.code = mode->code;
++	fmt->format.field = V4L2_FIELD_NONE;
++	fmt->format.colorspace = V4L2_COLORSPACE_RAW;
++	fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
++	fmt->format.quantization = V4L2_QUANTIZATION_DEFAULT;
++	fmt->format.xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
++/**
++ * s5k3t2_get_pad_format() - Get subdevice pad format
++ * @sd: pointer to s5k3t2 V4L2 sub-device structure
++ * @sd_state: V4L2 sub-device configuration
++ * @fmt: V4L2 sub-device format need to be set
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_get_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++
++	mutex_lock(&s5k3t2->mutex);
++
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		struct v4l2_mbus_framefmt *framefmt;
++
++		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
++		fmt->format = *framefmt;
++	} else {
++		s5k3t2_fill_pad_format(s5k3t2, s5k3t2->cur_mode, fmt);
++	}
++
++	mutex_unlock(&s5k3t2->mutex);
++
++	return 0;
++}
++
++/**
++ * s5k3t2_set_pad_format() - Set subdevice pad format
++ * @sd: pointer to s5k3t2 V4L2 sub-device structure
++ * @sd_state: V4L2 sub-device configuration
++ * @fmt: V4L2 sub-device format need to be set
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_set_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++	const struct s5k3t2_mode *mode;
++	int ret = 0;
++
++	mutex_lock(&s5k3t2->mutex);
++
++	mode = &supported_mode;
++	s5k3t2_fill_pad_format(s5k3t2, mode, fmt);
++
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		struct v4l2_mbus_framefmt *framefmt;
++
++		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
++		*framefmt = fmt->format;
++	} else {
++		ret = s5k3t2_update_controls(s5k3t2, mode);
++		if (!ret)
++			s5k3t2->cur_mode = mode;
++	}
++
++	mutex_unlock(&s5k3t2->mutex);
++
++	return ret;
++}
++
++/**
++ * s5k3t2_init_state() - Initialize sub-device state
++ * @sd: pointer to s5k3t2 V4L2 sub-device structure
++ * @sd_state: V4L2 sub-device configuration
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_init_state(struct v4l2_subdev *sd,
++			     struct v4l2_subdev_state *sd_state)
++{
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++	struct v4l2_subdev_format fmt = { };
++
++	fmt.which = sd_state ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
++	s5k3t2_fill_pad_format(s5k3t2, &supported_mode, &fmt);
++
++	return s5k3t2_set_pad_format(sd, sd_state, &fmt);
++}
++
++/**
++ * s5k3t2_start_streaming() - Start sensor stream
++ * @s5k3t2: pointer to s5k3t2 device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_start_streaming(struct s5k3t2 *s5k3t2)
++{
++	const struct s5k3t2_reg_list *reg_list;
++	int ret;
++
++	/* Write global settings */
++	ret = s5k3t2_write_regs(s5k3t2, s5k3t2_init_regs,
++				ARRAY_SIZE(s5k3t2_init_regs));
++	if (ret) {
++		dev_err(s5k3t2->dev, "fail to write init registers");
++		return ret;
++	}
++
++	/* Write sensor mode registers */
++	reg_list = &s5k3t2->cur_mode->reg_list;
++	ret = s5k3t2_write_regs(s5k3t2, reg_list->regs, reg_list->num_of_regs);
++	if (ret) {
++		dev_err(s5k3t2->dev, "fail to write initial registers");
++		return ret;
++	}
++
++	/* Setup handler will write actual exposure and gain */
++	ret =  __v4l2_ctrl_handler_setup(s5k3t2->sd.ctrl_handler);
++	if (ret) {
++		dev_err(s5k3t2->dev, "fail to setup handler");
++		return ret;
++	}
++
++	/* Start streaming */
++	ret = s5k3t2_write_reg(s5k3t2, S5K3T2_REG_MODE_SELECT,
++			       1, S5K3T2_MODE_STREAMING);
++	if (ret) {
++		dev_err(s5k3t2->dev, "fail to start streaming");
++		return ret;
++	}
++
++	return 0;
++}
++
++/**
++ * s5k3t2_stop_streaming() - Stop sensor stream
++ * @s5k3t2: pointer to s5k3t2 device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_stop_streaming(struct s5k3t2 *s5k3t2)
++{
++	return s5k3t2_write_reg(s5k3t2, S5K3T2_REG_MODE_SELECT,
++				1, S5K3T2_MODE_STANDBY);
++}
++
++/**
++ * s5k3t2_set_stream() - Enable sensor streaming
++ * @sd: pointer to s5k3t2 subdevice
++ * @enable: set to enable sensor streaming
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_set_stream(struct v4l2_subdev *sd, int enable)
++{
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++	int ret;
++
++	mutex_lock(&s5k3t2->mutex);
++
++	if (enable) {
++		ret = pm_runtime_resume_and_get(s5k3t2->dev);
++		if (ret)
++			goto error_unlock;
++
++		ret = s5k3t2_start_streaming(s5k3t2);
++		if (ret)
++			goto error_power_off;
++	} else {
++		s5k3t2_stop_streaming(s5k3t2);
++		pm_runtime_put(s5k3t2->dev);
++	}
++
++	mutex_unlock(&s5k3t2->mutex);
++
++	return 0;
++
++error_power_off:
++	pm_runtime_put(s5k3t2->dev);
++error_unlock:
++	mutex_unlock(&s5k3t2->mutex);
++
++	return ret;
++}
++
++/**
++ * s5k3t2_detect() - Detect s5k3t2 sensor
++ * @s5k3t2: pointer to s5k3t2 device
++ *
++ * Return: 0 if successful, -EIO if sensor id does not match
++ */
++static int s5k3t2_detect(struct s5k3t2 *s5k3t2)
++{
++	int ret;
++	u32 val;
++
++	ret = s5k3t2_read_reg(s5k3t2, S5K3T2_REG_ID, 2, &val);
++	if (ret)
++		return ret;
++
++	if (val != S5K3T2_ID) {
++		dev_err(s5k3t2->dev, "chip id mismatch: %x!=%x",
++			S5K3T2_ID, val);
++		return -ENXIO;
++	}
++
++	return 0;
++}
++
++/**
++ * s5k3t2_parse_hw_config() - Parse HW configuration and check if supported
++ * @s5k3t2: pointer to s5k3t2 device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_parse_hw_config(struct s5k3t2 *s5k3t2)
++{
++	struct fwnode_handle *fwnode = dev_fwnode(s5k3t2->dev);
++	struct v4l2_fwnode_endpoint bus_cfg = {
++		.bus_type = V4L2_MBUS_CSI2_DPHY
++	};
++	struct fwnode_handle *ep;
++	unsigned long rate;
++	unsigned int i;
++	int ret;
++
++	if (!fwnode)
++		return -ENXIO;
++
++	/* Request optional reset pin */
++	s5k3t2->reset_gpio = devm_gpiod_get_optional(s5k3t2->dev, "reset",
++						     GPIOD_OUT_HIGH);
++	if (IS_ERR(s5k3t2->reset_gpio)) {
++		dev_err(s5k3t2->dev, "failed to get reset gpio %ld",
++			PTR_ERR(s5k3t2->reset_gpio));
++		return PTR_ERR(s5k3t2->reset_gpio);
++	}
++
++	/*
++	 * The board muxes this sensor and the ultrawide one onto the same
++	 * CSIPHY; this pin picks which of the two drives it. Deasserted picks
++	 * this sensor, as the vendor's power up sequence does.
++	 */
++	s5k3t2->select_gpio = devm_gpiod_get_optional(s5k3t2->dev, "select",
++						      GPIOD_OUT_HIGH);
++	if (IS_ERR(s5k3t2->select_gpio)) {
++		dev_err(s5k3t2->dev, "failed to get select gpio %ld",
++			PTR_ERR(s5k3t2->select_gpio));
++		return PTR_ERR(s5k3t2->select_gpio);
++	}
++
++	/* Get sensor input clock */
++	s5k3t2->inclk = devm_clk_get(s5k3t2->dev, NULL);
++	if (IS_ERR(s5k3t2->inclk)) {
++		dev_err(s5k3t2->dev, "could not get inclk");
++		return PTR_ERR(s5k3t2->inclk);
++	}
++
++	rate = clk_get_rate(s5k3t2->inclk);
++	if (rate != S5K3T2_INCLK_RATE) {
++		dev_err(s5k3t2->dev, "inclk frequency mismatch");
++		return -EINVAL;
++	}
++
++	/* Get DT defined regulators */
++	for (i = 0; i < ARRAY_SIZE(s5k3t2_supply_names); i++)
++		s5k3t2->supplies[i].supply = s5k3t2_supply_names[i];
++
++	ret = devm_regulator_bulk_get(s5k3t2->dev,
++				      ARRAY_SIZE(s5k3t2_supply_names),
++				      s5k3t2->supplies);
++	if (ret)
++		return ret;
++
++	ep = fwnode_graph_get_next_endpoint(fwnode, NULL);
++	if (!ep)
++		return -ENXIO;
++
++	ret = v4l2_fwnode_endpoint_alloc_parse(ep, &bus_cfg);
++	fwnode_handle_put(ep);
++	if (ret)
++		return ret;
++
++	if (bus_cfg.bus.mipi_csi2.num_data_lanes != S5K3T2_NUM_DATA_LANES) {
++		dev_err(s5k3t2->dev,
++			"number of CSI2 data lanes %d is not supported",
++			bus_cfg.bus.mipi_csi2.num_data_lanes);
++		ret = -EINVAL;
++		goto done_endpoint_free;
++	}
++
++	if (!bus_cfg.nr_of_link_frequencies) {
++		dev_err(s5k3t2->dev, "no link frequencies defined");
++		ret = -EINVAL;
++		goto done_endpoint_free;
++	}
++
++	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
++		if (bus_cfg.link_frequencies[i] == S5K3T2_LINK_FREQ)
++			goto done_endpoint_free;
++
++	ret = -EINVAL;
++
++done_endpoint_free:
++	v4l2_fwnode_endpoint_free(&bus_cfg);
++
++	return ret;
++}
++
++/* V4l2 subdevice ops */
++static const struct v4l2_subdev_video_ops s5k3t2_video_ops = {
++	.s_stream = s5k3t2_set_stream,
++};
++
++static const struct v4l2_subdev_pad_ops s5k3t2_pad_ops = {
++	.enum_mbus_code = s5k3t2_enum_mbus_code,
++	.enum_frame_size = s5k3t2_enum_frame_size,
++	.get_fmt = s5k3t2_get_pad_format,
++	.set_fmt = s5k3t2_set_pad_format,
++};
++
++static const struct v4l2_subdev_ops s5k3t2_subdev_ops = {
++	.video = &s5k3t2_video_ops,
++	.pad = &s5k3t2_pad_ops,
++};
++
++static const struct v4l2_subdev_internal_ops s5k3t2_internal_ops = {
++	.init_state = s5k3t2_init_state,
++};
++
++/**
++ * s5k3t2_power_on() - Sensor power on sequence
++ * @dev: pointer to i2c device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_power_on(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++	int ret;
++
++	/*
++	 * Follow the vendor's power up sequence: point the mux at this sensor,
++	 * hold it in reset while the supplies and the input clock come up, and
++	 * release it last.
++	 */
++	gpiod_set_value_cansleep(s5k3t2->select_gpio, 0);
++	usleep_range(1000, 1200);
++
++	gpiod_set_value_cansleep(s5k3t2->reset_gpio, 1);
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(s5k3t2_supply_names),
++				    s5k3t2->supplies);
++	if (ret) {
++		dev_err(dev, "failed to enable regulators\n");
++		return ret;
++	}
++
++	usleep_range(2000, 2400);
++
++	ret = clk_prepare_enable(s5k3t2->inclk);
++	if (ret) {
++		dev_err(s5k3t2->dev, "fail to enable inclk");
++		goto error_reset;
++	}
++
++	usleep_range(15000, 16000);
++
++	gpiod_set_value_cansleep(s5k3t2->reset_gpio, 0);
++
++	usleep_range(5000, 5500);
++
++	return 0;
++
++error_reset:
++	gpiod_set_value_cansleep(s5k3t2->reset_gpio, 1);
++	regulator_bulk_disable(ARRAY_SIZE(s5k3t2_supply_names),
++			       s5k3t2->supplies);
++
++	return ret;
++}
++
++/**
++ * s5k3t2_power_off() - Sensor power off sequence
++ * @dev: pointer to i2c device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_power_off(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++
++	gpiod_set_value_cansleep(s5k3t2->reset_gpio, 1);
++	usleep_range(1000, 1200);
++	clk_disable_unprepare(s5k3t2->inclk);
++	usleep_range(1000, 1200);
++	regulator_bulk_disable(ARRAY_SIZE(s5k3t2_supply_names),
++			       s5k3t2->supplies);
++	gpiod_set_value_cansleep(s5k3t2->select_gpio, 1);
++
++	return 0;
++}
++
++/**
++ * s5k3t2_init_controls() - Initialize sensor subdevice controls
++ * @s5k3t2: pointer to s5k3t2 device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_init_controls(struct s5k3t2 *s5k3t2)
++{
++	struct v4l2_ctrl_handler *ctrl_hdlr = &s5k3t2->ctrl_handler;
++	const struct s5k3t2_mode *mode = s5k3t2->cur_mode;
++	u32 lpfr;
++	int ret;
++
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 6);
++	if (ret)
++		return ret;
++
++	/* Serialize controls with sensor device */
++	ctrl_hdlr->lock = &s5k3t2->mutex;
++
++	/* Initialize exposure and gain */
++	lpfr = mode->vblank + mode->height;
++	s5k3t2->exp_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
++					     &s5k3t2_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     S5K3T2_EXPOSURE_MIN,
++					     lpfr - S5K3T2_EXPOSURE_OFFSET,
++					     S5K3T2_EXPOSURE_STEP,
++					     S5K3T2_EXPOSURE_DEFAULT);
++
++	s5k3t2->again_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
++					       &s5k3t2_ctrl_ops,
++					       V4L2_CID_ANALOGUE_GAIN,
++					       S5K3T2_AGAIN_MIN,
++					       S5K3T2_AGAIN_MAX,
++					       S5K3T2_AGAIN_STEP,
++					       S5K3T2_AGAIN_DEFAULT);
++
++	v4l2_ctrl_cluster(2, &s5k3t2->exp_ctrl);
++
++	s5k3t2->vblank_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
++						&s5k3t2_ctrl_ops,
++						V4L2_CID_VBLANK,
++						mode->vblank_min,
++						mode->vblank_max,
++						1, mode->vblank);
++
++	/* Read only controls */
++	s5k3t2->pclk_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
++					      &s5k3t2_ctrl_ops,
++					      V4L2_CID_PIXEL_RATE,
++					      mode->pclk, mode->pclk,
++					      1, mode->pclk);
++
++	s5k3t2->link_freq_ctrl = v4l2_ctrl_new_int_menu(ctrl_hdlr,
++							&s5k3t2_ctrl_ops,
++							V4L2_CID_LINK_FREQ,
++							ARRAY_SIZE(link_freq) -
++							1,
++							mode->link_freq_idx,
++							link_freq);
++	if (s5k3t2->link_freq_ctrl)
++		s5k3t2->link_freq_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	s5k3t2->hblank_ctrl = v4l2_ctrl_new_std(ctrl_hdlr,
++						&s5k3t2_ctrl_ops,
++						V4L2_CID_HBLANK,
++						S5K3T2_REG_MIN,
++						S5K3T2_REG_MAX,
++						1, mode->hblank);
++	if (s5k3t2->hblank_ctrl)
++		s5k3t2->hblank_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	if (ctrl_hdlr->error) {
++		dev_err(s5k3t2->dev, "control init failed: %d",
++			ctrl_hdlr->error);
++		v4l2_ctrl_handler_free(ctrl_hdlr);
++		return ctrl_hdlr->error;
++	}
++
++	s5k3t2->sd.ctrl_handler = ctrl_hdlr;
++
++	return 0;
++}
++
++/**
++ * s5k3t2_probe() - I2C client device binding
++ * @client: pointer to i2c client device
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int s5k3t2_probe(struct i2c_client *client)
++{
++	struct s5k3t2 *s5k3t2;
++	int ret;
++
++	s5k3t2 = devm_kzalloc(&client->dev, sizeof(*s5k3t2), GFP_KERNEL);
++	if (!s5k3t2)
++		return -ENOMEM;
++
++	s5k3t2->dev = &client->dev;
++
++	/* Initialize subdev */
++	v4l2_i2c_subdev_init(&s5k3t2->sd, client, &s5k3t2_subdev_ops);
++	s5k3t2->sd.internal_ops = &s5k3t2_internal_ops;
++
++	ret = s5k3t2_parse_hw_config(s5k3t2);
++	if (ret) {
++		dev_err(s5k3t2->dev, "HW configuration is not supported");
++		return ret;
++	}
++
++	mutex_init(&s5k3t2->mutex);
++
++	ret = s5k3t2_power_on(s5k3t2->dev);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to power-on the sensor");
++		goto error_mutex_destroy;
++	}
++
++	/* Check module identity */
++	ret = s5k3t2_detect(s5k3t2);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to find sensor: %d", ret);
++		goto error_power_off;
++	}
++
++	/* Set default mode to max resolution */
++	s5k3t2->cur_mode = &supported_mode;
++	s5k3t2->vblank = s5k3t2->cur_mode->vblank;
++
++	ret = s5k3t2_init_controls(s5k3t2);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to init controls: %d", ret);
++		goto error_power_off;
++	}
++
++	/* Initialize subdev */
++	s5k3t2->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	s5k3t2->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++
++	/* Initialize source pad */
++	s5k3t2->pad.flags = MEDIA_PAD_FL_SOURCE;
++	ret = media_entity_pads_init(&s5k3t2->sd.entity, 1, &s5k3t2->pad);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to init entity pads: %d", ret);
++		goto error_handler_free;
++	}
++
++	ret = v4l2_async_register_subdev_sensor(&s5k3t2->sd);
++	if (ret < 0) {
++		dev_err(s5k3t2->dev,
++			"failed to register async subdev: %d", ret);
++		goto error_media_entity;
++	}
++
++	pm_runtime_set_active(s5k3t2->dev);
++	pm_runtime_enable(s5k3t2->dev);
++	pm_runtime_idle(s5k3t2->dev);
++
++	return 0;
++
++error_media_entity:
++	media_entity_cleanup(&s5k3t2->sd.entity);
++error_handler_free:
++	v4l2_ctrl_handler_free(s5k3t2->sd.ctrl_handler);
++error_power_off:
++	s5k3t2_power_off(s5k3t2->dev);
++error_mutex_destroy:
++	mutex_destroy(&s5k3t2->mutex);
++
++	return ret;
++}
++
++/**
++ * s5k3t2_remove() - I2C client device unbinding
++ * @client: pointer to I2C client device
++ */
++static void s5k3t2_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct s5k3t2 *s5k3t2 = to_s5k3t2(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(sd->ctrl_handler);
++
++	pm_runtime_disable(&client->dev);
++	if (!pm_runtime_status_suspended(&client->dev))
++		s5k3t2_power_off(&client->dev);
++	pm_runtime_set_suspended(&client->dev);
++
++	mutex_destroy(&s5k3t2->mutex);
++}
++
++static const struct dev_pm_ops s5k3t2_pm_ops = {
++	SET_RUNTIME_PM_OPS(s5k3t2_power_off, s5k3t2_power_on, NULL)
++};
++
++static const struct of_device_id s5k3t2_of_match[] = {
++	{ .compatible = "samsung,s5k3t2" },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(of, s5k3t2_of_match);
++
++static struct i2c_driver s5k3t2_driver = {
++	.probe = s5k3t2_probe,
++	.remove = s5k3t2_remove,
++	.driver = {
++		.name = "s5k3t2",
++		.pm = &s5k3t2_pm_ops,
++		.of_match_table = s5k3t2_of_match,
++	},
++};
++
++module_i2c_driver(s5k3t2_driver);
++
++MODULE_DESCRIPTION("Samsung s5k3t2 sensor driver");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

@@ -1,0 +1,13 @@
+[Unit]
+Description=Cadena de audio y Bluetooth de surya (orden obligado)
+# Tras el arranque completo, nunca en el arranque temprano (colgaba el movil).
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/armar-audio-sistema.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

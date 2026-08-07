@@ -1,0 +1,51 @@
+From f05fc1bd4bfcd51e113f5790e1cf01f23b4c0a7a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 18 Jul 2026 00:25:45 +0200
+Subject: [PATCH 060/106] arm64: dts: qcom: sm7150-xiaomi-common: enable the
+ PM6150 vibrator
+
+pm6150.dtsi already declares the vibrator node (compatible
+"qcom,pm6150-vib", "qcom,pmi632-vib") with a matching mainline driver
+already built (pm8xxx-vibrator.c, CONFIG_INPUT_PM8XXX_VIBRATOR=m) - it
+just ships status = "disabled" since not every pm6150 board has one
+wired up. Downstream's sdmmagpie-common.dtsi confirms surya does
+(qcom,vibrator@5300, 3.0V LDO, overdrive disabled), and no extra
+properties are needed: the mainline driver doesn't parse the
+downstream-only qcom,vib-ldo-volt-uv/qcom,disable-overdrive tunables,
+just the register address already in the base dtsi.
+
+Verified on real hardware: binds as input event "pm8xxx_vib_ffmemless"
+(standard force-feedback API) and plays a rumble effect via a raw
+FF_RUMBLE EVIOCSFF/EV_FF test, and via fbcli through the real Phosh
+feedbackd stack.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index 87ae63254..cc8f53a9f 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -630,11 +630,16 @@ &pm6150_rtc {
+ 	status = "okay";
+ };
+ 
++&pm6150_vib {
++	status = "okay";
++};
++
+ &pm6150_typec {
+ 	vdd-vbus-supply = <&pm6150_vbus>;
+ 	vdd-pdphy-supply = <&vdda_usb_hs_3p1>;
+ 	status = "okay";
+ 
++
+ 	connector {
+ 		compatible = "usb-c-connector";
+ 
+-- 
+2.43.0
+

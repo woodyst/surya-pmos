@@ -1,0 +1,147 @@
+From a6cc3e16673e8e425fbba9523081ccaec5d568be Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 13:59:53 +0200
+Subject: [PATCH 098/106] ASoC: tas2562: resync the register page at every DAC
+ power-up
+
+The chip loses its selected page (glitch or internal reset) while regmap
+keeps skipping the selector write because it believes the page is already
+selected. From then on every driver write lands on the wrong page: the amp
+powers up configured with garbage and stays audibly mute for every stream.
+Measured on the earpiece amp (tas2564): raw selector read 0x82 where regmap
+believed 0, and 1/12 power-ups audible.
+
+TI keeps the page-select register at offset 0 of every page, so hopping to
+page 253 and back always resyncs regardless of the chip's real state. Then
+rewrite the page-0 config from the cache (the driver's intention) with the
+cache bypassed, restore MISC_CFG2 to its power-on default (never written by
+the driver, but clobberable by misdirected traffic), and make the power
+mode update bypass the cache too.
+
+Result: 12/12 power-ups audible (verified by ear), from 1/12.
+---
+ sound/soc/codecs/tas2562.c | 91 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index fcb33da7f..72870b6d7 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -401,8 +401,17 @@ static int tas2562_update_pwr_ctrl(struct tas2562_data *tas2562)
+ 	else
+ 		val = TAS2562_SHUTDOWN;
+ 
++	/*
++	 * Bypass the cache: after a page desync the cache can already hold
++	 * the value we are about to set, and a cached update would compare
++	 * against it and skip the hardware write - leaving the part in
++	 * whatever mode the misdirected traffic put it in. With the bypass
++	 * this reads the real register and corrects it if needed.
++	 */
++	regcache_cache_bypass(tas2562->regmap, true);
+ 	ret = snd_soc_component_update_bits(component, TAS2562_PWR_CTRL,
+ 					    TAS2562_MODE_MASK, val);
++	regcache_cache_bypass(tas2562->regmap, false);
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -642,6 +651,70 @@ static bool tas_is_bottom(struct tas2562_data *t)
+  * not regmap_bulk_write() (which, with a cache configured, falls back to the
+  * byte-at-a-time pattern the hardware ignores).
+  */
++/*
++ * Re-select the chip's page and book from scratch.
++ *
++ * regmap only writes the page-select register when the target page differs
++ * from the one it believes is selected, so once the chip loses its page
++ * state (a glitch, an internal reset) every access lands on the wrong page
++ * for good: the driver keeps "succeeding" against a page where those
++ * offsets mean something else, and the amp powers up configured with
++ * garbage - audibly, a power-up that comes out mute and stays mute for
++ * every stream until something happens to force a page flip. Measured on
++ * the earpiece amp: a raw read of the selector returned 0x82 where regmap
++ * believed 0.
++ *
++ * TI keeps the page-select register at offset 0 of every page, so hopping
++ * to another page and back always works no matter what the chip currently
++ * has selected. The book register only exists on page 0, so it goes last.
++ */
++static void tas2562_resync_page(struct tas2562_data *tas2562)
++{
++	unsigned int dummy;
++
++	regcache_cache_bypass(tas2562->regmap, true);
++	regmap_read(tas2562->regmap, TAS2562_PAGE253_REG12, &dummy);
++	regmap_read(tas2562->regmap, TAS2562_PB_CFG1, &dummy);
++	regmap_write(tas2562->regmap, TAS2562_BOOK_CTL, 0);
++	regcache_cache_bypass(tas2562->regmap, false);
++}
++
++/*
++ * Write a register's cached (i.e. intended) value straight to the part.
++ * After a page desync the silicon holds whatever the misdirected writes
++ * left there, while the cache still holds what the driver meant: a normal
++ * cached update would compare against the cache, decide nothing changed,
++ * and skip the hardware write - so read the intention from the cache and
++ * force it out raw.
++ */
++static void tas2562_reassert_cached(struct tas2562_data *tas2562,
++				    unsigned int reg)
++{
++	unsigned int val;
++
++	if (regmap_read(tas2562->regmap, reg, &val) < 0)
++		return;
++
++	regcache_cache_bypass(tas2562->regmap, true);
++	regmap_write(tas2562->regmap, reg, val);
++	regcache_cache_bypass(tas2562->regmap, false);
++}
++
++/* The page-0 configuration the amp actually plays by. */
++static const unsigned int tas2562_reassert_regs[] = {
++	TAS2562_MISC_CFG1,
++	TAS2562_TDM_CFG0,
++	TAS2562_TDM_CFG1,
++	TAS2562_TDM_CFG3,
++	TAS2562_TDM_CFG4,
++	TAS2562_TDM_CFG5,
++	TAS2562_TDM_CFG6,
++	TAS2562_BOOST_SLOPE,
++	TAS2562_VBAT_FILTER,
++	TAS2562_CLASSH_RELEASE_TIMER,
++	TAS2562_CLOCK_CFG,
++};
++
+ static int tas2562_write_dvc(struct tas2562_data *tas2562, int lvl)
+ {
+ 	__be32 dvc;
+@@ -981,6 +1054,24 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 
+ 	switch (event) {
+ 	case SND_SOC_DAPM_POST_PMU:
++		tas2562_resync_page(tas2562);
++		{
++			int i;
++
++			for (i = 0; i < ARRAY_SIZE(tas2562_reassert_regs); i++)
++				tas2562_reassert_cached(tas2562,
++						tas2562_reassert_regs[i]);
++		}
++		/*
++		 * MISC_CFG2 is never written by the driver, so there is no
++		 * cached intention to reassert - but a misdirected write can
++		 * still have clobbered it, and both amps read 0x22 there in
++		 * every audibly-working state (its power-on default). Put the
++		 * default back explicitly.
++		 */
++		regcache_cache_bypass(tas2562->regmap, true);
++		regmap_write(tas2562->regmap, TAS2562_MISC_CFG2, 0x22);
++		regcache_cache_bypass(tas2562->regmap, false);
+ 		if (tas2562->model_id == TAS2562) {
+ 			ret = tas2562_pre_power_up(component);
+ 			if (ret < 0)
+-- 
+2.43.0
+

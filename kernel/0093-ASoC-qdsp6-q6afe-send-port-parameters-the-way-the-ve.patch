@@ -1,0 +1,257 @@
+From 33c36e083ef3f206543a599634fe80375ff21c9e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 11:41:51 +0200
+Subject: [PATCH 093/106] ASoC: qdsp6: q6afe: send port parameters the way the
+ vendor does
+
+Three differences its APR trace showed, all behind parameters:
+
+  - it uses AFE_PORT_CMD_SET_PARAM_V3, where the port id and the memory
+    header are laid out differently and each parameter carries an
+    instance id; we had only v2. Our own callback did not know the v3
+    response either, so the first attempt timed out on a command the DSP
+    had in fact accepted - Unknown cmd 0x100fa in the log
+  - for a pseudo port it sends its whole config union, 204 bytes of
+    which only the first 16 are the structure, where we sent just the 16
+  - and it configures a pseudo port LAST, after the topology and the
+    hardware delay; we did it first
+
+With these our parameter command for a pseudo port is byte for byte the
+vendor's, the DSP takes it without complaint and ordinary audio is
+unaffected.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 158 ++++++++++++++++++++++++++++-------
+ 1 file changed, 126 insertions(+), 32 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 900d1ffe0..6f5e16ac7 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -28,6 +28,33 @@
+ #define AFE_PORT_CMD_DEVICE_START	0x000100E5
+ #define AFE_PORT_CMD_DEVICE_STOP	0x000100E6
+ #define AFE_PORT_CMD_SET_PARAM_V2	0x000100EF
++#define AFE_PORT_CMD_SET_PARAM_V3	0x000100FA
++
++/*
++ * Which version of the port parameter command to use, and how much of the
++ * pseudo port configuration to send. The vendor uses v3 for everything and
++ * sends 204 bytes of configuration for the pseudo ports - the whole union -
++ * where we send only the 16 bytes the structure actually needs.
++ */
++static bool set_param_v3 = true;
++module_param(set_param_v3, bool, 0644);
++MODULE_PARM_DESC(set_param_v3, "send port parameters with command v3 (vendor) instead of v2");
++
++/*
++ * How much the vendor sends as the pseudo port configuration: its own port
++ * config union, 204 bytes, of which only the first 16 are the pseudo port
++ * structure and the rest is zeroes. Ours is smaller, so to send the same
++ * amount the payload has to be padded out to the vendor's size.
++ */
++#define AFE_VENDOR_PORT_CFG_SIZE	204
++
++static bool pseudo_cfg_full = true;
++module_param(pseudo_cfg_full, bool, 0644);
++MODULE_PARM_DESC(pseudo_cfg_full, "send the whole config union for pseudo ports, as the vendor does");
++
++static bool pseudo_cfg_last = true;
++module_param(pseudo_cfg_last, bool, 0644);
++MODULE_PARM_DESC(pseudo_cfg_last, "send the pseudo port config after topology and delay, as the vendor does");
+ #define AFE_SVC_CMD_SET_PARAM		0x000100f3
+ #define AFE_PORT_CMDRSP_GET_PARAM_V2	0x00010106
+ #define AFE_PARAM_ID_HDMI_CONFIG	0x00010210
+@@ -431,6 +458,28 @@ struct afe_port_cmd_set_param_v2 {
+ 	u32 mem_map_handle;
+ } __packed;
+ 
++/*
++ * The vendor sends its port parameters with v3 of the command: the port id and
++ * the memory header are laid out differently and each parameter carries an
++ * instance id. Its traces show v3 for every port, ours have always used v2.
++ */
++struct afe_port_cmd_set_param_v3 {
++	u16 port_id;
++	u16 reserved;
++	u32 payload_address_lsw;
++	u32 payload_address_msw;
++	u32 mem_map_handle;
++	u32 payload_size;
++} __packed;
++
++struct afe_port_param_data_v3 {
++	u32 module_id;
++	u16 instance_id;
++	u16 reserved;
++	u32 param_id;
++	u32 param_size;
++} __packed;
++
+ struct afe_param_id_hdmi_multi_chan_audio_cfg {
+ 	u32 hdmi_cfg_minor_version;
+ 	u16 datatype;
+@@ -1027,6 +1076,7 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		switch (res->opcode) {
+ 		case AFE_PORT_CMD_SET_PARAM_V2:
++		case AFE_PORT_CMD_SET_PARAM_V3:
+ 		case AFE_PORT_CMD_DEVICE_STOP:
+ 		case AFE_PORT_CMD_DEVICE_START:
+ 		case AFE_SVC_CMD_SET_PARAM:
+@@ -1183,24 +1233,30 @@ static int q6afe_port_set_param(struct q6afe_port *port, void *data,
+ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
+ 				   int param_id, int module_id, int psize)
+ {
++	int copy_size = min_t(int, psize, (int)sizeof(union afe_port_config));
++	struct afe_port_cmd_set_param_v3 *param3;
++	struct afe_port_param_data_v3 *pdata3;
+ 	struct afe_port_cmd_set_param_v2 *param;
+ 	struct afe_port_param_data_v2 *pdata;
+ 	struct q6afe *afe = port->afe;
+ 	struct apr_pkt *pkt;
+ 	u16 port_id = port->id;
+-	int ret, pkt_size = APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata) + psize;
++	int ret, opcode, pkt_size;
+ 	void *pl;
+ 
++	if (set_param_v3) {
++		opcode = AFE_PORT_CMD_SET_PARAM_V3;
++		pkt_size = APR_HDR_SIZE + sizeof(*param3) + sizeof(*pdata3) + psize;
++	} else {
++		opcode = AFE_PORT_CMD_SET_PARAM_V2;
++		pkt_size = APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata) + psize;
++	}
++
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	param = p + APR_HDR_SIZE;
+-	pdata = p + APR_HDR_SIZE + sizeof(*param);
+-	pl = p + APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata);
+-	memcpy(pl, data, psize);
+-
+ 	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+ 					   APR_HDR_LEN(APR_HDR_SIZE),
+ 					   APR_PKT_VER);
+@@ -1208,18 +1264,34 @@ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
+ 	pkt->hdr.src_port = 0;
+ 	pkt->hdr.dest_port = 0;
+ 	pkt->hdr.token = port->token;
+-	pkt->hdr.opcode = AFE_PORT_CMD_SET_PARAM_V2;
+-
+-	param->port_id = port_id;
+-	param->payload_size = sizeof(*pdata) + psize;
+-	param->payload_address_lsw = 0x00;
+-	param->payload_address_msw = 0x00;
+-	param->mem_map_handle = 0x00;
+-	pdata->module_id = module_id;
+-	pdata->param_id = param_id;
+-	pdata->param_size = psize;
++	pkt->hdr.opcode = opcode;
++
++	if (set_param_v3) {
++		param3 = p + APR_HDR_SIZE;
++		pdata3 = p + APR_HDR_SIZE + sizeof(*param3);
++		pl = p + APR_HDR_SIZE + sizeof(*param3) + sizeof(*pdata3);
++		param3->port_id = port_id;
++		param3->payload_size = sizeof(*pdata3) + psize;
++		pdata3->module_id = module_id;
++		pdata3->param_id = param_id;
++		pdata3->param_size = psize;
++	} else {
++		param = p + APR_HDR_SIZE;
++		pdata = p + APR_HDR_SIZE + sizeof(*param);
++		pl = p + APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata);
++		param->port_id = port_id;
++		param->payload_size = sizeof(*pdata) + psize;
++		pdata->module_id = module_id;
++		pdata->param_id = param_id;
++		pdata->param_size = psize;
++	}
++	/*
++	 * psize can be larger than the data we have when we are padding a
++	 * payload out to the vendor's size; the rest is already zeroed.
++	 */
++	memcpy(pl, data, min_t(int, psize, copy_size));
+ 
+-	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_SET_PARAM_V2);
++	ret = afe_apr_send_pkt(afe, pkt, port, opcode);
+ 	if (ret)
+ 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
+ 		       port_id, ret);
+@@ -1868,32 +1940,54 @@ int q6afe_port_start(struct q6afe_port *port)
+ 	int port_id = port->id;
+ 	int ret, param_id = port->cfg_type;
+ 	struct apr_pkt *pkt;
++	bool is_pseudo;
++	int cfg_size;
+ 	int pkt_size;
+ 
++	/*
++	 * The vendor's order for a pseudo port is topology, then the hardware
++	 * delay, and the port configuration LAST; we had it the other way
++	 * round. And it sends the whole configuration union for them, not just
++	 * the bytes the structure needs.
++	 */
++	is_pseudo = q6afe_port_is_pseudo(port_id);
++	cfg_size = sizeof(port->port_cfg);
++	if (is_pseudo)
++		cfg_size = pseudo_cfg_full ? AFE_VENDOR_PORT_CFG_SIZE :
++					     sizeof(port->port_cfg.pseudo_cfg);
++
++	if (is_pseudo && pseudo_cfg_last) {
++		ret = q6afe_pseudo_port_set_topology(port);
++		if (ret)
++			dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
++				port_id, ret);
++
++		ret = q6afe_pseudo_port_set_hw_delay(port);
++		if (ret)
++			dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
++				port_id, ret);
++	}
++
+ 	ret  = q6afe_port_set_param_v2(port, &port->port_cfg, param_id,
+ 				       AFE_MODULE_AUDIO_DEV_INTERFACE,
+-				       q6afe_port_is_pseudo(port_id) ?
+-					       sizeof(port->port_cfg.pseudo_cfg) :
+-					       sizeof(port->port_cfg));
++				       cfg_size);
+ 	if (ret) {
+ 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
+ 			port_id, ret);
+ 		return ret;
+ 	}
+ 
+-	/*
+-	 * Between the config and the start, which is where the vendor does it,
+-	 * and in its order: topology first, then the hardware delay.
+-	 */
+-	ret = q6afe_pseudo_port_set_topology(port);
+-	if (ret)
+-		dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
+-			port_id, ret);
++	if (is_pseudo && !pseudo_cfg_last) {
++		ret = q6afe_pseudo_port_set_topology(port);
++		if (ret)
++			dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
++				port_id, ret);
+ 
+-	ret = q6afe_pseudo_port_set_hw_delay(port);
+-	if (ret)
+-		dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
+-			port_id, ret);
++		ret = q6afe_pseudo_port_set_hw_delay(port);
++		if (ret)
++			dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
++				port_id, ret);
++	}
+ 
+ 	if (port->scfg) {
+ 		ret  = q6afe_port_set_param_v2(port, port->scfg,
+-- 
+2.43.0
+

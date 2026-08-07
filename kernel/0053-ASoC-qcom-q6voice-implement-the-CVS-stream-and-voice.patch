@@ -1,0 +1,306 @@
+From 77065567233576505fdf9ea1d102bd3e5cc29ec9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 17:31:55 +0200
+Subject: [PATCH 053/106] ASoC: qcom: q6voice: implement the CVS stream and
+ voice call volume/mute
+
+The imported q6voice driver only ever creates and attaches an MVM
+(session) and a CVP (vocproc, i.e. the audio ports), never a CVS -
+the Core Voice Stream, which is what actually carries the vocoder to
+and from the modem. Without one the whole session comes up cleanly
+(every command the AP sends gets ACKed) and stays completely silent,
+because nothing on the AP side ever asked for a stream to exist.
+
+Add q6cvs_session_create(), a passive CVS session named the same as
+the MVM ('default modem voice'), and create one alongside the MVM in
+q6voice_path_start(). Unlike VoIP sessions, a CS call's passive CVS is
+never explicitly attached to the MVM with ATTACH_STREAM in the
+downstream driver either - that command only appears on its VoIP
+path - so the DSP is presumably pairing the AP's passive MVM/CVS with
+the modem's own full-control session by session name alone.
+
+Also add, mirroring the downstream's voice_send_vol_step_cmd() /
+voice_send_stream_mute_cmd() between vocproc attach and MVM start:
+  - q6cvp_set_rx_volume(): CVP RX volume step, exposed as the
+    rx_volume_step module param since nothing here loads the ACDB
+    calibration table a step is resolved against.
+  - q6cvs_mute(): CVS TX mute, matching downstream's explicit initial
+    unmute.
+Both are best-effort like downstream: a failure is logged and does
+not abort call setup.
+
+Status on a POCO X3 NFC: with this in place the DSP session comes up
+without a single error - MVM, CVS and CVP session create, CVP enable,
+vocproc attach and MVM start all ACK - and the TX unmute succeeds, but
+the RX volume step is rejected with ADSP_EFAILED, and the call remains
+completely silent in both directions. The volume rejection is
+consistent with there being no calibration profile registered for the
+uncalibrated NONE/NONE vocproc topology this port uses (see q6cvp.c);
+it is not yet known whether that alone accounts for the silence, or
+whether the DSP additionally needs the call's real VSID to bridge the
+AP's passive session to the modem's, which nothing here negotiates.
+Loading real ACDB calibration data is a separate, much larger task.
+---
+ sound/soc/qcom/qdsp6/q6cvp.c   | 46 ++++++++++++++++++++--
+ sound/soc/qcom/qdsp6/q6cvp.h   |  1 +
+ sound/soc/qcom/qdsp6/q6cvs.c   | 71 ++++++++++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6cvs.h   |  3 ++
+ sound/soc/qcom/qdsp6/q6voice.c | 44 +++++++++++++++++++++
+ 5 files changed, 162 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index 3549d3f14..86dd356e0 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -30,6 +30,20 @@
+ 
+ #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2	0x000112BF
+ 
++#define VSS_IVOLUME_CMD_SET_STEP		0x000112C2
++#define VSS_IVOLUME_DIRECTION_RX		1
++
++struct vss_ivolume_cmd_set_step_t {
++	u16 direction;
++	u32 value;
++	u16 ramp_duration_ms;
++} __packed;
++
++struct cvp_set_rx_volume_step_cmd {
++	struct apr_hdr hdr;
++	struct vss_ivolume_cmd_set_step_t vol_step;
++} __packed;
++
+ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
+ 	struct apr_hdr hdr;
+ 
+@@ -99,9 +113,14 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 	cmd.hdr.pkt_size = sizeof(cmd);
+ 	cmd.hdr.opcode = VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
+ 
+-	/* TODO: Implement calibration */
+-	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
+-	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
++	/*
++	 * The ECNS Tx and default Rx topologies need calibration data from the
++	 * vendor ACDB files, which we do not load. Ask for the NONE topologies,
++	 * a passthrough vocproc that needs no calibration, so voice at least
++	 * flows. (TODO: real calibration for echo cancellation / noise supp.)
++	 */
++	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
++	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+ 
+ 	cmd.direction = VSS_IVOCPROC_DIRECTION_RX_TX;
+ 	cmd.tx_port_id = tx_port;
+@@ -125,6 +144,27 @@ int q6cvp_enable(struct q6voice_session *cvp, bool state)
+ }
+ EXPORT_SYMBOL_GPL(q6cvp_enable);
+ 
++/*
++ * Without calibration data loaded the DSP has no volume table to resolve a
++ * step against, so there is no way to know from the source alone what step
++ * value lands on an audible level. Sweepable via a module param instead of
++ * guessing.
++ */
++int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step)
++{
++	struct cvp_set_rx_volume_step_cmd cmd;
++
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IVOLUME_CMD_SET_STEP;
++
++	cmd.vol_step.direction = VSS_IVOLUME_DIRECTION_RX;
++	cmd.vol_step.value = step;
++	cmd.vol_step.ramp_duration_ms = 20;
++
++	return q6voice_common_send(cvp, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
++
+ static int q6cvp_probe(struct apr_device *adev)
+ {
+ 	return q6voice_common_probe(adev, Q6VOICE_SERVICE_CVP);
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.h b/sound/soc/qcom/qdsp6/q6cvp.h
+index 2381a3cfe..487f42414 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.h
++++ b/sound/soc/qcom/qdsp6/q6cvp.h
+@@ -9,5 +9,6 @@ struct q6voice_session;
+ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 					     u16 tx_port, u16 rx_port);
+ int q6cvp_enable(struct q6voice_session *cvp, bool enable);
++int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step);
+ 
+ #endif /*_Q6_CVP_H */
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.c b/sound/soc/qcom/qdsp6/q6cvs.c
+index 440715870..3d4060f9c 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.c
++++ b/sound/soc/qcom/qdsp6/q6cvs.c
+@@ -8,6 +8,77 @@
+ #include "q6cvs.h"
+ #include "q6voice-common.h"
+ 
++#define VSS_ISTREAM_CMD_CREATE_PASSIVE_CONTROL_SESSION	0x00011140
++
++struct vss_istream_cmd_create_passive_control_session_cmd {
++	struct apr_hdr hdr;
++
++	/* A variable-sized stream name. */
++	char name[20];
++} __packed;
++
++static inline const char *q6cvs_session_name(enum q6voice_path_type path)
++{
++	switch (path) {
++	case Q6VOICE_PATH_VOICE:
++		return "default modem voice";
++	default:
++		return NULL;
++	}
++}
++
++/*
++ * The stream carries the vocoder: without it the MVM session runs and the
++ * vocproc wires up the ports, but nothing bridges the modem, so the call is
++ * silent.
++ */
++struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path)
++{
++	struct vss_istream_cmd_create_passive_control_session_cmd cmd;
++	const char *session_name;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_ISTREAM_CMD_CREATE_PASSIVE_CONTROL_SESSION;
++
++	session_name = q6cvs_session_name(path);
++	if (session_name)
++		strscpy(cmd.name, session_name, sizeof(cmd.name));
++
++	return q6voice_session_create(Q6VOICE_SERVICE_CVS, path, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_session_create);
++
++#define VSS_IVOLUME_CMD_MUTE_V2		0x0001138B
++#define VSS_IVOLUME_DIRECTION_TX	0
++#define VSS_IVOLUME_DIRECTION_RX	1
++
++struct vss_ivolume_cmd_mute_v2_t {
++	u16 direction;
++	u16 mute_flag;
++	u16 ramp_duration_ms;
++} __packed;
++
++struct cvs_set_mute_cmd {
++	struct apr_hdr hdr;
++	struct vss_ivolume_cmd_mute_v2_t mute;
++} __packed;
++
++int q6cvs_mute(struct q6voice_session *cvs, u16 direction, bool mute)
++{
++	struct cvs_set_mute_cmd cmd;
++
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IVOLUME_CMD_MUTE_V2;
++
++	cmd.mute.direction = direction;
++	cmd.mute.mute_flag = mute;
++	cmd.mute.ramp_duration_ms = 0;
++
++	return q6voice_common_send(cvs, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvs_mute);
++
+ static int q6cvs_probe(struct apr_device *adev)
+ {
+ 	return q6voice_common_probe(adev, Q6VOICE_SERVICE_CVS);
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.h b/sound/soc/qcom/qdsp6/q6cvs.h
+index 5c204682c..f5f4a0dac 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.h
++++ b/sound/soc/qcom/qdsp6/q6cvs.h
+@@ -6,4 +6,7 @@
+ 
+ struct q6voice_session;
+ 
++struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path);
++int q6cvs_mute(struct q6voice_session *cvs, u16 direction, bool mute);
++
+ #endif /*_Q6_CVS_H */
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index d5751905a..12828d0a8 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -4,6 +4,7 @@
+ 
+ #include <linux/device.h>
+ #include <linux/module.h>
++#include <linux/moduleparam.h>
+ #include <linux/mutex.h>
+ #include <linux/slab.h>
+ #include <linux/spinlock.h>
+@@ -13,6 +14,16 @@
+ #include "q6mvm.h"
+ #include "q6voice-common.h"
+ 
++/*
++ * The RX volume step is looked up in an ACDB calibration table that nothing
++ * in this driver loads, so there is no way to know from source alone which
++ * value (if any) an uncalibrated profile accepts. Expose it as a module
++ * parameter rather than guessing a constant.
++ */
++static int rx_volume_step = 4;
++module_param(rx_volume_step, int, 0644);
++MODULE_PARM_DESC(rx_volume_step, "CVP RX volume step for voice calls");
++
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
+@@ -49,6 +60,22 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		p->runtime->sessions[Q6VOICE_SERVICE_MVM] = mvm;
+ 	}
+ 
++	/*
++	 * The downstream driver creates a matching passive CVS session (same
++	 * name as the MVM) for CS calls too, but never attaches it with
++	 * ATTACH_STREAM: that command only appears on its VoIP path. For a CS
++	 * call the DSP must be pairing the AP's passive MVM/CVS with the
++	 * modem's own full-control session by session name, not by an
++	 * explicit attach from here.
++	 */
++	if (!p->runtime->sessions[Q6VOICE_SERVICE_CVS]) {
++		struct q6voice_session *cvs = q6cvs_session_create(p->type);
++
++		if (IS_ERR(cvs))
++			return PTR_ERR(cvs);
++		p->runtime->sessions[Q6VOICE_SERVICE_CVS] = cvs;
++	}
++
+ 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	if (!cvp) {
+ 		cvp = q6cvp_session_create(p->type,
+@@ -71,6 +98,23 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		goto attach_err;
+ 	}
+ 
++	/*
++	 * Mirrors the downstream's voice_send_vol_step_cmd() /
++	 * voice_send_stream_mute_cmd() between vocproc attach and MVM start.
++	 * Both are best-effort like downstream: it logs and carries on if
++	 * either fails, it does not abort the call. The volume step needs an
++	 * ACDB calibration table to resolve against, which nothing here
++	 * loads, so on an uncalibrated profile it is expected to fail; the
++	 * unmute does not depend on calibration and is expected to succeed.
++	 */
++	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
++	if (ret)
++		dev_dbg(dev, "rx volume step %d not applied: %d\n", rx_volume_step, ret);
++
++	ret = q6cvs_mute(p->runtime->sessions[Q6VOICE_SERVICE_CVS], 0 /* TX */, false);
++	if (ret)
++		dev_dbg(dev, "tx unmute not applied: %d\n", ret);
++
+ 	ret = q6mvm_start(mvm, true);
+ 	if (ret) {
+ 		dev_err(dev, "failed to start voice: %d\n", ret);
+-- 
+2.43.0
+

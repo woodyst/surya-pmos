@@ -1,0 +1,11 @@
+[Unit]
+Description=PipeWire y demonios de llamada tras la cadena de audio
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh %h/.local/bin/armar-audio-usuario.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

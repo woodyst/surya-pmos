@@ -1,0 +1,144 @@
+From 2cf72faf6e70a930592ac17bce57f05558eb5993 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 11:26:19 +0200
+Subject: [PATCH 092/106] ASoC: qdsp6: q6core: ask the DSP to load a topology's
+ modules
+
+AVCS_CMD_LOAD_TOPO_MODULES, driven by hand through a module parameter,
+to find out whether the DSP can bring up the vendor's own topologies.
+
+It answers plainly: standard topologies load (status 0), the AFE one the
+vendor puts on the injection port fails (status 1), and the vendor's
+stream post-processing topology is not supported at all (status 3). They
+are described in the vendor's ACDB and their code lives in .so files the
+DSP loads on demand, and we load neither.
+---
+ sound/soc/qcom/qdsp6/q6core.c | 83 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 83 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6core.c b/sound/soc/qcom/qdsp6/q6core.c
+index 48825756a..c9a055bd4 100644
+--- a/sound/soc/qcom/qdsp6/q6core.c
++++ b/sound/soc/qcom/qdsp6/q6core.c
+@@ -20,6 +20,18 @@
+ #define AVCS_CMDRSP_ADSP_EVENT_GET_STATE	0x0001290D
+ #define AVCS_GET_VERSIONS       0x00012905
+ #define AVCS_GET_VERSIONS_RSP   0x00012906
++/*
++ * Ask the DSP to load the modules a topology needs.
++ *
++ * The vendor's own topologies (the in-call injection uses 0x10000018) are not
++ * built into the DSP: they are described in the vendor's ACDB and their code
++ * lives in .so files the DSP loads on demand. Without that, asking for one of
++ * them gets ADSP_EUNSUPPORTED, which is exactly what we see. This is the
++ * cheapest way to find out whether the DSP can bring them up on its own.
++ */
++#define AVCS_CMD_LOAD_TOPO_MODULES	0x0001296C
++#define AVCS_CMD_UNLOAD_TOPO_MODULES	0x0001296D
++
+ #define AVCS_CMD_GET_FWK_VERSION	0x001292c
+ #define AVCS_CMDRSP_GET_FWK_VERSION	0x001292d
+ 
+@@ -88,6 +100,13 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
+ 				core->fwk_version_supported = false;
+ 			core->resp_received = true;
+ 			break;
++		case AVCS_CMD_LOAD_TOPO_MODULES:
++		case AVCS_CMD_UNLOAD_TOPO_MODULES:
++			dev_info(&adev->dev, "load topo modules: status %d\n",
++				 result->status);
++			core->resp_received = true;
++			wake_up(&core->wait);
++			break;
+ 		case AVCS_CMD_ADSP_EVENT_GET_STATE:
+ 			if (result->status == ADSP_EUNSUPPORTED)
+ 				core->get_state_supported = false;
+@@ -178,6 +197,67 @@ static int q6core_get_fwk_versions(struct q6core *core)
+ 	return rc;
+ }
+ 
++/*
++ * Written to by hand (/sys/module/q6core/parameters/load_topology) to ask the
++ * DSP for a topology's modules and see what it answers.
++ */
++static struct q6core *q6core_dev;
++
++static int q6core_load_topo_modules(uint32_t topology_id, bool load)
++{
++	struct q6core *core = q6core_dev;
++	struct {
++		struct apr_hdr hdr;
++		u32 topology_id;
++	} __packed pkt;
++	int rc;
++
++	if (!core)
++		return -ENODEV;
++
++	memset(&pkt, 0, sizeof(pkt));
++	pkt.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					  APR_HDR_LEN(APR_HDR_SIZE),
++					  APR_PKT_VER);
++	pkt.hdr.pkt_size = sizeof(pkt);
++	pkt.hdr.opcode = load ? AVCS_CMD_LOAD_TOPO_MODULES
++			      : AVCS_CMD_UNLOAD_TOPO_MODULES;
++	pkt.topology_id = topology_id;
++
++	mutex_lock(&core->lock);
++	core->resp_received = false;
++	rc = apr_send_pkt(core->adev, (struct apr_pkt *)&pkt);
++	if (rc >= 0)
++		rc = wait_event_timeout(core->wait, core->resp_received,
++					msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
++	mutex_unlock(&core->lock);
++
++	dev_info(&core->adev->dev, "%s topology %#x: %d\n",
++		 load ? "load" : "unload", topology_id, rc);
++
++	return rc > 0 ? 0 : -ETIMEDOUT;
++}
++
++static int q6core_set_load_topology(const char *val,
++				    const struct kernel_param *kp)
++{
++	uint32_t id;
++	int rc;
++
++	rc = kstrtou32(val, 0, &id);
++	if (rc)
++		return rc;
++
++	return q6core_load_topo_modules(id, true);
++}
++
++static const struct kernel_param_ops q6core_load_topology_ops = {
++	.set = q6core_set_load_topology,
++};
++
++module_param_cb(load_topology, &q6core_load_topology_ops, NULL, 0200);
++MODULE_PARM_DESC(load_topology, "ask the DSP to load a topology's modules");
++
+ static int q6core_get_svc_versions(struct q6core *core)
+ {
+ 	struct apr_device *adev = core->adev;
+@@ -336,6 +416,7 @@ static int q6core_probe(struct apr_device *adev)
+ 	mutex_init(&g_core->lock);
+ 	g_core->adev = adev;
+ 	init_waitqueue_head(&g_core->wait);
++	q6core_dev = g_core;
+ 	return 0;
+ }
+ 
+@@ -343,6 +424,8 @@ static void q6core_exit(struct apr_device *adev)
+ {
+ 	struct q6core *core = dev_get_drvdata(&adev->dev);
+ 
++	q6core_dev = NULL;
++
+ 	if (core->fwk_version_supported)
+ 		kfree(core->fwk_version);
+ 	if (core->get_version_supported)
+-- 
+2.43.0
+

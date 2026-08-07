@@ -1,0 +1,45 @@
+From cb1bb640bddc4879b08944bdf932f8e4b3599d18 Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 17:13:06 +0200
+Subject: [PATCH 034/106] arm64: dts: qcom: sm7150: fix SoundWire controller
+ interrupt numbers
+
+The two LPASS SoundWire controllers (swr2/TX @62ed0000, swr1/RX @62ef0000)
+were wired with placeholder IRQs (GIC_SPI 137/138). With the wrong
+interrupt the controller enumerates the WCD9375 slave once (dev_num gets
+assigned, the sdw driver binds) but never receives the slave status-change
+IRQ, so the SoundWire core never processes the SDW_SLAVE_ATTACHED
+transition and never calls complete_all(&slave->initialization_complete).
+The wcd937x codec component probe then times out waiting on the TX slave
+("soundwire device init timeout", -110), which fails the whole sound card.
+
+Use the correct sm7150 SoundWire IRQs: GIC_SPI 296 (TX), 297 (RX).
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 3d333d213..625c059d6 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4743,7 +4743,7 @@ lpass_tx_macro: codec@62ec0000 {
+ 		swr2: soundwire@62ed0000 {
+ 			compatible = "qcom,soundwire-v1.5.1";
+ 			reg = <0 0x62ed0000 0 0x2000>;
+-			interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH>;
++			interrupts = <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>;
+ 			interrupt-names = "core";
+ 			clocks = <&lpass_tx_macro>;
+ 			clock-names = "iface";
+@@ -4792,7 +4792,7 @@ lpass_rx_macro: codec@62ee0000 {
+ 		swr1: soundwire@62ef0000 {
+ 			compatible = "qcom,soundwire-v1.5.1";
+ 			reg = <0 0x62ef0000 0 0x2000>;
+-			interrupts = <GIC_SPI 138 IRQ_TYPE_LEVEL_HIGH>;
++			interrupts = <GIC_SPI 297 IRQ_TYPE_LEVEL_HIGH>;
+ 			clocks = <&lpass_rx_macro>;
+ 			clock-names = "iface";
+ 			label = "RX";
+-- 
+2.43.0
+

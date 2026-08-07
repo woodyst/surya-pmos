@@ -1,0 +1,243 @@
+From bcc217d25f984054066e8f6c20ef3334f50da661 Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 15:06:54 +0200
+Subject: [PATCH 031/106] arm64: dts: qcom: sm7150/surya: wire up WCD9375
+ SoundWire microphone
+
+Add the LPASS TX/RX/VA macros + TX/RX SoundWire controllers (SoC) and the
+WCD9375 codec + capture DAI link (board) so the microphone works for normal
+audio capture. Drivers already present; DT-only. Mic path: WCD9375 AMIC ->
+TX macro -> SoundWire -> TX_CODEC_DMA_TX_3, captured via MultiMedia2.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    |  81 ++++++++++++
+ arch/arm64/boot/dts/qcom/sm7150.dtsi          | 115 ++++++++++++++++++
+ 2 files changed, 196 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 0053c43ec..6410fe3b5 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -81,6 +81,14 @@ sound {
+ 		pinctrl-names = "default";
+ 		model = "POCO X3";
+ 
++		audio-routing =
++			"AMIC1", "MIC BIAS1",
++			"AMIC2", "MIC BIAS2",
++			"AMIC3", "MIC BIAS3",
++			"TX SWR_ADC0", "ADC1_OUTPUT",
++			"TX SWR_ADC1", "ADC2_OUTPUT",
++			"TX SWR_ADC2", "ADC3_OUTPUT";
++
+ 		mm1-dai-link {
+ 			link-name = "MultiMedia1";
+ 			cpu {
+@@ -146,6 +154,79 @@ codec {
+ 				sound-dai = <&tas2562 0>, <&tas2564 0>;
+ 			};
+ 		};
++
++		/* Microphone capture: WCD9375 AMIC -> TX macro -> SoundWire */
++		wcd-capture-dai-link {
++			link-name = "WCD Capture";
++			cpu {
++				sound-dai = <&q6afedai TX_CODEC_DMA_TX_3>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&wcd9375 1>, <&swr2 0>, <&lpass_tx_macro 0>;
++			};
++		};
++	};
++
++	wcd9375: audio-codec {
++		compatible = "qcom,wcd9375-codec";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&wcd9375_reset_active>;
++		reset-gpios = <&lpass_tlmm 6 GPIO_ACTIVE_LOW>;
++
++		vdd-buck-supply = <&vreg_l15a_1p8>;
++		vdd-rxtx-supply = <&vreg_l10a_1p8>;
++		vdd-px-supply = <&vreg_l10a_1p8>;
++		vdd-mic-bias-supply = <&vreg_bob>;
++
++		qcom,micbias1-microvolt = <1800000>;
++		qcom,micbias2-microvolt = <1800000>;
++		qcom,micbias3-microvolt = <1800000>;
++		qcom,micbias4-microvolt = <1800000>;
++
++		qcom,rx-device = <&wcd9375_rx>;
++		qcom,tx-device = <&wcd9375_tx>;
++
++		#sound-dai-cells = <1>;
++	};
++};
++
++&lpass_va_macro {
++	status = "okay";
++};
++
++&lpass_tx_macro {
++	status = "okay";
++};
++
++&lpass_rx_macro {
++	status = "okay";
++};
++
++&swr1 {			/* RX */
++	status = "okay";
++
++	wcd9375_rx: codec@0,4 {
++		compatible = "sdw20217010a00";
++		reg = <0 4>;
++		qcom,rx-port-mapping = <1 2 3 4 5>;
++		qcom,rx-channel-mapping = /bits/ 8 <1 2 1 1 2 1 1 2>;
++	};
++};
++
++&swr2 {			/* TX */
++	status = "okay";
++
++	wcd9375_tx: codec@0,3 {
++		compatible = "sdw20217010a00";
++		reg = <0 3>;
++		qcom,tx-port-mapping = <1 1 2 3>;
++		qcom,tx-channel-mapping = /bits/ 8 <1 2 1 1 2 3 3 4 1 2 3 4>;
+ 	};
+ };
+ 
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index f5b711103..3e619ba3a 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4694,6 +4694,121 @@ wifi: wifi@18800000 {
+ 			status = "disabled";
+ 		};
+ 
++		lpass_va_macro: codec@62f20000 {
++			compatible = "qcom,sm8250-lpass-va-macro";
++			reg = <0 0x62f20000 0 0x1000>;
++
++			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
++			clock-names = "mclk", "macro", "dcodec";
++
++			#clock-cells = <0>;
++			clock-output-names = "fsgen";
++			#sound-dai-cells = <1>;
++
++			status = "disabled";
++		};
++
++		lpass_tx_macro: codec@62ec0000 {
++			compatible = "qcom,sm8250-lpass-tx-macro";
++			reg = <0 0x62ec0000 0 0x1000>;
++
++			pinctrl-names = "default";
++			pinctrl-0 = <&tx_swr_active>;
++
++			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&lpass_va_macro>;
++			clock-names = "mclk", "npl", "macro", "dcodec", "fsgen";
++
++			#clock-cells = <0>;
++			clock-output-names = "mclk";
++			#sound-dai-cells = <1>;
++
++			status = "disabled";
++		};
++
++		/* TX macro SoundWire - WCD9375 TX (AMIC/DMIC capture) */
++		swr2: soundwire@62ed0000 {
++			compatible = "qcom,soundwire-v1.5.1";
++			reg = <0 0x62ed0000 0 0x2000>;
++			interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "core";
++			clocks = <&lpass_tx_macro>;
++			clock-names = "iface";
++			label = "TX";
++
++			qcom,din-ports = <5>;
++			qcom,dout-ports = <0>;
++			qcom,ports-sinterval-low =	/bits/ 8 <0xff 0x01 0x01 0x03 0x03>;
++			qcom,ports-offset1 =		/bits/ 8 <0xff 0x01 0x00 0x02 0x00>;
++			qcom,ports-offset2 =		/bits/ 8 <0xff 0x00 0x00 0x00 0x00>;
++			qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
++			qcom,ports-hstart =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
++			qcom,ports-hstop =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
++			qcom,ports-word-length =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
++			qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
++			qcom,ports-lane-control =	/bits/ 8 <0xff 0x00 0x01 0x00 0x01>;
++
++			#sound-dai-cells = <1>;
++			#address-cells = <2>;
++			#size-cells = <0>;
++
++			status = "disabled";
++		};
++
++		lpass_rx_macro: codec@62ee0000 {
++			compatible = "qcom,sm8250-lpass-rx-macro";
++			reg = <0 0x62ee0000 0 0x1000>;
++
++			pinctrl-names = "default";
++			pinctrl-0 = <&rx_swr_active>;
++
++			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&lpass_va_macro>;
++			clock-names = "mclk", "npl", "macro", "dcodec", "fsgen";
++
++			#clock-cells = <0>;
++			clock-output-names = "mclk";
++			#sound-dai-cells = <1>;
++
++			status = "disabled";
++		};
++
++		/* RX macro SoundWire - WCD9375 RX (required for the codec to probe) */
++		swr1: soundwire@62ef0000 {
++			compatible = "qcom,soundwire-v1.5.1";
++			reg = <0 0x62ef0000 0 0x2000>;
++			interrupts = <GIC_SPI 138 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&lpass_rx_macro>;
++			clock-names = "iface";
++			label = "RX";
++
++			qcom,din-ports = <0>;
++			qcom,dout-ports = <5>;
++			qcom,ports-sinterval-low =	/bits/ 8 <0x03 0x1f 0x1f 0x07 0x00>;
++			qcom,ports-offset1 =		/bits/ 8 <0x00 0x00 0x0b 0x01 0x00>;
++			qcom,ports-offset2 =		/bits/ 8 <0x00 0x00 0x0b 0x00 0x00>;
++			qcom,ports-hstart =		/bits/ 8 <0xff 0x03 0xff 0xff 0xff>;
++			qcom,ports-hstop =		/bits/ 8 <0xff 0x06 0xff 0xff 0xff>;
++			qcom,ports-word-length =	/bits/ 8 <0x01 0x07 0x04 0xff 0xff>;
++			qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0x00 0x01 0xff 0xff>;
++			qcom,ports-lane-control =	/bits/ 8 <0x01 0x00 0x00 0x00 0x00>;
++			qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0x00>;
++
++			#sound-dai-cells = <1>;
++			#address-cells = <2>;
++			#size-cells = <0>;
++
++			status = "disabled";
++		};
++
+ 		lpass_tlmm: pinctrl@62b52000 {
+ 			compatible = "qcom,sm7150-lpass-lpi-pinctrl";
+ 			/* SSC range: <0 0x62b40000 0 0x12000> */
+-- 
+2.43.0
+

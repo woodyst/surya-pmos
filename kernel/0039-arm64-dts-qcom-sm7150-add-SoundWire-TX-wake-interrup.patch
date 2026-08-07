@@ -1,0 +1,56 @@
+From ae452d65e81f8a493c3867a4168eb00855d5da8e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 01:41:14 +0200
+Subject: [PATCH 039/106] arm64: dts: qcom: sm7150: add SoundWire TX wake
+ interrupt
+
+The WCD9375 codec sets wake_capable on its TX SoundWire link only.
+qcom_swrm_probe() picks the wake interrupt up from index 1 of the
+controller's interrupt list, so without a second entry the TX controller
+has no wake IRQ at all.
+
+The downstream sdmmagpie audio overlay (sdmmagpie is SM7150's downstream
+name) lists the TX SoundWire interrupts as SPI 296 for the master and
+SPI 500 for the wake. With the PDC's qcom,pdc-ranges = <0 480 94>, SPI
+500 is PDC pin 20. Requesting it through the GIC directly does not map;
+going through the PDC does.
+
+Note that sdmmagpie also sets qcom,swr-wakeup-required = <0>, so
+downstream does not arm this wake on SM7150; it is wired up here for
+completeness because the codec driver advertises the link as wake
+capable.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index e7a28e8e7..1f0b4b611 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4743,8 +4743,18 @@ lpass_tx_macro: codec@62ec0000 {
+ 		swr2: soundwire@62ed0000 {
+ 			compatible = "qcom,soundwire-v1.5.1";
+ 			reg = <0 0x62ed0000 0 0x2000>;
+-			interrupts = <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>;
+-			interrupt-names = "core";
++
++			/*
++			 * The WCD9375 is wake_capable on the TX link only, and
++			 * the controller takes its wake interrupt from index 1
++			 * of this property. Downstream (sdmmagpie, which is what
++			 * SM7150 is called there) lists the TX SoundWire wake as
++			 * SPI 500; with qcom,pdc-ranges = <0 480 94> that is PDC
++			 * pin 20. It does not map through the GIC directly.
++			 */
++			interrupts-extended = <&intc GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>,
++					      <&pdc 20 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "core", "wakeup";
+ 			clocks = <&lpass_tx_macro>;
+ 			clock-names = "iface";
+ 			label = "TX";
+-- 
+2.43.0
+

@@ -1,0 +1,40 @@
+From 330349d34a2428ba1de118137b97aed405d2ee41 Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 19:13:48 +0200
+Subject: [PATCH 036/106] arm64: dts: qcom: sm7150: don't force WCD9375 reset
+ pin level in pinctrl
+
+The wcd9375_reset_active/sleep pinctrl states set output-high/output-low,
+which forces the LPI pin's output level from pinconf and fights the
+wcd937x driver's gpiod reset pulse (assert-low then deassert-high). Match
+the working qcm6490 wcd_default reference: function=gpio, drive-strength,
+bias-disable, and let the gpiod own the pin value so the reset pulse
+actually reaches the codec.
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index f8b372fa3..e7a28e8e7 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4911,7 +4911,7 @@ wcd9375_reset_active: wcd9375-reset-active-state {
+ 				pins = "gpio6";
+ 				function = "gpio";
+ 				drive-strength = <16>;
+-				output-high;
++				bias-disable;
+ 			};
+ 
+ 			wcd9375_reset_sleep: wcd9375-reset-sleep-state {
+@@ -4919,7 +4919,6 @@ wcd9375_reset_sleep: wcd9375-reset-sleep-state {
+ 				function = "gpio";
+ 				drive-strength = <16>;
+ 				bias-disable;
+-				output-low;
+ 			};
+ 
+ 			dmic01_active: dmic01-active-state {
+-- 
+2.43.0
+

@@ -1,0 +1,154 @@
+From 3a13ab1a6b0054ee8f94a40d3ad81aa9fedc616b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 23:33:27 +0200
+Subject: [PATCH 010/106] ASoC: qcom: fix TAS256x smart-amp AFE experiment port
+ lifecycle
+
+The previous attempt called q6afe_port_get_from_id() + q6afe_port_put()
+from the machine driver for a port already owned for its whole
+lifetime by q6afe-dai.c's own msm_dai_q6_dai_probe()/_remove() pair -
+the extra put() dropped a refcount q6afe-dai.c still expected to hold,
+corrupting port state and breaking the whole audio pipeline (ALSA
+hw_params started failing with -EINVAL, PipeWire looped in error).
+
+Fix: add q6afe_dai_get_port(), a plain accessor returning the DAI's
+existing dai_data->port[dai->id] with no get/put involved, and
+simplify q6afe_send_generic_param() to take an already-open port
+directly instead of resolving/releasing one itself. sm8250.c now
+borrows the port via the new accessor before sending the smart-amp
+enable param - same protocol/constants as before (already confirmed
+the DSP accepts them cleanly), just correct port ownership this
+time.
+---
+ sound/soc/qcom/qdsp6/q6afe-dai.c | 18 ++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6afe.c     | 25 +++++++++----------------
+ sound/soc/qcom/qdsp6/q6afe.h     |  3 ++-
+ sound/soc/qcom/sm8250.c          | 24 ++++++++++++++++++++++++
+ 4 files changed, 53 insertions(+), 17 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe-dai.c b/sound/soc/qcom/qdsp6/q6afe-dai.c
+index a0d21034a..b6b09c267 100644
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -692,6 +692,24 @@ static int msm_dai_q6_dai_remove(struct snd_soc_dai *dai)
+ 	return 0;
+ }
+ 
++/**
++ * q6afe_dai_get_port() - borrow this DAI's already-owned AFE port
++ *
++ * @dai: DAI to fetch the port for
++ *
++ * Returns the same struct q6afe_port * that msm_dai_q6_dai_probe() opened
++ * and holds for this DAI's entire lifetime (freed only in .remove). Callers
++ * must NOT call q6afe_port_put() on the result - it isn't a new reference,
++ * just a loan of the one this file already owns.
++ */
++struct q6afe_port *q6afe_dai_get_port(struct snd_soc_dai *dai)
++{
++	struct q6afe_dai_data *dai_data = dev_get_drvdata(dai->dev);
++
++	return dai_data->port[dai->id];
++}
++EXPORT_SYMBOL_GPL(q6afe_dai_get_port);
++
+ static const struct snd_soc_dai_ops q6afe_usb_ops = {
+ 	.probe		= msm_dai_q6_dai_probe,
+ 	.prepare	= q6afe_dai_prepare,
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 4c9c0c0d8..f832917d4 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1239,29 +1239,22 @@ EXPORT_SYMBOL_GPL(q6afe_set_lpass_clock);
+ 
+ /**
+  * q6afe_send_generic_param() - send an arbitrary AFE module/param payload
+- * to a port, identified by its DAI id (the same id used in the machine
+- * driver's cpu_dai->id switch, and the same id q6afe-dai.c itself uses to
+- * open the port) - not a raw AFE_PORT_ID_* hex value.
++ * to an already-open port.
++ *
++ * @port: an existing, currently-open port (e.g. borrowed via
++ *        q6afe_dai_get_port() - callers must NOT pass a port obtained via
++ *        q6afe_port_get_from_id() and then put() it themselves here, this
++ *        function does not take ownership of @port).
+  *
+  * Experimental: lets a machine/codec driver register a vendor-specific
+  * AFE module (e.g. a smart-amp protection algorithm) via the same generic
+  * AFE_PORT_CMD_SET_PARAM_V2 mechanism already used internally for clocks/
+- * I2S/USB/HDMI config, without needing to duplicate q6afe's own port
+- * lifecycle handling.
++ * I2S/USB/HDMI config.
+  */
+-int q6afe_send_generic_param(struct device *dev, int dai_id, u32 module_id,
++int q6afe_send_generic_param(struct q6afe_port *port, u32 module_id,
+ 			      u32 param_id, void *data, int psize)
+ {
+-	struct q6afe_port *port = q6afe_port_get_from_id(dev, dai_id);
+-	int ret;
+-
+-	if (IS_ERR(port))
+-		return PTR_ERR(port);
+-
+-	ret = q6afe_port_set_param_v2(port, data, param_id, module_id, psize);
+-	q6afe_port_put(port);
+-
+-	return ret;
++	return q6afe_port_set_param_v2(port, data, param_id, module_id, psize);
+ }
+ EXPORT_SYMBOL_GPL(q6afe_send_generic_param);
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6afe.h b/sound/soc/qcom/qdsp6/q6afe.h
+index ceb36c818..81b8f5292 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.h
++++ b/sound/soc/qcom/qdsp6/q6afe.h
+@@ -269,8 +269,9 @@ int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
+ 			  unsigned int freq, int dir);
+ int q6afe_set_lpass_clock(struct device *dev, int clk_id, int attri,
+ 			  int clk_root, unsigned int freq);
+-int q6afe_send_generic_param(struct device *dev, int dai_id, u32 module_id,
++int q6afe_send_generic_param(struct q6afe_port *port, u32 module_id,
+ 			      u32 param_id, void *data, int psize);
++struct q6afe_port *q6afe_dai_get_port(struct snd_soc_dai *dai);
+ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+ 			     const char *client_name, uint32_t *client_handle);
+ int q6afe_unvote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index abdf4302d..7b78f60bc 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -117,6 +117,30 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+ 		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
++
++		/*
++		 * EXPERIMENTAL: register TI's TAS256x smart-amp AFE module
++		 * with the DSP, mirroring the downstream vendor driver's
++		 * afe_tas_smartamp_set_calib_data() call - not known to be
++		 * required for basic playback (see surya audio investigation
++		 * notes), testing whether it changes anything at all.
++		 * Uses the DAI's own already-open port (q6afe_dai_get_port())
++		 * rather than opening/closing a second reference to it - a
++		 * prior attempt that did the latter corrupted the port state
++		 * and broke the whole pipeline.
++		 */
++		{
++			struct q6afe_port *port = q6afe_dai_get_port(cpu_dai);
++			u32 smartamp_payload[14] = { 1, };
++			int ret;
++
++			ret = q6afe_send_generic_param(port,
++				0x11111112 /* AFE_SMARTAMP_MODULE_RX */,
++				0x10012D13 /* CAPI_V2_TAS_RX_ENABLE */,
++				smartamp_payload, sizeof(smartamp_payload));
++			dev_info(cpu_dai->dev,
++				"tas smartamp enable experiment: %d\n", ret);
++		}
+ 		break;
+ 	case QUINARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+-- 
+2.43.0
+

@@ -1,0 +1,245 @@
+From d4f8f870566a02ec97f92b2a88c54113738be02f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 03:10:58 +0200
+Subject: [PATCH 041/106] regulator: add Will Semiconductor WL2866D camera PMIC
+ driver
+
+The WL2866D is a small I2C camera PMIC providing two digital LDOs
+(DVDD1/DVDD2, sourced from VIN1) and two analog ones (AVDD1/AVDD2,
+sourced from VIN2), used to supply the camera sensors on a number of
+phones. On the Xiaomi sm7150 boards it is the only supply for the
+sensors' DVDD/AVDD rails, so nothing camera-related works without it.
+
+Voltage mapping, per the datasheet of the WL28661D (the sibling part
+carrying the same "2866" die marking, which documents the same register
+map and power-on values):
+
+  DVDD1/DVDD2:  0.600V + N * 6.0mV,   N = 0..200  (up to 1.8V)
+  AVDD1/AVDD2:  1.200V + N * 12.5mV,  N = 0..248  (up to 4.3V)
+
+This was cross-checked against the hardware: the power-on values read
+back from a real WL2866D (0x64/0x64/0x80/0x80, i.e. 1.2V/1.2V/2.8V/2.8V)
+match the defaults the datasheet declares, and programming the rails the
+Xiaomi surya board wants (1.110V/1.110V/2.800V/2.900V) produces exactly
+the register values the vendor driver writes (0x55/0x55/0x80/0x88).
+
+Note that the upper nibble of the enable register is a soft reset -
+writing 1011 to it restores every register - so the enable bits must only
+ever be touched through a read-modify-write, which is what
+regulator_{enable,disable}_regmap() do.
+
+The chip has no usable identification register: register 0 reads back as
+zero on real parts, so there is nothing to validate at probe time.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ drivers/regulator/Kconfig             |  12 ++
+ drivers/regulator/Makefile            |   1 +
+ drivers/regulator/wl2866d-regulator.c | 159 ++++++++++++++++++++++++++
+ 3 files changed, 172 insertions(+)
+ create mode 100644 drivers/regulator/wl2866d-regulator.c
+
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index d71dac943..7e764f4fd 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -1849,6 +1849,18 @@ config REGULATOR_VQMMC_IPQ4019
+ 	  This driver provides support for the VQMMC LDO I/0
+ 	  voltage regulator of the IPQ4019 SD/EMMC controller.
+ 
++config REGULATOR_WL2866D
++	tristate "Will Semiconductor WL2866D camera PMIC regulators"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  This driver supports the four LDOs of the Will Semiconductor
++	  WL2866D camera PMIC: two digital (DVDD1/DVDD2) and two analog
++	  (AVDD1/AVDD2) rails, used to supply camera sensors.
++
++	  Say M here if you want to include support for the regulators as
++	  a module. The module will be called wl2866d-regulator.
++
+ config REGULATOR_WM831X
+ 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
+ 	depends on MFD_WM831X
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+index 35639f311..9bf647382 100644
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -211,6 +211,7 @@ obj-$(CONFIG_REGULATOR_RZG2L_VBCTRL) += renesas-usb-vbus-regulator.o
+ obj-$(CONFIG_REGULATOR_VCTRL) += vctrl-regulator.o
+ obj-$(CONFIG_REGULATOR_VEXPRESS) += vexpress-regulator.o
+ obj-$(CONFIG_REGULATOR_VQMMC_IPQ4019) += vqmmc-ipq4019-regulator.o
++obj-$(CONFIG_REGULATOR_WL2866D) += wl2866d-regulator.o
+ obj-$(CONFIG_REGULATOR_WM831X) += wm831x-dcdc.o
+ obj-$(CONFIG_REGULATOR_WM831X) += wm831x-isink.o
+ obj-$(CONFIG_REGULATOR_WM831X) += wm831x-ldo.o
+diff --git a/drivers/regulator/wl2866d-regulator.c b/drivers/regulator/wl2866d-regulator.c
+new file mode 100644
+index 000000000..82d34ebda
+--- /dev/null
++++ b/drivers/regulator/wl2866d-regulator.c
+@@ -0,0 +1,159 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Regulator driver for the Will Semiconductor WL2866D camera PMIC.
++ *
++ * The WL2866D provides two digital (DVDD1/DVDD2, sourced from VIN1) and two
++ * analog (AVDD1/AVDD2, sourced from VIN2) LDOs, intended to supply the camera
++ * sensors of a phone. Everything is controlled over I2C.
++ */
++
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/regmap.h>
++#include <linux/regulator/driver.h>
++
++#define WL2866D_REG_CHIP_REV		0x00
++#define WL2866D_REG_DISCHARGE		0x02
++#define WL2866D_REG_DVDD1_VOUT		0x03
++#define WL2866D_REG_DVDD2_VOUT		0x04
++#define WL2866D_REG_AVDD1_VOUT		0x05
++#define WL2866D_REG_AVDD2_VOUT		0x06
++#define WL2866D_REG_DVDD_SEQ		0x0a
++#define WL2866D_REG_AVDD_SEQ		0x0b
++#define WL2866D_REG_ENABLE		0x0e
++#define WL2866D_REG_SEQ_STATUS		0x0f
++
++/*
++ * The upper nibble of the enable register is a soft reset: writing 1011 to it
++ * restores every register to its power-on value. Only ever touch this register
++ * through regmap_update_bits() with one of the enable bits masked in.
++ */
++#define WL2866D_ENABLE_MASK(n)		BIT(n)
++
++#define WL2866D_DVDD_MIN_UV		600000
++#define WL2866D_DVDD_STEP_UV		6000
++#define WL2866D_DVDD_N_VOLTAGES		201	/* 0x00..0xc8, up to 1.8V */
++
++#define WL2866D_AVDD_MIN_UV		1200000
++#define WL2866D_AVDD_STEP_UV		12500
++#define WL2866D_AVDD_N_VOLTAGES		249	/* 0x00..0xf8, up to 4.3V */
++
++static const struct regulator_ops wl2866d_regulator_ops = {
++	.list_voltage = regulator_list_voltage_linear,
++	.set_voltage_sel = regulator_set_voltage_sel_regmap,
++	.get_voltage_sel = regulator_get_voltage_sel_regmap,
++	.enable = regulator_enable_regmap,
++	.disable = regulator_disable_regmap,
++	.is_enabled = regulator_is_enabled_regmap,
++};
++
++#define WL2866D_LDO(_id, _name, _supply, _vreg, _min, _step, _n)	\
++	{								\
++		.name		= (_name),				\
++		.of_match	= of_match_ptr(_name),			\
++		.regulators_node = of_match_ptr("regulators"),		\
++		.supply_name	= (_supply),				\
++		.id		= (_id),				\
++		.type		= REGULATOR_VOLTAGE,			\
++		.owner		= THIS_MODULE,				\
++		.ops		= &wl2866d_regulator_ops,		\
++		.min_uV		= (_min),				\
++		.uV_step	= (_step),				\
++		.n_voltages	= (_n),					\
++		.vsel_reg	= (_vreg),				\
++		.vsel_mask	= 0xff,					\
++		.enable_reg	= WL2866D_REG_ENABLE,			\
++		.enable_mask	= WL2866D_ENABLE_MASK(_id),		\
++	}
++
++/*
++ * The enable bits in WL2866D_REG_ENABLE are, from bit 0 up: DVDD1, DVDD2,
++ * AVDD1, AVDD2. The ids below match that order so enable_mask can be derived
++ * from the id directly.
++ */
++enum wl2866d_regulator_id {
++	WL2866D_DVDD1,
++	WL2866D_DVDD2,
++	WL2866D_AVDD1,
++	WL2866D_AVDD2,
++	WL2866D_NUM_REGULATORS,
++};
++
++static const struct regulator_desc wl2866d_regulators[WL2866D_NUM_REGULATORS] = {
++	WL2866D_LDO(WL2866D_DVDD1, "dvdd1", "vin1", WL2866D_REG_DVDD1_VOUT,
++		    WL2866D_DVDD_MIN_UV, WL2866D_DVDD_STEP_UV, WL2866D_DVDD_N_VOLTAGES),
++	WL2866D_LDO(WL2866D_DVDD2, "dvdd2", "vin1", WL2866D_REG_DVDD2_VOUT,
++		    WL2866D_DVDD_MIN_UV, WL2866D_DVDD_STEP_UV, WL2866D_DVDD_N_VOLTAGES),
++	WL2866D_LDO(WL2866D_AVDD1, "avdd1", "vin2", WL2866D_REG_AVDD1_VOUT,
++		    WL2866D_AVDD_MIN_UV, WL2866D_AVDD_STEP_UV, WL2866D_AVDD_N_VOLTAGES),
++	WL2866D_LDO(WL2866D_AVDD2, "avdd2", "vin2", WL2866D_REG_AVDD2_VOUT,
++		    WL2866D_AVDD_MIN_UV, WL2866D_AVDD_STEP_UV, WL2866D_AVDD_N_VOLTAGES),
++};
++
++static const struct regmap_config wl2866d_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.max_register = WL2866D_REG_SEQ_STATUS,
++};
++
++static int wl2866d_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct regulator_config config = { };
++	struct gpio_desc *enable_gpio;
++	struct regmap *regmap;
++	unsigned int i;
++
++	regmap = devm_regmap_init_i2c(client, &wl2866d_regmap_config);
++	if (IS_ERR(regmap))
++		return dev_err_probe(dev, PTR_ERR(regmap),
++				     "failed to init regmap\n");
++
++	enable_gpio = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_HIGH);
++	if (IS_ERR(enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(enable_gpio),
++				     "failed to get enable gpio\n");
++
++	config.dev = dev;
++	config.regmap = regmap;
++
++	for (i = 0; i < WL2866D_NUM_REGULATORS; i++) {
++		struct regulator_dev *rdev;
++
++		rdev = devm_regulator_register(dev, &wl2866d_regulators[i],
++					       &config);
++		if (IS_ERR(rdev))
++			return dev_err_probe(dev, PTR_ERR(rdev),
++					     "failed to register %s\n",
++					     wl2866d_regulators[i].name);
++	}
++
++	return 0;
++}
++
++static const struct of_device_id wl2866d_of_match[] = {
++	{ .compatible = "willsemi,wl2866d" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, wl2866d_of_match);
++
++static const struct i2c_device_id wl2866d_i2c_id[] = {
++	{ "wl2866d" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, wl2866d_i2c_id);
++
++static struct i2c_driver wl2866d_driver = {
++	.driver = {
++		.name = "wl2866d-regulator",
++		.of_match_table = wl2866d_of_match,
++	},
++	.probe = wl2866d_probe,
++	.id_table = wl2866d_i2c_id,
++};
++module_i2c_driver(wl2866d_driver);
++
++MODULE_DESCRIPTION("Will Semiconductor WL2866D camera PMIC regulator driver");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

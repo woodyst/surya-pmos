@@ -1,0 +1,68 @@
+From 3865b9cd2856b4352caf2347ec56bb58fc9c5feb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 17:35:24 +0200
+Subject: [PATCH 006/106] ASoC: tas2562: force a real hardware reset pulse at
+ probe
+
+Requesting the shutdown GPIO as GPIOD_OUT_HIGH only guarantees the
+final level, not a real low-to-high transition. If the line was
+already high (bootloader, a previous boot, or a previous session)
+the amp never actually goes through power-on reset and keeps
+whatever register state it happened to have.
+
+Request the GPIO low instead and add an explicit reset pulse (20ms
+low / 20ms settle after high, matching the vendor driver's own
+reset timing) before the regmap is initialized, guaranteeing a
+known, real POR state on every probe.
+---
+ sound/soc/codecs/tas2562.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index ceb367ae0..4f4d15392 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -660,7 +660,7 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
+ 	struct device *dev = tas2562->dev;
+ 	int ret = 0;
+ 
+-	tas2562->sdz_gpio = devm_gpiod_get_optional(dev, "shutdown", GPIOD_OUT_HIGH);
++	tas2562->sdz_gpio = devm_gpiod_get_optional(dev, "shutdown", GPIOD_OUT_LOW);
+ 	if (IS_ERR(tas2562->sdz_gpio)) {
+ 		if (PTR_ERR(tas2562->sdz_gpio) == -EPROBE_DEFER)
+ 			return -EPROBE_DEFER;
+@@ -674,7 +674,7 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
+ 	 */
+ 	if (tas2562->sdz_gpio == NULL) {
+ 		tas2562->sdz_gpio = devm_gpiod_get_optional(dev, "shut-down",
+-							      GPIOD_OUT_HIGH);
++							      GPIOD_OUT_LOW);
+ 		if (IS_ERR(tas2562->sdz_gpio))
+ 			if (PTR_ERR(tas2562->sdz_gpio) == -EPROBE_DEFER)
+ 				return -EPROBE_DEFER;
+@@ -734,6 +734,21 @@ static int tas2562_probe(struct i2c_client *client)
+ 
+ 	tas2562_parse_dt(data);
+ 
++	/*
++	 * Force a real hardware reset pulse instead of just requesting the
++	 * shutdown line as "high" - the GPIO may already have been high
++	 * (bootloader, a previous kernel boot, or a previous session) in
++	 * which case the amp would never actually go through power-on
++	 * reset and would keep whatever register state it already had.
++	 * Timing matches the vendor driver's own reset sequence.
++	 */
++	if (data->sdz_gpio) {
++		gpiod_set_value_cansleep(data->sdz_gpio, 0);
++		msleep(20);
++		gpiod_set_value_cansleep(data->sdz_gpio, 1);
++		msleep(20);
++	}
++
+ 	data->regmap = devm_regmap_init_i2c(client, &tas2562_regmap_config);
+ 	if (IS_ERR(data->regmap)) {
+ 		ret = PTR_ERR(data->regmap);
+-- 
+2.43.0
+

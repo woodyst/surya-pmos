@@ -1,0 +1,108 @@
+From b8d666e250da8b325ed3c8eb4aaa632a3eeb3b43 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 23:37:39 +0200
+Subject: [PATCH 018/106] ASoC: tas2562: set the RX slot length from hw_params,
+ not just set_tdm_slot
+
+The RX slot length (TDM_CFG2 bits [1:0]) is only ever written by
+set_dai_tdm_slot(), which plain-I2S machine drivers never call -
+sm8250.c among them. It therefore keeps the chip's 32-bit power-on
+default, while a 16-bit stereo I2S link only carries 32 BCLKs per
+frame (sm8250.c fixes MI2S_BCLK_RATE at 1536000 = 48000 * 32). The amp
+waits for the 64 BCLKs a 32-bit slot layout implies, never sees them,
+and latches a TDM clock error instead of playing.
+
+Confirmed on a Xiaomi surya (POCO X3 NFC, two TAS2562/TAS2564 on the
+tertiary MI2S): reading the latched interrupt register (0x24) straight
+over i2c right after a stream shows bit 2 (TDMCLOCKERRORSTICKY) set on
+every playback. Writing the slot length down to 16 bits mid-stream
+makes it stop latching, and it stays clear across subsequent streams.
+
+So derive the slot length from the sample format when the machine
+driver has not supplied a real TDM slot layout; when it has, that
+layout stays authoritative.
+---
+ sound/soc/codecs/tas2562.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index a08efbee6..5e4bafe9e 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -55,6 +55,7 @@ struct tas2562_data {
+ 	int model_id;
+ 	bool dac_powered;
+ 	bool unmuted;
++	bool tdm_slots_configured;
+ };
+ 
+ enum tas256x_model {
+@@ -219,11 +220,14 @@ static int tas2562_set_dai_tdm_slot(struct snd_soc_dai *dai,
+ 	if (ret < 0)
+ 		return ret;
+ 
++	tas2562->tdm_slots_configured = true;
++
+ 	return 0;
+ }
+ 
+ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
+ {
++	unsigned int rx_slot_len;
+ 	int ret;
+ 	int val;
+ 	int sense_en;
+@@ -234,18 +238,21 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
+ 					      TAS2562_TDM_CFG2,
+ 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+ 					      TAS2562_TDM_CFG2_RXWLEN_16B);
++		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_16B;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S24_LE:
+ 		snd_soc_component_update_bits(tas2562->component,
+ 					      TAS2562_TDM_CFG2,
+ 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+ 					      TAS2562_TDM_CFG2_RXWLEN_24B);
++		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_24B;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+ 		snd_soc_component_update_bits(tas2562->component,
+ 					      TAS2562_TDM_CFG2,
+ 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+ 					      TAS2562_TDM_CFG2_RXWLEN_32B);
++		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_32B;
+ 		break;
+ 
+ 	default:
+@@ -253,6 +260,27 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
+ 		return -EINVAL;
+ 	}
+ 
++	/*
++	 * The RX slot length is only ever configured by set_dai_tdm_slot(),
++	 * which plain-I2S machine drivers (sm8250.c among them) never call -
++	 * leaving it at the chip's 32-bit power-on default. On a 16-bit
++	 * stereo I2S link the bus only carries 32 BCLKs per frame, so the
++	 * amp waits for 64 and latches a TDM clock error (reg 0x24 bit 2)
++	 * instead of playing anything. Verified on-device: the error latches
++	 * on every stream, and stops latching once the slot length matches.
++	 *
++	 * When the machine driver does supply a real TDM slot layout, that
++	 * is authoritative - don't second-guess it here.
++	 */
++	if (!tas2562->tdm_slots_configured) {
++		ret = snd_soc_component_update_bits(tas2562->component,
++						    TAS2562_TDM_CFG2,
++						    TAS2562_TDM_CFG2_RXLEN_MASK,
++						    rx_slot_len);
++		if (ret < 0)
++			return ret;
++	}
++
+ 	val = snd_soc_component_read(tas2562->component, TAS2562_PWR_CTRL);
+ 	if (val < 0)
+ 		return val;
+-- 
+2.43.0
+

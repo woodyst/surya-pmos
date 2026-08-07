@@ -1,0 +1,90 @@
+From 42fc52e45c65fb6481264f7a98b04b9c5f3332a2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 21:17:50 +0200
+Subject: [PATCH 113/113] media: i2c: imx682: knobs for the mounting rotation
+ and the readout orientation
+
+Finding the right rotation meant a reboot per guess, since the value lives in
+the device tree and that is only read at boot. Add a module parameter that
+overrides it, so candidates can be tried by reloading the module instead.
+
+Add a second one for the sensor's own IMAGE_ORIENTATION (0x0101) as well.
+A mirrored image and a rotated one look alike at a glance but need different
+fixes, and this tells them apart: a rotation can never produce a mirror.
+
+Both default to leaving things as they are.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ drivers/media/i2c/imx682.c | 40 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/drivers/media/i2c/imx682.c b/drivers/media/i2c/imx682.c
+index 1e67bff8a..0d2b26c07 100644
+--- a/drivers/media/i2c/imx682.c
++++ b/drivers/media/i2c/imx682.c
+@@ -74,6 +74,27 @@ module_param(lane_mode, int, 0644);
+ MODULE_PARM_DESC(lane_mode,
+ 		 "override CSI_LANE_MODE 0x0114: 0=1 lane, 1=2, 2=3, 3=4; -1 = leave as the mode table sets it");
+ 
++/*
++ * Experiment knob: override the mounting rotation reported to userspace,
++ * so the right value can be found by reloading the module instead of
++ * rebooting for every device tree edit. -1 uses the device tree's own value.
++ */
++static int rotation_override = -1;
++module_param(rotation_override, int, 0644);
++MODULE_PARM_DESC(rotation_override,
++		 "override the rotation reported to userspace (0, 90, 180, 270); -1 = use the device tree");
++
++/*
++ * Experiment knob: sensor readout orientation (IMAGE_ORIENTATION, 0x0101).
++ * Bit 0 mirrors left to right, bit 1 mirrors top to bottom. A mirror is not
++ * a rotation, so if the preview comes out reflected this is the knob that
++ * fixes it, not the one above. -1 leaves the sensor's default (no mirroring).
++ */
++static int image_orientation = -1;
++module_param(image_orientation, int, 0644);
++MODULE_PARM_DESC(image_orientation,
++		 "sensor IMAGE_ORIENTATION 0x0101: bit0 = horizontal mirror, bit1 = vertical mirror; -1 = leave alone");
++
+ #define IMX682_REG_MIN		0x00
+ #define IMX682_REG_MAX		0xffff
+ 
+@@ -1374,6 +1395,19 @@ static int imx682_start_streaming(struct imx682 *imx682)
+ 		}
+ 	}
+ 
++	if (image_orientation >= 0) {
++		dev_info(imx682->dev,
++			 "IMAGE_ORIENTATION (0x0101) = 0x%02x (%s%s)\n",
++			 image_orientation,
++			 image_orientation & 1 ? "h-mirror " : "",
++			 image_orientation & 2 ? "v-mirror" : "");
++		ret = imx682_write_reg(imx682, 0x0101, 1, image_orientation);
++		if (ret) {
++			dev_err(imx682->dev, "fail to set IMAGE_ORIENTATION");
++			return ret;
++		}
++	}
++
+ 	/* Setup handler will write actual exposure and gain */
+ 	ret =  __v4l2_ctrl_handler_setup(imx682->sd.ctrl_handler);
+ 	if (ret) {
+@@ -1745,6 +1779,12 @@ static int imx682_init_controls(struct imx682 *imx682)
+ 		return ret;
+ 	}
+ 
++	if (rotation_override >= 0) {
++		props.rotation = rotation_override;
++		dev_info(imx682->dev, "rotation overridden to %u degrees",
++			 props.rotation);
++	}
++
+ 	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &imx682_ctrl_ops,
+ 					      &props);
+ 	if (ret) {
+-- 
+2.43.0
+

@@ -1,0 +1,187 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Thu, 7 Aug 2026 01:00:00 +0200
+Subject: [PATCH] libcamera: simple: expose manual focus when the sensor has a
+ lens
+
+The simple pipeline handler never mentions the focus lens, so on a device
+whose sensor has one the lens is enumerated by libcamera and then left
+unreachable: no application can move it, and the camera behaves as if it had
+no actuator at all.
+
+Advertise AfMode (manual only, since this pipeline has no autofocus
+algorithm) and LensPosition when CameraSensor exposes a focus lens, apply the
+requested position before queueing the frame's buffers, and report it back in
+the request metadata.
+
+LensPosition is defined in dioptres, so it is mapped linearly onto the
+actuator's own range, taking zero to be infinity - which is where a voice coil
+motor sits at rest. The upper end is a rough figure rather than a calibration
+and belongs in the sensor's tuning data; see the comment.
+
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <algorithm>
++#include <array>
+ #include <iterator>
+ #include <list>
+ #include <map>
+@@ -22,6 +23,7 @@
+ #include <vector>
+ 
+ #include <linux/media-bus-format.h>
++#include <linux/v4l2-controls.h>
+ 
+ #include <libcamera/base/log.h>
+ 
+@@ -34,6 +36,7 @@
+ 
+ #include "libcamera/internal/camera.h"
+ #include "libcamera/internal/camera_manager.h"
++#include "libcamera/internal/camera_lens.h"
+ #include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/camera_sensor_properties.h"
+ #include "libcamera/internal/converter.h"
+@@ -372,6 +375,22 @@
+ 	void ispStatsReady(uint32_t frame, uint32_t bufferId);
+ 	void metadataReady(uint32_t frame, const ControlList &metadata);
+ 	void setSensorControls(const ControlList &sensorControls);
++
++	void registerFocusLensControls();
++
++public:
++	/*
++	 * Focus lens, when the sensor has one. Positions are exposed to
++	 * applications as dioptres, and mapped linearly onto the actuator's
++	 * own range: code kFocusMin focuses at infinity and code kFocusMax at
++	 * kMaxDioptres.
++	 */
++	CameraLens *focusLens_ = nullptr;
++	int32_t focusMin_ = 0;
++	int32_t focusMax_ = 0;
++	float lensPosition_ = 0.0f;
++
++	int32_t dioptresToCode(float dioptres) const;
+ };
+ 
+ class SimpleCameraConfiguration : public CameraConfiguration
+@@ -664,6 +683,8 @@
+ 
+ 	properties_ = sensor_->properties();
+ 
++	registerFocusLensControls();
++
+ 	/* Find the first subdev that can generate a frame start signal, if any. */
+ 	frameStartEmitter_ = nullptr;
+ 	for (const Entity &entity : entities_) {
+@@ -939,9 +960,14 @@
+ 		}
+ 	}
+ 
+-	if (request)
++	if (request) {
++		if (focusLens_)
++			request->_d()->metadata().set(controls::LensPosition,
++						      lensPosition_);
++
+ 		request->_d()->metadata().set(controls::SensorTimestamp,
+ 					      buffer->metadata().timestamp);
++	}
+ 
+ 	/*
+ 	 * Queue the captured and the request buffer to the converter or Software
+@@ -1041,6 +1067,66 @@
+ 	tryCompleteRequest(info->request);
+ }
+ 
++/*
++ * Largest focal power the actuator can reach, in dioptres, assuming its travel
++ * is linear in dioptres and that its zero code focuses at infinity - which is
++ * how a voice coil motor at rest behaves.
++ *
++ * \todo This is a rough figure measured on one device, not a calibration. It
++ * belongs in the sensor's tuning data, where a proper two-point measurement can
++ * replace it.
++ */
++static constexpr float kMaxDioptres = 7.0f;
++
++int32_t SimpleCameraData::dioptresToCode(float dioptres) const
++{
++	float clamped = std::clamp(dioptres, 0.0f, kMaxDioptres);
++	float range = static_cast<float>(focusMax_ - focusMin_);
++
++	return focusMin_ + static_cast<int32_t>(clamped * range / kMaxDioptres + 0.5f);
++}
++
++/*
++ * Advertise manual focus if the sensor has a lens attached. Without this the
++ * lens is visible to libcamera but unreachable by applications, so a device
++ * with a working actuator behaves as if it had none.
++ */
++void SimpleCameraData::registerFocusLensControls()
++{
++	CameraLens *lens = sensor_->focusLens();
++	if (!lens)
++		return;
++
++	const ControlInfoMap &lensControls = lens->controls();
++	const auto it = lensControls.find(V4L2_CID_FOCUS_ABSOLUTE);
++	if (it == lensControls.end()) {
++		LOG(SimplePipeline, Warning)
++			<< "Lens has no absolute focus control, ignoring it";
++		return;
++	}
++
++	focusLens_ = lens;
++	focusMin_ = it->second.min().get<int32_t>();
++	focusMax_ = it->second.max().get<int32_t>();
++
++	ControlInfoMap::Map ctrls(controlInfo_.begin(), controlInfo_.end());
++
++	const std::array<ControlValue, 1> afModes{
++		ControlValue(static_cast<int32_t>(controls::AfModeManual))
++	};
++
++	ctrls[&controls::AfMode] =
++		ControlInfo(afModes,
++			    ControlValue(static_cast<int32_t>(controls::AfModeManual)));
++	ctrls[&controls::LensPosition] = ControlInfo(0.0f, kMaxDioptres, 0.0f);
++
++	controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
++
++	LOG(SimplePipeline, Debug)
++		<< "Manual focus available, actuator range " << focusMin_
++		<< "-" << focusMax_;
++}
++
+ void SimpleCameraData::setSensorControls(const ControlList &sensorControls)
+ {
+ 	delayedCtrls_->push(sensorControls);
+@@ -1730,6 +1816,25 @@
+ 	std::map<const Stream *, FrameBuffer *> buffers;
+ 	bool metadataRequired = false;
+ 
++	/*
++	 * Move the lens before queueing the buffers, so the position applies
++	 * from this frame on. Per the control definition LensPosition only
++	 * takes effect in manual mode, which is the only mode offered here.
++	 */
++	if (data->focusLens_) {
++		const auto &position = request->controls().get(controls::LensPosition);
++		if (position) {
++			int32_t code = data->dioptresToCode(*position);
++
++			ret = data->focusLens_->setFocusPosition(code);
++			if (ret < 0)
++				LOG(SimplePipeline, Warning)
++					<< "Failed to move the lens to " << code;
++			else
++				data->lensPosition_ = *position;
++		}
++	}
++
+ 	for (auto &[stream, buffer] : request->buffers()) {
+ 		/*
+ 		 * If conversion is needed, push the buffer to the converter

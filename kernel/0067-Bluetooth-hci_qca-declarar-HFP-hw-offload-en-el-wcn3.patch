@@ -1,0 +1,39 @@
+From 3b37d1629000c506d504c9a2acaa9ed07a401e75 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 13:09:01 +0200
+Subject: [PATCH 067/106] Bluetooth: hci_qca: declarar HFP hw offload en el
+ wcn3990
+
+Sin QCA_CAP_HFP_HW_OFFLOAD el nucleo nunca anuncia data path 1 y el chip
+mantiene dormidos sus puertos de audio SLIMBus (NACKea todo acceso).
+Verificado: con el offload y un SCO con data path 1, los accesos que
+antes fallaban completan.
+---
+ drivers/bluetooth/hci_qca.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index cd1834246..bd4981463 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -2142,6 +2142,16 @@ static const struct qca_device_data qca_soc_data_wcn3990 __maybe_unused = {
+ 		{ "vddch0", 450000 },
+ 	},
+ 	.num_vregs = 4,
++	/*
++	 * The WCN3990 can carry HFP/SCO audio over its non-HCI (SLIMBus) path
++	 * instead of tunnelling it through HCI. Advertising the offload makes
++	 * the core hand data path id 1 to the controller in
++	 * HCI_Enhanced_Setup_Synchronous_Connection, which is what tells the
++	 * chip to bring its SLIMBus audio ports up - without it those ports
++	 * stay asleep and NACK every register access. Same capability the
++	 * wcn6855/wcn7850/qca2066 already declare.
++	 */
++	.capabilities = QCA_CAP_HFP_HW_OFFLOAD,
+ };
+ 
+ static const struct qca_device_data qca_soc_data_wcn3991 __maybe_unused = {
+-- 
+2.43.0
+

@@ -1,0 +1,46 @@
+From cda3abc1469dd1b69037db6a55dcad1f0744226e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 15 Jul 2026 17:13:34 +0200
+Subject: [PATCH 025/106] Revert "ASoC: tas2562: mark TDM_CFG2 volatile so the
+ channel mux stops self-clobbering"
+
+This reverts commit 156af8822c4f4ce168a21c6aaeeccdbbd883388f.
+---
+ sound/soc/codecs/tas2562.c | 17 -----------------
+ 1 file changed, 17 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index e95fce883..81f6caff2 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -943,26 +943,9 @@ static const struct regmap_range_cfg tas2562_ranges[] = {
+ 	},
+ };
+ 
+-/*
+- * TDM_CFG2 packs two unrelated fields written by two different subsystems at
+- * two different times: the channel-select mux (bits 5:4, a DAPM mux) and the
+- * I2S word/slot length (bits 3:2 and 1:0, written from hw_params). Both do
+- * read-modify-write. If the cached copy is stale when they interleave - which
+- * it is around a stream start - one stamps a stale value back over the other's
+- * bits, and the channel select lands on the mute code (bits 5:4 = 0). Making
+- * the register volatile forces every RMW to read the live value first, so
+- * neither writer can clobber the other. This is what makes true L/R stereo
+- * (each amp on its own channel) reliable instead of intermittently muting.
+- */
+-static bool tas2562_volatile_reg(struct device *dev, unsigned int reg)
+-{
+-	return reg == TAS2562_TDM_CFG2;
+-}
+-
+ static const struct regmap_config tas2562_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
+-	.volatile_reg = tas2562_volatile_reg,
+ 
+ 	.max_register = 254 * 128,
+ 	/*
+-- 
+2.43.0
+

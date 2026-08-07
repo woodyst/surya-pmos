@@ -1,0 +1,41 @@
+From 151653d46f613a85fbed9bf151488e290b02c3af Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 16:19:33 +0200
+Subject: [PATCH 033/106] ASoC: codecs: wcd937x: use cansleep accessor for the
+ reset GPIO
+
+On sm7150 (and other bolero-macro SoCs) the WCD937x reset line is routed
+through the LPASS LPI pinctrl, whose gpio_chip sets can_sleep. The atomic
+gpiod_set_value() then trips a WARN in gpiolib on reset. wcd937x_reset()
+only runs from the sleepable probe path, so use gpiod_set_value_cansleep()
+instead. Harmless on non-sleeping controllers (the flagship boards that
+wire the reset on the main TLMM).
+---
+ sound/soc/codecs/wcd937x.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/wcd937x.c b/sound/soc/codecs/wcd937x.c
+index 72a53f95d..ba9466ee3 100644
+--- a/sound/soc/codecs/wcd937x.c
++++ b/sound/soc/codecs/wcd937x.c
+@@ -239,9 +239,15 @@ static const struct regmap_irq_chip wcd937x_regmap_irq_chip = {
+ 
+ static void wcd937x_reset(struct wcd937x_priv *wcd937x)
+ {
+-	gpiod_set_value(wcd937x->reset_gpio, 1);
++	/*
++	 * The reset GPIO may live on a sleeping GPIO controller (e.g. the
++	 * LPASS LPI pinctrl on sm7150, which sets gpio_chip.can_sleep), and
++	 * this only ever runs from the sleepable probe path, so use the
++	 * cansleep accessor to avoid a WARN in gpiolib.
++	 */
++	gpiod_set_value_cansleep(wcd937x->reset_gpio, 1);
+ 	usleep_range(20, 30);
+-	gpiod_set_value(wcd937x->reset_gpio, 0);
++	gpiod_set_value_cansleep(wcd937x->reset_gpio, 0);
+ 	usleep_range(20, 30);
+ }
+ 
+-- 
+2.43.0
+

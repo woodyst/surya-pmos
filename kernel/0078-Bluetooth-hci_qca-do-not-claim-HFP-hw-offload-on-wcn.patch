@@ -1,0 +1,52 @@
+From d871cd374b3547f89f9f25ba9667c1a947d3f0d6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 00:27:36 +0200
+Subject: [PATCH 078/106] Bluetooth: hci_qca: do not claim HFP hw offload on
+ wcn3990
+
+Claiming it makes the core hand data path id 1 to the controller, i.e.
+tell it the SCO audio arrives over SLIMBus rather than HCI. That is what
+the vendor stack does, but it only works with the chip's SLIMBus audio
+ports up: with them asleep the controller has no audio source, sends
+nothing at all to the headset, and its firmware dies once both
+directions are open - taking the phone down with it.
+
+Measured: without this, 0 SCO packets transmitted and a reboot; with it
+removed, 1602 packets in 12 s and audio both ways over a real call.
+
+Set it only together with the SLIMBus offload path.
+---
+ drivers/bluetooth/hci_qca.c | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index bd4981463..767c1658b 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -2143,15 +2143,14 @@ static const struct qca_device_data qca_soc_data_wcn3990 __maybe_unused = {
+ 	},
+ 	.num_vregs = 4,
+ 	/*
+-	 * The WCN3990 can carry HFP/SCO audio over its non-HCI (SLIMBus) path
+-	 * instead of tunnelling it through HCI. Advertising the offload makes
+-	 * the core hand data path id 1 to the controller in
+-	 * HCI_Enhanced_Setup_Synchronous_Connection, which is what tells the
+-	 * chip to bring its SLIMBus audio ports up - without it those ports
+-	 * stay asleep and NACK every register access. Same capability the
+-	 * wcn6855/wcn7850/qca2066 already declare.
++	 * Deliberately no QCA_CAP_HFP_HW_OFFLOAD here. Advertising it makes the
++	 * core hand data path id 1 to the controller, i.e. "the SCO audio comes
++	 * over SLIMBus, not over HCI". That is what the vendor stack does, but
++	 * it needs the chip's SLIMBus audio ports up: with them asleep the
++	 * controller has no audio source, transmits nothing, and dies outright
++	 * once both directions are open (firmware gone, phone reboots). Only
++	 * set it together with the SLIMBus offload path.
+ 	 */
+-	.capabilities = QCA_CAP_HFP_HW_OFFLOAD,
+ };
+ 
+ static const struct qca_device_data qca_soc_data_wcn3991 __maybe_unused = {
+-- 
+2.43.0
+

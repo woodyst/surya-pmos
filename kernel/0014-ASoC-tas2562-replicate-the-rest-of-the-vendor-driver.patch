@@ -1,0 +1,219 @@
+From 7104b769096f777a5e9b7b944abd6e9213ea7710 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 17:35:41 +0200
+Subject: [PATCH 014/106] ASoC: tas2562: replicate the rest of the vendor
+ driver's load_init()
+
+Follow-up to the icn_config() patch: tas256x_load_init() in the real
+downstream tas256x-codec.c source does 8 unconditional steps on every
+probe/resume, not just icn_config() - only 1 of 8 had been ported.
+Adds the other reachable ones: set_misc_config, set_tx_config,
+set_clock_config, HPF_FF_Bypass, HPF_FB_Bypass, set_classH_config
+(the entries of it that don't need book-switching - three Class-H
+registers live in book 0x64, which mainline's flat page-only regmap
+can't reach yet, so they're left out with a comment rather than
+guessed at), and TAS2564's tas2564_specific() amp-level update.
+
+TDM_CFG4 (set_tx_config) needs one of two values depending on which
+of the two amps on this board is being probed. The vendor picks the
+value by array registration index; this board never pairs two
+identical chips (tas2562 "SPK" @ 0x4c, tas2564 "EAR" @ 0x4d), so
+model_id is used as an exact stand-in for that index rather than a
+guess.
+
+Everything here goes through regmap-backed snd_soc_component_write(),
+so tas2562_resume()'s existing regcache_sync() replays it same as any
+other register - no separate resume-path code needed, matching how
+the icn_config() writes already behave.
+---
+ sound/soc/codecs/tas2562.c | 126 ++++++++++++++++++++++++++++++++++++-
+ sound/soc/codecs/tas2562.h |  28 +++++++++
+ 2 files changed, 153 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index fa7b9601f..a1c9fb7b1 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -379,6 +379,130 @@ static int tas2562_mute(struct snd_soc_dai *dai, int mute, int direction)
+ 	return tas2562_update_pwr_ctrl(tas2562);
+ }
+ 
++/*
++ * tas256x_load_init()'s reachable unconditional steps, beyond icn_config()
++ * (already added in a prior patch). Same real-world provenance: the
++ * downstream tas256x-codec.c source, read directly, not guessed.
++ */
++static int tas2562_load_init(struct tas2562_data *tas2562)
++{
++	struct snd_soc_component *component = tas2562->component;
++	int ret;
++
++	/* tas256x_set_misc_config(): MISCCONFIGURATIONREG0 = 0xcf */
++	ret = snd_soc_component_write(component, TAS2562_MISC_CFG1, 0xcf);
++	if (ret < 0)
++		return ret;
++
++	/*
++	 * tas256x_set_tx_config(): TDMConfigurationReg4, one fixed value per
++	 * physical amp. The vendor picks the value by array registration
++	 * index (i==0 -> channel_left, else channel_right), which this
++	 * board's real devicetree order (tas2562@4c "SPK" probed before
++	 * tas2564@4d "EAR") maps 1:1 onto model_id - this board never pairs
++	 * two identical chips, so model_id is an exact, not guessed, stand-in
++	 * for that index here.
++	 */
++	switch (tas2562->model_id) {
++	case TAS2562:
++		ret = snd_soc_component_write(component, TAS2562_TDM_CFG4, 0xf1);
++		break;
++	case TAS2564:
++		ret = snd_soc_component_write(component, TAS2562_TDM_CFG4, 0x11);
++		break;
++	default:
++		ret = 0;
++		break;
++	}
++	if (ret < 0)
++		return ret;
++
++	/* tas256x_set_clock_config(): CLOCKCONFIGURATION = 0x0c */
++	ret = snd_soc_component_write(component, TAS2562_CLOCK_CFG, 0x0c);
++	if (ret < 0)
++		return ret;
++
++	/* tas256x_HPF_FF_Bypass(): disable the DC blocker in the forward path */
++	ret = snd_soc_component_update_bits(component, TAS2562_PB_CFG1,
++					    TAS2562_PB_CFG1_DCBLOCKER_MASK,
++					    TAS2562_PB_CFG1_DCBLOCKER_DISABLED);
++	if (ret < 0)
++		return ret;
++
++	/*
++	 * tas256x_HPF_FB_Bypass(): 12-byte HPF reverse-path coefficient
++	 * block, always this same constant data in the vendor driver.
++	 */
++	{
++		static const u8 hpf_reverse_path[12] = {
++			0x7f, 0xff, 0xff, 0xff,
++			0x00, 0x00, 0x00, 0x00,
++			0x00, 0x00, 0x00, 0x00,
++		};
++		int i;
++
++		for (i = 0; i < ARRAY_SIZE(hpf_reverse_path); i++) {
++			ret = snd_soc_component_write(component,
++						       TAS2562_HPF_CFG + i,
++						       hpf_reverse_path[i]);
++			if (ret < 0)
++				return ret;
++		}
++	}
++
++	/*
++	 * tas256x_set_classH_config(): bulk-loads p_tas256x_classh_d_data.
++	 * Only the entries reachable without book-switching are here -
++	 * CLASSHHEADROOM/HYSTERESIS/MTCT live in book 0x64 and are skipped
++	 * (see tas2562.h). TESTPAGECONFIGURATION duplicates TAS2562_ICN_REG13
++	 * (same register, same value) in the real vendor table too - this
++	 * isn't a mistake, the vendor writes it twice as well.
++	 */
++	ret = snd_soc_component_write(component, TAS2562_VBAT_FILTER, 0x38);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSH_RELEASE_TIMER, 0x3c);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_BOOST_SLOPE, 0x78);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_ICN_REG13, 0x0d);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG3, 0x8e);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG2, 0x49);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG4, 0x21);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG1, 0x80);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_EFFICIENCY_CFG, 0xc1);
++	if (ret < 0)
++		return ret;
++
++	/*
++	 * tas2564_specific() (TAS2564 only): boost_volt_update() sets the
++	 * channel gain to 16dBV. TAS2562/TAS2110 get no equivalent call in
++	 * the vendor driver (tas_init is NULL for TAS2562; TAS2110 doesn't
++	 * exist downstream at all).
++	 */
++	if (tas2562->model_id == TAS2564) {
++		ret = snd_soc_component_update_bits(component, TAS2562_PB_CFG1,
++					TAS2562_PB_CFG1_TAS2564_AMPLEVEL_MASK,
++					TAS2562_PB_CFG1_TAS2564_AMPLEVEL_16DBV);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static int tas2562_codec_probe(struct snd_soc_component *component)
+ {
+ 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+@@ -401,7 +525,7 @@ static int tas2562_codec_probe(struct snd_soc_component *component)
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	return 0;
++	return tas2562_load_init(tas2562);
+ }
+ 
+ #ifdef CONFIG_PM
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index 623b52906..9113cbc84 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -44,6 +44,34 @@
+ #define TAS2562_ICN_REG13	TAS2562_REG(253, 13)
+ #define TAS2562_ICN_REG25	TAS2562_REG(253, 25)
+ 
++/*
++ * Remaining unconditional steps of the vendor driver's tas256x_load_init(),
++ * beyond the icn_config() pair above - same provenance (real tas256x.c
++ * source, not guessed). Reachable ones only: three of load_init()'s
++ * Class-H registers (TAS256X_CLASSHHEADROOM/HYSTERESIS/MTCT) live in book
++ * 0x64, which needs a book-select write mainline's flat page-only regmap
++ * doesn't do yet - those three are intentionally left out until book
++ * switching is added.
++ */
++#define TAS2562_CLOCK_CFG	TAS2562_REG(0, 0x38)
++#define TAS2562_BOOST_SLOPE	TAS2562_REG(0, 0x35)
++#define TAS2562_VBAT_FILTER	TAS2562_REG(0, 0x3b)
++#define TAS2562_CLASSH_RELEASE_TIMER	TAS2562_REG(0, 0x3c)
++#define TAS2562_CLASSD_CFG1	TAS2562_REG(253, 0x19)
++#define TAS2562_CLASSD_CFG2	TAS2562_REG(253, 0x32)
++#define TAS2562_CLASSD_CFG3	TAS2562_REG(253, 0x33)
++#define TAS2562_CLASSD_CFG4	TAS2562_REG(253, 0x3f)
++#define TAS2562_EFFICIENCY_CFG	TAS2562_REG(253, 0x5f)
++/* 12-byte HPF reverse-path coefficient block (tas256x_HPF_FB_Bypass()) */
++#define TAS2562_HPF_CFG		TAS2562_REG(2, 0x70)
++
++#define TAS2562_PB_CFG1_DCBLOCKER_MASK		BIT(6)
++#define TAS2562_PB_CFG1_DCBLOCKER_DISABLED	BIT(6)
++
++/* TAS2564-only: tas2564_specific()'s boost_volt_update(), amp level to 16dBV */
++#define TAS2562_PB_CFG1_TAS2564_AMPLEVEL_MASK	(0x1f << 1)
++#define TAS2562_PB_CFG1_TAS2564_AMPLEVEL_16DBV	(0x0d << 1)
++
+ #define TAS2562_RX_OFF_MASK	GENMASK(5, 1)
+ #define TAS2562_TX_OFF_MASK	GENMASK(3, 1)
+ #define TAS2562_RIGHT_SLOT_SHIFT 4
+-- 
+2.43.0
+

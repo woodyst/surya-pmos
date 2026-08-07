@@ -1,0 +1,59 @@
+From 9ef559aa9611c2f894da823bb5ca243771abba31 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 01:26:41 +0200
+Subject: [PATCH 038/106] pinctrl: qcom: sm7150-lpass-lpi: fix swr_tx_data mux
+ on gpio1
+
+GPIO1 carries data lane 0 of the TX SoundWire bus, which is where the
+WCD9375's Tx SoundWire slave lives. The pin table selects swr_tx_data
+via FUNC_SEL 1 on this pin, but the silicon exposes swr_tx_data there at
+FUNC_SEL 3.
+
+With the wrong function selected the bus clock (gpio0, FUNC_SEL 2, which
+is correct) is driven normally and the controller looks perfectly
+healthy - frame gen comes up, SWRM_COMP_PARAMS and the frame shape read
+back fine - but the codec's data line is not routed to the controller.
+The Tx slave can therefore never announce itself: SWRM_MCP_SLV_STATUS
+stays 0, no NEW_SLAVE_ATTACHED interrupt ever arrives, and since the
+WCD9375 exposes its control regmap on the Tx link, the whole codec then
+fails to probe:
+
+  wcd937x_codec audio-codec: soundwire device init timeout
+  wcd937x_codec audio-codec: ASoC error (-110): at snd_soc_component_probe()
+
+The Rx bus was unaffected because its clk (gpio3) and data lane 0
+(gpio4) are both at FUNC_SEL 2, which the table already had right.
+
+The downstream sm6150/sdmmagpie LPI pin config (sdmmagpie = SM7150)
+places tx_swr_data1 on LPI gpio19 with "func3". The mainline lpass_tlmm
+node starts 18 pins into the LPI range (0x62b52000 vs the 0x62b40000 SSC
+base, 18 * 0x1000), so downstream gpio19 is this driver's gpio1, and
+func3 is FUNC_SEL 3. The same offset maps the WCD reset (downstream
+gpio24, func2) onto this table's gpio6/cdc_pdm_rx, which confirms the
+alignment.
+
+With this, the Tx slave enumerates, the bus clash bits in SWRM_COMP_STATUS
+disappear, and the codec probes and registers its capture DAIs.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ drivers/pinctrl/qcom/pinctrl-sm7150-lpass-lpi.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/pinctrl/qcom/pinctrl-sm7150-lpass-lpi.c b/drivers/pinctrl/qcom/pinctrl-sm7150-lpass-lpi.c
+index 94b9b8725..e6d025e17 100644
+--- a/drivers/pinctrl/qcom/pinctrl-sm7150-lpass-lpi.c
++++ b/drivers/pinctrl/qcom/pinctrl-sm7150-lpass-lpi.c
+@@ -81,7 +81,7 @@ static const char * const swr_tx_data_groups[] = { "gpio1", "gpio2", "gpio5" };
+ 
+ static const struct lpi_pingroup sm7150_groups[] = {
+ 	LPI_PINGROUP(0, 0, slimbus_clk, swr_tx_clk, _, _),
+-	LPI_PINGROUP(1, 2, swr_tx_data, audio_ref, _, _),
++	LPI_PINGROUP(1, 2, _, audio_ref, swr_tx_data, _),
+ 	LPI_PINGROUP(2, 4, slimbus_data, swr_tx_data, _, _),
+ 	LPI_PINGROUP(3, 8, slimbus_data, swr_rx_clk, _, _),
+ 	LPI_PINGROUP(4, 10, slimbus_data, swr_rx_data, prim_mclk_a, _),
+-- 
+2.43.0
+

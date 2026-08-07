@@ -1,0 +1,462 @@
+From 51f0dd7d1d85a1a060301c0f3d0bc1221184160a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 20:24:52 +0200
+Subject: [PATCH] media: qcom: camss: add C-PHY support and switch surya's
+ IMX682 to it
+
+THE CAMERA WORKS. After months of investigation, the sensor delivers frames.
+
+Root cause: the IMX682 on this board is a C-PHY transmitter and the receiver
+was configured for D-PHY. Its CSI_SIGNALING_MODE register (0x0111) is set to
+0x03 by both the vendor blob and our driver, which the MIPI CCS specification
+defines as CSI-2 C-PHY, and it reads back as such from the live hardware. The
+three 'lanes' are three trios; there is no separate clock lane.
+
+That explains every symptom the investigation ever recorded: not a single SOT
+captured, zero CRC and zero ECC errors, electrical activity on the pins but no
+link, error bits on some lanes and none on 'lane 0', the CSID TPG working (it
+bypasses the PHY), the settle count sweep achieving nothing across the whole
+MIPI window (T_HS_SETTLE is a D-PHY parameter), and every register comparison
+against the factory coming out identical: the sensor configuration was copied
+faithfully, C-PHY mode included, and the receiver was never questioned.
+
+  camss.c        accept V4L2_MBUS_CSI2_CPHY and remember which one it is
+  camss-csiphy.h carry the bus type in the CSI-2 config
+  camss-csiphy-3ph-1-0.c
+                 csiphy_sm7150_config_trios(): C-PHY has no clock lane, the
+                 trios enable the ODD bits of CTRL5, the tuning registers are a
+                 different set (transcribed from the vendor's csiphy_3ph_v1_2_reg,
+                 three trios by 38 settings) and the settle count is two bytes
+  camss-csid.h / camss-csid.c
+                 propagate the bus type to the receiver
+  camss-csid-gen2.c
+                 set CSI2_RX_CFG0 bit 24 (PHY_TYPE_SEL) for C-PHY; mainline
+                 never wrote it, so it always decoded as D-PHY
+  imx682.c       parse the endpoint as C-PHY instead of hardcoding D-PHY
+  sm7150-xiaomi-surya.dtsi
+                 bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY> on both endpoints and
+                 drop clock-lanes, which only exists in D-PHY
+
+Verified on a POCO X3 NFC: 5 frames of 20109824 bytes each, 199829 non-zero
+bytes per 200000, min 0 max 255 mean 56.2 stddev 50.8 over 256 distinct values.
+Real image data, not a stuck pattern.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    |  12 +-
+ drivers/media/i2c/imx682.c                    |   8 +-
+ .../platform/qcom/camss/camss-csid-gen2.c     |   7 +
+ .../media/platform/qcom/camss/camss-csid.c    |   2 +
+ .../media/platform/qcom/camss/camss-csid.h    |   2 +
+ .../qcom/camss/camss-csiphy-3ph-1-0.c         | 221 +++++++++++++++++-
+ .../media/platform/qcom/camss/camss-csiphy.h  |   2 +
+ drivers/media/platform/qcom/camss/camss.c     |  18 +-
+ 8 files changed, 262 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index fb17a951a..3ed05526e 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -8,6 +8,7 @@
+ 
+ #include "sm7150-xiaomi-common.dtsi"
+ #include <dt-bindings/clock/qcom,sm7150-camcc.h>
++#include <dt-bindings/media/video-interfaces.h>
+ #include <dt-bindings/sound/qcom,q6voice.h>
+ 
+ / {
+@@ -420,6 +421,14 @@ camera@1a {
+ 		port {
+ 			imx682_ep: endpoint {
+ 				remote-endpoint = <&csiphy0_ep>;
++				/*
++				 * The sensor is a C-PHY transmitter: its
++				 * CSI_SIGNALING_MODE (0x0111) reads 0x03,
++				 * which the MIPI CCS spec defines as CSI-2
++				 * C-PHY. These are three trios, not three
++				 * data lanes plus a clock.
++				 */
++				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+ 				data-lanes = <0 1 2>;
+ 				link-frequencies = /bits/ 64 <953600000>;
+ 			};
+@@ -895,7 +904,8 @@ ports {
+ 		/* CSIPHY0: main IMX682 */
+ 		port@0 {
+ 			csiphy0_ep: endpoint {
+-				clock-lanes = <7>;
++				/* C-PHY: no clock lane, the clock is in the trios */
++				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+ 				data-lanes = <0 1 2>;
+ 				remote-endpoint = <&imx682_ep>;
+ 			};
+diff --git a/drivers/media/i2c/imx682.c b/drivers/media/i2c/imx682.c
+index d8e2e4c85..6639c8088 100644
+--- a/drivers/media/i2c/imx682.c
++++ b/drivers/media/i2c/imx682.c
+@@ -1476,8 +1476,14 @@ static int imx682_detect(struct imx682 *imx682)
+ static int imx682_parse_hw_config(struct imx682 *imx682)
+ {
+ 	struct fwnode_handle *fwnode = dev_fwnode(imx682->dev);
++	/*
++	 * This sensor is a C-PHY transmitter: its CSI_SIGNALING_MODE register
++	 * (0x0111) is programmed to 0x03, which the MIPI CCS specification
++	 * defines as CSI-2 C-PHY, and reads back as such from the hardware.
++	 * The three "lanes" are three trios; there is no separate clock lane.
++	 */
+ 	struct v4l2_fwnode_endpoint bus_cfg = {
+-		.bus_type = V4L2_MBUS_CSI2_DPHY
++		.bus_type = V4L2_MBUS_CSI2_CPHY
+ 	};
+ 	struct fwnode_handle *ep;
+ 	unsigned long rate;
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-gen2.c b/drivers/media/platform/qcom/camss/camss-csid-gen2.c
+index 2cf657fda..b0e4c03c9 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen2.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen2.c
+@@ -183,6 +183,13 @@ static void __csid_configure_rx(struct csid_device *csid,
+ 	val = (lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
+ 	val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
+ 	val |= phy->csiphy_id << CSI2_RX_CFG0_PHY_NUM_SEL;
++	/*
++	 * The receiver has to be told which physical layer it is decoding.
++	 * The vendor driver writes this as (lane_type & 1) << 24; mainline
++	 * never did, so it always decoded as D-PHY.
++	 */
++	if (csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY)
++		val |= 1 << CSI2_RX_CFG0_PHY_TYPE_SEL;
+ 	writel_relaxed(val, csid->base + CSID_CSI2_RX_CFG0);
+ 
+ 	val = 1 << CSI2_RX_CFG1_PACKET_ECC_CORRECTION_EN;
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index 22def1385..c0a04e5bd 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -1284,6 +1284,8 @@ static int csid_link_setup(struct media_entity *entity,
+ 		lane_cfg = &csiphy->cfg.csi2->lane_cfg;
+ 		csid->phy.lane_cnt = lane_cfg->num_data;
+ 		csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
++		/* The receiver needs to know whether it is decoding D-PHY or C-PHY. */
++		csid->phy.bus_type = csiphy->cfg.csi2->bus_type;
+ 	}
+ 	/* Decide which virtual channels to enable based on which source pads are enabled */
+ 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.h b/drivers/media/platform/qcom/camss/camss-csid.h
+index aedc96ed8..0effa8657 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.h
++++ b/drivers/media/platform/qcom/camss/camss-csid.h
+@@ -70,6 +70,8 @@ struct csid_phy_config {
+ 	u32 lane_assign;
+ 	u32 en_vc;
+ 	u8 need_vc_update;
++	/* V4L2_MBUS_CSI2_DPHY or V4L2_MBUS_CSI2_CPHY */
++	enum v4l2_mbus_type bus_type;
+ };
+ 
+ struct csid_device;
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+index 8d769fa99..319c7116e 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+@@ -298,6 +298,8 @@ csiphy_lane_regs lane_regs_sc8280xp[] = {
+ 
+ /* GEN2 1.2 2PH */
+ #define CSIPHY_7150_LANES	5
++#define CSIPHY_7150_CPHY_LANES	3
++#define CSIPHY_7150_CPHY_SETTINGS	38
+ #define CSIPHY_7150_SETTINGS	22
+ 
+ /*
+@@ -1158,6 +1160,213 @@ static void csiphy_gen2_config_lanes(struct csiphy_device *csiphy,
+  * mask and only touches the banks of the lanes that are wired up, and it writes
+  * the common registers before any of them. Follow that.
+  */
++/*
++ * Override for the CSIPHY lane mask (see csiphy_sm7150_config_lanes()).
++ * Encoding, the vendor's: bit0 = data lane 0, bit1 = CLOCK, bit2 = data lane 1,
++ * bit3 = data lane 2, bit4 = data lane 3. The default for this board is 0x0f
++ * (clock + data lanes 0,1,2), which programs CTRL5 = 0x95.
++ *
++ * Useful values: 0x1f = all four data lanes + clock (find out where signal
++ * actually arrives), 0x0e = drop lane 0, 0x1e = lanes 1,2,3 (shifted by one).
++ * -1 keeps whatever the device tree says.
++ */
++static int lane_mask_override = -1;
++module_param(lane_mask_override, int, 0644);
++MODULE_PARM_DESC(lane_mask_override,
++		 "override the CSIPHY lane mask: bit0=DL0, bit1=CLK, bit2=DL1, bit3=DL2, bit4=DL3; -1 = use the device tree");
++
++/* 3PH (C-PHY) v1.2, three trios - transcribed from the vendor's
++ * csiphy_3ph_v1_2_reg[] (cam_csiphy_1_2_hwreg.h)
++ */
++static const struct csiphy_lane_regs
++lane_regs_sm7150_cphy[CSIPHY_7150_CPHY_LANES][CSIPHY_7150_CPHY_SETTINGS] = {
++	{	/* trio 0 */
++		{0x015c, 0x66, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0990, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0994, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0998, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0990, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0994, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0998, 0x1a, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x098c, 0xaf, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0168, 0xac, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x016c, 0xad, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0104, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x010c, 0x07, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++		{0x0108, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
++		{0x0114, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0150, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0188, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x018c, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0190, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0118, 0x3e, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x011c, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0120, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0124, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0128, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x012c, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0144, 0x22, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0160, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x01cc, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0164, 0x33, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x01dc, 0x50, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x09c0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x09c4, 0x7d, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x09c8, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0984, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0988, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0980, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x09b0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x09b4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0800, 0x0e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	},
++	{	/* trio 1 */
++		{0x035c, 0x66, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a90, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a94, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a98, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a90, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a94, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a98, 0x1f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a8c, 0xbf, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0368, 0xac, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x036c, 0xad, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0304, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x030c, 0x07, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++		{0x0308, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
++		{0x0314, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0350, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0388, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x038c, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0390, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0318, 0x3e, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x031c, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0320, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0324, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0328, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x032c, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0344, 0x22, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0360, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x03cc, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0364, 0x33, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x03dc, 0x50, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0ac0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0ac4, 0x7d, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0ac8, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a84, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a88, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0a80, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0ab0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0ab4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0800, 0x0e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	},
++	{	/* trio 2 */
++		{0x055c, 0x66, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b90, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b94, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b98, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b90, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b94, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b98, 0x1a, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b8c, 0xaf, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0568, 0xac, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x056c, 0xad, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0504, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x050c, 0x07, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++		{0x0508, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
++		{0x0514, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0550, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0588, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x058c, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0590, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0518, 0x3e, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x051c, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0520, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0524, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0528, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x052c, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0544, 0x22, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0560, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x05cc, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0564, 0x33, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x05dc, 0x50, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0bc0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0bc4, 0x7d, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0bc8, 0x7f, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b84, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b88, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0b80, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0bb0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0bb4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
++		{0x0800, 0x0e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	},
++};
++
++/*
++ * C-PHY has no clock lane: the clock is embedded in each three-wire trio, so
++ * there is no clock enable bit and the trios enable the ODD bits of CTRL5
++ * (1, 3, 5), where D-PHY uses the even ones plus bit 7 for its clock.
++ *
++ * The tuning registers are a different set entirely (lane_regs_sm7150_cphy),
++ * and the settle count is programmed as two bytes instead of one.
++ */
++static void csiphy_sm7150_config_trios(struct csiphy_device *csiphy,
++				       struct csiphy_lanes_cfg *c,
++				       u16 settle_cnt)
++{
++	struct csiphy_device_regs *regs = csiphy->regs;
++	u8 lane_enable = 0;
++	unsigned int pos;
++	int i;
++
++	for (i = 0; i < c->num_data; i++)
++		lane_enable |= BIT(c->data[i].pos * 2 + 1);
++
++	writel_relaxed(lane_enable, csiphy->base +
++		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
++	writel_relaxed(CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B,
++		       csiphy->base +
++		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
++	writel_relaxed(0x02, csiphy->base +
++		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
++	writel_relaxed(0x02, csiphy->base +
++		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
++
++	for (pos = 0; pos < CSIPHY_7150_CPHY_LANES; pos++) {
++		bool usado = false;
++
++		for (i = 0; i < c->num_data; i++)
++			if (c->data[i].pos == pos)
++				usado = true;
++		if (!usado)
++			continue;
++
++		for (i = 0; i < CSIPHY_7150_CPHY_SETTINGS; i++) {
++			const struct csiphy_lane_regs *r =
++				&lane_regs_sm7150_cphy[pos][i];
++			u32 val;
++
++			switch (r->csiphy_param_type) {
++			case CSIPHY_SETTLE_CNT_LOWER_BYTE:
++				val = settle_cnt & 0xff;
++				break;
++			case CSIPHY_SETTLE_CNT_HIGHER_BYTE:
++				val = (settle_cnt >> 8) & 0xff;
++				break;
++			case CSIPHY_DNP_PARAMS:
++				continue;
++			default:
++				val = r->reg_data;
++				break;
++			}
++
++			writel_relaxed(val, csiphy->base + r->reg_addr);
++			if (r->delay_us)
++				udelay(r->delay_us);
++		}
++	}
++}
++
+ static void csiphy_sm7150_config_lanes(struct csiphy_device *csiphy,
+ 				       struct csiphy_lanes_cfg *c,
+ 				       u8 settle_cnt)
+@@ -1171,6 +1380,13 @@ static void csiphy_sm7150_config_lanes(struct csiphy_device *csiphy,
+ 	for (i = 0; i < c->num_data; i++)
+ 		lane_mask |= CSIPHY_7150_LANE_DATA(c->data[i].pos);
+ 
++	if (lane_mask_override >= 0) {
++		dev_info(csiphy->camss->dev,
++			 "EXPERIMENT: lane_mask 0x%02x -> 0x%02x\n",
++			 lane_mask, lane_mask_override);
++		lane_mask = lane_mask_override;
++	}
++
+ 	/*
+ 	 * Lane mask bit 1 is the clock lane and enables bit 7 of CTRL5; the data
+ 	 * lanes enable every second bit from bit 0.
+@@ -1295,7 +1511,10 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
+ 	}
+ 
+ 	if (csiphy->camss->res->version == CAMSS_7150) {
+-		csiphy_sm7150_config_lanes(csiphy, c, settle_cnt);
++		if (cfg->csi2->bus_type == V4L2_MBUS_CSI2_CPHY)
++			csiphy_sm7150_config_trios(csiphy, c, settle_cnt);
++		else
++			csiphy_sm7150_config_lanes(csiphy, c, settle_cnt);
+ 		goto disable_irqs;
+ 	}
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.h b/drivers/media/platform/qcom/camss/camss-csiphy.h
+index 2d5054819..9c09ed820 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.h
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.h
+@@ -40,6 +40,8 @@ struct csiphy_lanes_cfg {
+ 
+ struct csiphy_csi2_cfg {
+ 	struct csiphy_lanes_cfg lane_cfg;
++	/* V4L2_MBUS_CSI2_DPHY or V4L2_MBUS_CSI2_CPHY */
++	enum v4l2_mbus_type bus_type;
+ };
+ 
+ struct csiphy_config {
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index b6aadd1a8..2d95c441b 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -4629,20 +4629,24 @@ static int camss_parse_endpoint_node(struct device *dev,
+ 	if (ret)
+ 		return ret;
+ 
+-	/*
+-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
+-	 * D-PHY is supported in the driver.
+-	 */
+-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
++	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY &&
++	    vep.bus_type != V4L2_MBUS_CSI2_CPHY) {
+ 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
+ 		return -EINVAL;
+ 	}
+ 
+ 	csd->interface.csiphy_id = vep.base.port;
++	csd->interface.csi2.bus_type = vep.bus_type;
+ 
+ 	mipi_csi2 = &vep.bus.mipi_csi2;
+-	lncfg->clk.pos = mipi_csi2->clock_lane;
+-	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
++	/*
++	 * C-PHY embeds the clock in each three-wire trio, so there is no clock
++	 * lane to describe and the device tree carries no clock-lanes property.
++	 */
++	if (vep.bus_type == V4L2_MBUS_CSI2_DPHY) {
++		lncfg->clk.pos = mipi_csi2->clock_lane;
++		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
++	}
+ 	lncfg->num_data = mipi_csi2->num_data_lanes;
+ 
+ 	lncfg->data = devm_kcalloc(dev,
+-- 
+2.43.0
+

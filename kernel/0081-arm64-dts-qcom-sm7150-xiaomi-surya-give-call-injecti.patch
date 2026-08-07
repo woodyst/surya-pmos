@@ -1,0 +1,103 @@
+From bc6af6c02fdfba0f37320d4ce902272127651777 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 14:38:07 +0200
+Subject: [PATCH 081/106] arm64: dts: qcom: sm7150-xiaomi-surya: give call
+ injection its own front-end
+
+Feeding a call through the VOICE_PLAYBACK_TX pseudo port from MultiMedia1
+does not work: that front-end is the one ordinary playback already uses,
+so the DSP refuses the second open with ADSP_EALREADY, the injection
+never starts, and whoever is retrying spins hard enough to take the
+Bluetooth chip - and then the phone - down with it.
+
+Add MultiMedia4 as a playback-only front-end reserved for it. Note this
+shifts CS-Voice from hw:0,3 to hw:0,4, so q6voiced needs its device
+updated to match, and the front-end cannot be opened before its mixer
+route to VOICE_PLAYBACK_TX is set (a PCM with no backend fails with
+EINVAL, which is fatal if something like PipeWire opens it at startup).
+
+Also drop the parked SLIMBUS_7 links, which need a codec node that is
+not in this tree.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 49 ++++++++-----------
+ 1 file changed, 21 insertions(+), 28 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index ac0a1006d..39c109f56 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -123,6 +123,21 @@ cpu {
+ 			};
+ 		};
+ 
++		/*
++		 * Front-end reserved for injecting audio into a call (the
++		 * VOICE_PLAYBACK_TX pseudo port). It needs one of its own:
++		 * sharing MultiMedia1 with ordinary playback means the DSP
++		 * refuses the second open with ADSP_EALREADY, the injection
++		 * never starts, and whoever is retrying spins until the phone
++		 * falls over.
++		 */
++		mm4-dai-link {
++			link-name = "MultiMedia4";
++			cpu {
++				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA4>;
++			};
++		};
++
+ 		/*
+ 		 * Hostless front-end for CS (circuit-switched) voice calls.
+ 		 * Opening this PCM (via q6voiced on call start) powers up the
+@@ -148,35 +163,7 @@ cpu {
+ 		 * estándar de Bluetooth necesitaría ese audio en PipeWire, y
+ 		 * ahí no está.
+ 		 */
+-		slim7-rx-dai-link {
+-			link-name = "SLIMBUS_7 Playback";
+-			cpu {
+-				sound-dai = <&q6afedai SLIMBUS_7_RX>;
+-			};
+-
+-			platform {
+-				sound-dai = <&q6routing>;
+-			};
+-
+-			codec {
+-				sound-dai = <&bt_audio 0>;
+-			};
+-		};
+-
+-		slim7-tx-dai-link {
+-			link-name = "SLIMBUS_7 Capture";
+-			cpu {
+-				sound-dai = <&q6afedai SLIMBUS_7_TX>;
+-			};
+-
+-			platform {
+-				sound-dai = <&q6routing>;
+-			};
+ 
+-			codec {
+-				sound-dai = <&bt_audio 1>;
+-			};
+-		};
+ 
+ 		/*
+ 		 * The DSP's copy of a phone call. These are backends with no
+@@ -694,6 +681,12 @@ dai@1 {
+ 	dai@2 {
+ 		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+ 	};
++
++	/* Playback only: this one feeds audio into a live call. */
++	dai@3 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA4>;
++		direction = <Q6ASM_DAI_RX>;
++	};
+ };
+ 
+ &remoteproc_adsp {
+-- 
+2.43.0
+

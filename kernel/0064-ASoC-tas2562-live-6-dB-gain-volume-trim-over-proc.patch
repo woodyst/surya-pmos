@@ -1,0 +1,358 @@
+From 44801033b0c1b3b38e5f64d8536a9404420e53de Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 21 Jul 2026 19:37:43 +0200
+Subject: [PATCH 064/106] ASoC: tas2562: live +/-6 dB gain/volume trim over
+ /proc
+
+The two surya amps are shared across use cases (music stereo, in-call
+earpiece, speakerphone), each wanting a different loudness that the UCM
+sets as a per-mode base. Expose six knobs under
+/proc/surya_amp/{full,top,bottom}_{gain,vol} layering a live -6..+6 dB
+trim on those bases, applied at the amp's forced-write points so it
+survives a DAC power cycle. Value 0..255, 128 = no change.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/tas2562.c | 269 +++++++++++++++++++++++++++++++++----
+ 1 file changed, 243 insertions(+), 26 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 113583019..fcb33da7f 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -13,6 +13,8 @@
+ #include <linux/gpio/consumer.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/delay.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
+ 
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+@@ -58,6 +60,7 @@ struct tas2562_data {
+ 	bool tdm_slots_configured;
+ 	unsigned int asi1_sel;
+ 	unsigned int tdm_cfg2_len;	/* RXWLEN|RXLEN bits, re-forced at power-up */
++	int gain_base;			/* per-mode analogue gain (0..0x1c), set by UCM */
+ };
+ 
+ enum tas256x_model {
+@@ -586,34 +589,229 @@ static int tas2562_load_init(struct tas2562_data *tas2562)
+ 	return 0;
+ }
+ 
+-static int tas2562_set_volume(struct tas2562_data *tas2562, int volume_lvl)
++/* ---- Live +/-6 dB trim over the per-mode base gains (adjustable via /proc) ----
++ *
++ * The UCM sets a base analogue gain and digital volume per call/playback mode
++ * (earpiece, speakerphone, music, ...). These six /proc knobs add a live trim
++ * on top, without editing the config or reloading anything: a value of 0..255
++ * maps linearly to -6..+6 dB, 128 being no change. "full" trims both amps,
++ * "top"/"bottom" trim one each, and they add. The knobs live in
++ * /proc/surya_amp/{full,top,bottom}_{gain,vol}.
++ *
++ * The two amps are told apart by i2c address: 0x4d is the top one (earpiece /
++ * music left channel), 0x4c the bottom (main loudspeaker / music right).
++ *
++ * WARNING for anything driving these: the trim can push the amps up to +6 dB
++ * over the tuned level, and a sustained high level can damage the speakers.
++ */
++#define TAS_TRIM_MID		128
++#define TAS_GAIN_STEPS_6DB	12	/* analogue gain is 0.5 dB per step */
++#define TAS_VOL_STEPS_6DB	6	/* digital volume is 1 dB per step */
++
++static u8 trim_full_gain = TAS_TRIM_MID;
++static u8 trim_top_gain = TAS_TRIM_MID;
++static u8 trim_bottom_gain = TAS_TRIM_MID;
++static u8 trim_full_vol = TAS_TRIM_MID;
++static u8 trim_top_vol = TAS_TRIM_MID;
++static u8 trim_bottom_vol = TAS_TRIM_MID;
++
++static struct tas2562_data *tas_top;	/* i2c 0x4d */
++static struct tas2562_data *tas_bottom;	/* i2c 0x4c */
++static DEFINE_MUTEX(tas_trim_lock);
++static struct proc_dir_entry *tas_proc_dir;
++
++/* /proc value (0..255) -> trim in control steps, centred on 128 = no change. */
++static int tas_trim_steps(u8 v, int steps_6db)
++{
++	return DIV_ROUND_CLOSEST(((int)v - TAS_TRIM_MID) * steps_6db, TAS_TRIM_MID);
++}
++
++static bool tas_is_bottom(struct tas2562_data *t)
+ {
+-	u32 reg_val = float_vol_db_lookup[volume_lvl / 2];
+-	__be32 dvc = cpu_to_be32(reg_val);
++	return t == tas_bottom;
++}
++
++/*
++ * Write the digital-volume coefficient for a level.
++ *
++ * The digital volume is one 32-bit coefficient, and the coefficient registers
++ * only take a single four-byte burst: written a byte at a time the chip acks
++ * every transfer and silently keeps none of them, leaving the volume at zero -
++ * which multiplies every sample by zero and mutes the amp, with nothing
++ * reporting a fault. It has to be regmap_raw_write() with the cache bypassed,
++ * not regmap_bulk_write() (which, with a cache configured, falls back to the
++ * byte-at-a-time pattern the hardware ignores).
++ */
++static int tas2562_write_dvc(struct tas2562_data *tas2562, int lvl)
++{
++	__be32 dvc;
+ 	int ret;
+ 
+-	/*
+-	 * The digital volume is one 32-bit coefficient, and the coefficient
+-	 * registers only take a single four-byte burst: written a byte at a
+-	 * time the chip acks every transfer and silently keeps none of them,
+-	 * leaving the volume at zero - which multiplies every sample by zero
+-	 * and mutes the amp outright, with nothing anywhere reporting a fault.
+-	 *
+-	 * It has to be regmap_raw_write() with the cache bypassed, not
+-	 * regmap_bulk_write(): with a cache configured, bulk_write has to
+-	 * maintain that cache and so falls back to writing one register at a
+-	 * time, which is precisely the pattern the hardware ignores.
+-	 */
++	lvl = clamp(lvl, 0, TAS2562_DVC_LEVEL_0DB);
++	dvc = cpu_to_be32(float_vol_db_lookup[lvl / 2]);
++
+ 	regcache_cache_bypass(tas2562->regmap, true);
+ 	ret = regmap_raw_write(tas2562->regmap, TAS2562_DVC_CFG1,
+ 			       &dvc, sizeof(dvc));
+ 	regcache_cache_bypass(tas2562->regmap, false);
++
++	return ret;
++}
++
++/*
++ * Apply base + trim to the hardware. Called from the mixer put, from /proc, and
++ * from the DAC power-up re-assert, so the trimmed value survives a power cycle
++ * the same way the mux and slot length do.
++ */
++static void tas2562_apply_volume(struct tas2562_data *t)
++{
++	int per = tas_is_bottom(t)
++		? tas_trim_steps(trim_bottom_vol, TAS_VOL_STEPS_6DB)
++		: tas_trim_steps(trim_top_vol, TAS_VOL_STEPS_6DB);
++
++	tas2562_write_dvc(t, t->volume_lvl +
++			  tas_trim_steps(trim_full_vol, TAS_VOL_STEPS_6DB) + per);
++}
++
++static void tas2562_apply_gain(struct tas2562_data *t)
++{
++	int per = tas_is_bottom(t)
++		? tas_trim_steps(trim_bottom_gain, TAS_GAIN_STEPS_6DB)
++		: tas_trim_steps(trim_top_gain, TAS_GAIN_STEPS_6DB);
++	int eff = t->gain_base +
++		  tas_trim_steps(trim_full_gain, TAS_GAIN_STEPS_6DB) + per;
++
++	eff = clamp(eff, 0, 0x1c);
++	regcache_cache_bypass(t->regmap, true);
++	regmap_update_bits(t->regmap, TAS2562_PB_CFG1,
++			   TAS2562_PB_CFG1_TAS2564_AMPLEVEL_MASK, eff << 1);
++	regcache_cache_bypass(t->regmap, false);
++}
++
++/* Set the per-mode digital-volume base (from the mixer) and apply it trimmed. */
++static int tas2562_set_volume(struct tas2562_data *tas2562, int volume_lvl)
++{
++	tas2562->volume_lvl = clamp(volume_lvl, 0, TAS2562_DVC_LEVEL_0DB);
++	tas2562_apply_volume(tas2562);
++
++	return 0;
++}
++
++/* The analogue amp gain gets the same base+trim treatment as the volume, so it
++ * carries a custom get/put rather than writing PB_CFG1 straight from the core. */
++static int tas2562_gain_control_get(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
++
++	ucontrol->value.integer.value[0] = tas2562->gain_base;
++	return 0;
++}
++
++static int tas2562_gain_control_put(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
++
++	tas2562->gain_base = clamp((int)ucontrol->value.integer.value[0], 0, 0x1c);
++	tas2562_apply_gain(tas2562);
++	return 0;
++}
++
++/* --- /proc/surya_amp: the six live trim knobs --- */
++static int tas_proc_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "%u\n", *(u8 *)m->private);
++	return 0;
++}
++
++static int tas_proc_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, tas_proc_show, pde_data(inode));
++}
++
++static ssize_t tas_proc_write(struct file *file, const char __user *buf,
++			      size_t count, loff_t *ppos)
++{
++	u8 *val = pde_data(file_inode(file));
++	u8 v;
++	int ret;
++
++	ret = kstrtou8_from_user(buf, count, 0, &v);
+ 	if (ret)
+ 		return ret;
+ 
+-	tas2562->volume_lvl = volume_lvl;
++	mutex_lock(&tas_trim_lock);
++	*val = v;
++	if (tas_top) {
++		tas2562_apply_gain(tas_top);
++		tas2562_apply_volume(tas_top);
++	}
++	if (tas_bottom) {
++		tas2562_apply_gain(tas_bottom);
++		tas2562_apply_volume(tas_bottom);
++	}
++	mutex_unlock(&tas_trim_lock);
+ 
+-	return 0;
++	return count;
++}
++
++static const struct proc_ops tas_proc_ops = {
++	.proc_open = tas_proc_open,
++	.proc_read = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
++	.proc_write = tas_proc_write,
++};
++
++static const struct {
++	const char *name;
++	u8 *val;
++} tas_knobs[] = {
++	{ "full_gain",   &trim_full_gain },
++	{ "top_gain",    &trim_top_gain },
++	{ "bottom_gain", &trim_bottom_gain },
++	{ "full_vol",    &trim_full_vol },
++	{ "top_vol",     &trim_top_vol },
++	{ "bottom_vol",  &trim_bottom_vol },
++};
++
++/* Both created and torn down under tas_trim_lock, keyed off the two instances. */
++static void tas_register_instance(struct tas2562_data *t)
++{
++	int i;
++
++	mutex_lock(&tas_trim_lock);
++	if (t->client && t->client->addr == 0x4c)
++		tas_bottom = t;
++	else
++		tas_top = t;
++
++	if (!tas_proc_dir) {
++		tas_proc_dir = proc_mkdir("surya_amp", NULL);
++		if (tas_proc_dir)
++			for (i = 0; i < ARRAY_SIZE(tas_knobs); i++)
++				proc_create_data(tas_knobs[i].name, 0644,
++						 tas_proc_dir, &tas_proc_ops,
++						 tas_knobs[i].val);
++	}
++	mutex_unlock(&tas_trim_lock);
++}
++
++static void tas_unregister_instance(struct tas2562_data *t)
++{
++	mutex_lock(&tas_trim_lock);
++	if (tas_top == t)
++		tas_top = NULL;
++	if (tas_bottom == t)
++		tas_bottom = NULL;
++	if (tas_proc_dir && !tas_top && !tas_bottom) {
++		proc_remove(tas_proc_dir);
++		tas_proc_dir = NULL;
++	}
++	mutex_unlock(&tas_trim_lock);
+ }
+ 
+ static int tas2562_codec_probe(struct snd_soc_component *component)
+@@ -814,6 +1012,9 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 		regcache_cache_bypass(tas2562->regmap, false);
+ 		if (ret < 0)
+ 			return ret;
++		/* Re-force the trimmed gain and volume too, same cache reason. */
++		tas2562_apply_gain(tas2562);
++		tas2562_apply_volume(tas2562);
+ 		tas2562->dac_powered = true;
+ 		ret = tas2562_update_pwr_ctrl(tas2562);
+ 		break;
+@@ -866,8 +1067,9 @@ static const struct snd_kcontrol_new vsense_switch =
+ 			1, 1);
+ 
+ static const struct snd_kcontrol_new tas2562_snd_controls[] = {
+-	SOC_SINGLE_TLV("Amp Gain Volume", TAS2562_PB_CFG1, 1, 0x1c, 0,
+-		       tas2562_dac_tlv),
++	SOC_SINGLE_EXT_TLV("Amp Gain Volume", SND_SOC_NOPM, 0, 0x1c, 0,
++			   tas2562_gain_control_get, tas2562_gain_control_put,
++			   tas2562_dac_tlv),
+ 	/*
+ 	 * Capped at the last entry of float_vol_db_lookup[] rather than the 110
+ 	 * this used to advertise: the table holds 55 entries and is indexed by
+@@ -1124,16 +1326,30 @@ static int tas2562_probe(struct i2c_client *client)
+ 
+ 	dev_set_drvdata(&client->dev, data);
+ 
++	/* Sane analogue-gain base (vendor 16 dBV) until UCM/alsactl sets it. */
++	data->gain_base = 0x0d;
++
+ 	if (data->model_id == TAS2110)
+-		return devm_snd_soc_register_component(dev,
+-						       &soc_component_dev_tas2110,
+-						       tas2562_dai,
+-						       ARRAY_SIZE(tas2562_dai));
++		ret = devm_snd_soc_register_component(dev,
++						      &soc_component_dev_tas2110,
++						      tas2562_dai,
++						      ARRAY_SIZE(tas2562_dai));
++	else
++		ret = devm_snd_soc_register_component(dev,
++						      &soc_component_dev_tas2562,
++						      tas2562_dai,
++						      ARRAY_SIZE(tas2562_dai));
++	if (ret)
++		return ret;
+ 
+-	return devm_snd_soc_register_component(dev, &soc_component_dev_tas2562,
+-					       tas2562_dai,
+-					       ARRAY_SIZE(tas2562_dai));
++	tas_register_instance(data);
+ 
++	return 0;
++}
++
++static void tas2562_remove(struct i2c_client *client)
++{
++	tas_unregister_instance(dev_get_drvdata(&client->dev));
+ }
+ 
+ #ifdef CONFIG_OF
+@@ -1152,6 +1368,7 @@ static struct i2c_driver tas2562_i2c_driver = {
+ 		.of_match_table = of_match_ptr(tas2562_of_match),
+ 	},
+ 	.probe = tas2562_probe,
++	.remove = tas2562_remove,
+ 	.id_table = tas2562_id,
+ };
+ 
+-- 
+2.43.0
+

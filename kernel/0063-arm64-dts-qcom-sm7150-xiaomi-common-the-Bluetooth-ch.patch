@@ -1,0 +1,48 @@
+From e9a1c13b4539144f97ae0580260b83eda3fe55bc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 19 Jul 2026 21:33:53 +0200
+Subject: [PATCH 063/106] arm64: dts: qcom: sm7150-xiaomi-common: the Bluetooth
+ chip is a wcn3990
+
+It is declared as a wcn3998, which is not what these phones carry: the chip
+reports ROM version 0x0201 and the factory BTFM partition ships
+crbtfw21.tlv / crnv21.bin for it.
+
+The compatible picks the rom_ver formula in btqca.c, and the wcn3998 one -
+((soc_ver & 0xf000) >> 7) | (soc_ver & 0xf) - yields 0x01 for this SoC
+version instead of the 0x21 the wcn3990 formula gives, so the driver asks
+for a crbtfw01.tlv / crnv01.bin pair that is not this chip's firmware.
+Bluetooth still came up, but on the wrong images; with the right ones the
+controller also reports a different SCO buffer layout (240:4 rather than
+60:8).
+
+Every other board in tree, including the other sm7150 (google-sunfish),
+uses qcom,wcn3990-bt.
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index cc8f53a9f..adbf3c0fb 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -954,7 +954,14 @@ &uart3 {
+ 	status = "okay";
+ 
+ 	bluetooth: bluetooth {
+-		compatible = "qcom,wcn3998-bt";
++		/*
++		 * The chip is a WCN3990: it reports ROM version 0x0201 and the
++		 * factory BTFM partition ships crbtfw21.tlv / crnv21.bin for it.
++		 * Declaring it as a wcn3998 picks a different rom_ver formula in
++		 * btqca.c ((soc_ver & 0xf000) >> 7 instead of (soc_ver & 0xf00) >> 4),
++		 * which asks for the nonexistent-for-this-chip "01" firmware pair.
++		 */
++		compatible = "qcom,wcn3990-bt";
+ 
+ 		vddio-supply = <&vreg_pmu_io>;
+ 		vddxo-supply = <&vreg_pmu_xo>;
+-- 
+2.43.0
+

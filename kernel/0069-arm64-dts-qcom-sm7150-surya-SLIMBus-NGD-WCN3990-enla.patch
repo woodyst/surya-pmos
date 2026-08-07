@@ -1,0 +1,175 @@
+From 68e52bafae3e891f0aad6f61df8ad7314f321142 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 13:09:02 +0200
+Subject: [PATCH 069/106] arm64: dts: qcom: sm7150-surya: SLIMBus NGD + WCN3990
+ + enlaces SLIMBUS_7
+
+slimbam + slim-ngd@62e40000 (instancia QMI 1, cell-index 3 de fabrica),
+los dos dispositivos del chip (IFD registros + PGD puertos de audio) y
+los enlaces DAI de SLIMBUS_7 contra bt_audio.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 82 +++++++++++++++++++
+ arch/arm64/boot/dts/qcom/sm7150.dtsi          | 46 +++++++++++
+ 2 files changed, 128 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 6b6da2728..29b4a8537 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -138,6 +138,46 @@ cpu {
+ 			};
+ 		};
+ 
++		/*
++		 * Audio de llamada por Bluetooth: el puerto SLIMBUS_7 del DSP en
++		 * un extremo y los puertos SCO del WCN3990 en el otro. Es el
++		 * camino que usa el firmware de fábrica.
++		 *
++		 * Hace falta porque la sesión CS-Voice no pasa por la CPU: va
++		 * del módem al DSP y de ahí a los amplificadores. La vía
++		 * estándar de Bluetooth necesitaría ese audio en PipeWire, y
++		 * ahí no está.
++		 */
++		slim7-rx-dai-link {
++			link-name = "SLIMBUS_7 Playback";
++			cpu {
++				sound-dai = <&q6afedai SLIMBUS_7_RX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&bt_audio 0>;
++			};
++		};
++
++		slim7-tx-dai-link {
++			link-name = "SLIMBUS_7 Capture";
++			cpu {
++				sound-dai = <&q6afedai SLIMBUS_7_TX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&bt_audio 1>;
++			};
++		};
++
+ 		i2s-dai-link {
+ 			link-name = "I2S Playback";
+ 			cpu {
+@@ -224,6 +264,48 @@ &lpass_tx_macro {
+ 	status = "okay";
+ };
+ 
++/*
++ * SLIMBus to the WCN3990's audio side, for Bluetooth call audio. The chip
++ * announces itself on the bus; the elemental addresses come from downstream
++ * (sdmmagpie's btfmslim_codec).
++ */
++&slimbam {
++	status = "okay";
++};
++
++&slim {
++	status = "okay";
++
++	slim@1 {
++		reg = <1>;
++		#address-cells = <2>;
++		#size-cells = <0>;
++
++		/*
++		 * WCN3990 Bluetooth audio. The enumeration address comes from
++		 * downstream's btfmslim_codec, whose elemental-addr of
++		 * [00 01 20 02 17 02] is instance 0, device index 1, product
++		 * 0x220, manufacturer 0x217.
++		 */
++		/*
++		 * The chip presents two devices and both are needed: the
++		 * interface device carries register access, the ported one
++		 * owns the audio ports.
++		 */
++		bt_ifd: bt-ifd@0,0 {
++			compatible = "slim217,220";
++			reg = <0 0>;
++		};
++
++		bt_audio: bt-audio@1,0 {
++			compatible = "slim217,220";
++			reg = <1 0>;
++			/* Two DAIs: SCO downlink and SCO uplink. */
++			#sound-dai-cells = <1>;
++		};
++	};
++};
++
+ &lpass_rx_macro {
+ 	status = "okay";
+ };
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 50a8cbe3b..db7a30861 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4721,6 +4721,52 @@ lpass_va_macro: codec@62f20000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * SLIMBus to the WCN3990 combo chip. Only its audio side matters
++		 * here: this is how a Bluetooth headset's SCO stream reaches the
++		 * DSP, so that a voice call - which never crosses the CPU - can be
++		 * routed to the headset the same way it is routed to the speakers.
++		 *
++		 * Downstream (sdmmagpie) calls this instance "slim_qca", and has a
++		 * second one ("slim_aud" at 0x62dc0000) for a SLIMBus audio codec.
++		 * This SoC's codec is on SoundWire instead, so that one is omitted.
++		 */
++		slimbam: dma-controller@62e04000 {
++			compatible = "qcom,bam-v1.7.4", "qcom,bam-v1.7.0";
++			qcom,controlled-remotely;
++			reg = <0 0x62e04000 0 0x20000>;
++			num-channels = <23>;
++			interrupts = <GIC_SPI 292 IRQ_TYPE_LEVEL_HIGH>;
++			#dma-cells = <1>;
++			qcom,ee = <1>;
++			qcom,num-ees = <4>;
++			iommus = <&apps_smmu 0x1bf3 0x0>;
++			status = "disabled";
++		};
++
++		slim: slim-ngd@62e40000 {
++			compatible = "qcom,slim-ngd-v2.1.0";
++			reg = <0 0x62e40000 0 0x2c000>;
++			interrupts = <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;
++
++			dmas = <&slimbam 3>, <&slimbam 4>;
++			dma-names = "rx", "tx";
++
++			iommus = <&apps_smmu 0x1bf3 0x0>;
++
++			/*
++			 * Which SLIMBus the ADSP should attach our NGD to. This
++			 * SoC has two: 0 is the audio one (unused here, the codec
++			 * is on SoundWire) and 1 is the one the WCN3990 sits on.
++			 * Downstream picks the same value, as cell-index >> 1.
++			 */
++			qcom,slim-hw-instance = <1>;
++
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		lpass_tx_macro: codec@62ec0000 {
+ 			compatible = "qcom,sm8250-lpass-tx-macro";
+ 			reg = <0 0x62ec0000 0 0x1000>;
+-- 
+2.43.0
+

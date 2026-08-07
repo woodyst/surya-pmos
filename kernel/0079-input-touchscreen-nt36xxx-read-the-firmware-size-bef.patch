@@ -1,0 +1,64 @@
+From d3f3b9bfbdacb904e735c95cacd057f72555eac8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 02:14:45 +0200
+Subject: [PATCH 079/106] input: touchscreen: nt36xxx: read the firmware size
+ before releasing it
+
+The driver copies the firmware into its own DMA-capable buffer, releases
+the firmware, and only then reads fw_entry->size out of the structure it
+just handed back (and dereferences fw_entry->data once more in a
+WARN_ON). Whatever gets allocated in that memory next decides what size
+the driver believes: a garbage value sends the header search walking off
+the end of the buffer in 4096-byte steps until it hits an unmapped page.
+
+That is an intermittent boot failure - the phone comes up fine dozens of
+times and then dies in the first second with an oops in a kworker
+running this function, or silently hangs on a kernel built without
+panic-on-oops. It survived module blacklists because the driver is
+built in.
+
+Take the size before release_firmware(), drop the WARN_ON that reads
+freed memory, and reject a firmware too small to hold a single block.
+---
+ drivers/input/touchscreen/nt36xxx_core.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/touchscreen/nt36xxx_core.c b/drivers/input/touchscreen/nt36xxx_core.c
+index e8cb3e646..8953f664c 100644
+--- a/drivers/input/touchscreen/nt36xxx_core.c
++++ b/drivers/input/touchscreen/nt36xxx_core.c
+@@ -731,16 +731,28 @@ static void _nt36xxx_boot_download_firmware(struct nt36xxx_ts *ts) {
+ 	 *
+ 	 */
+ 	ts->fw_entry.data = devm_kmemdup(ts->dev, fw_entry->data, fw_entry->size, GFP_KERNEL | GFP_DMA);
++	/*
++	 * Take the size before handing the firmware back: everything in
++	 * fw_entry is gone the moment it is released, so reading the size
++	 * afterwards returns whatever landed in that memory next. A garbage
++	 * size sends the header search below walking past the end of the
++	 * buffer and faults during boot - intermittently, since it depends on
++	 * the freed memory being reused in time.
++	 */
++	ts->fw_entry.size = fw_entry->size;
+ 
+ 	release_firmware(fw_entry);
+ 
+ 	if (!ts->fw_entry.data) {
+ 		dev_err(ts->dev, "memdup fw_data fail\n");
++		ts->fw_entry.size = 0;
+ 		goto exit;
+ 	}
+-	ts->fw_entry.size = fw_entry->size;
+ 
+-	WARN_ON(ts->fw_entry.data[0] != fw_entry->data[0]);
++	if (ts->fw_entry.size < 4096) {
++		dev_err(ts->dev, "fw too small: %zu bytes\n", ts->fw_entry.size);
++		goto release_fw;
++	}
+ 
+ 	for (i = (ts->fw_entry.size / 4096); i > 0; i--) {
+ 		if (strncmp(&ts->fw_entry.data[i * 4096 - 3], "NVT", 3) == 0) {
+-- 
+2.43.0
+

@@ -1,0 +1,94 @@
+From 4850f8ec2cb312b9346778ff169a00bffc36221a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 31 Jul 2026 18:42:36 +0200
+Subject: [PATCH 065/106] arm64: dts: qcom: sm7150-xiaomi-common: enable the
+ USB3/DP QMP PHY
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The board deliberately dropped the QMP combo PHY from usb_1_dwc3's phys
+list ("Remove USB3 phy", maximum-speed = "high-speed",
+qcom,select-utmi-as-pipe-clk), so USB has only ever run at USB2 speed
+here, and the typec connector had no orientation-switch port at all.
+
+That comment on qcom_pmic_typec_port_set_polarity() says polarity is
+handled separately by phy-qcom-qmp.c — this board never gave it the
+chance to. Enable usb_1_qmpphy (reusing the vdda_usb_ss_dp_core/
+vdda_usb_ss_dp_1p2 rails already defined on this board) and wire its
+orientation-switch endpoint to the typec connector's second port,
+mirroring the working sm7150-google-sunfish recipe. Restores USB3
+SuperSpeed and gives the connector a real orientation-switch path.
+
+Verified building cleanly (dtc, no new warnings) for
+sm7150-xiaomi-surya-huaxing. Not yet verified on real hardware whether
+this also fixes OTG/host-mode CC attach detection for source-role
+peripherals (investigated at length: CC_ATTACHED/TYPE_C_MISC_STATUS_REG
+and TYPE_C_STATE_MACHINE_STATUS_REG never assert with two different
+OTG adapters on this same board's port, both at the mainline TCPM
+driver level and reading the raw regmap directly, so that may be an
+unrelated hardware-level issue).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-common.dtsi   | 23 +++++++++++++++----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index adbf3c0fb..d42867d3c 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -671,6 +671,13 @@ pm6150_role_switch_in: endpoint {
+ 					remote-endpoint = <&usb_1_dwc3_hs>;
+ 				};
+ 			};
++
++			port@1 {
++				reg = <1>;
++				pm6150_typec_mux_in: endpoint {
++					remote-endpoint = <&usb_1_qmpphy_out>;
++				};
++			};
+ 		};
+ 	};
+ };
+@@ -993,17 +1000,12 @@ &ufs_mem_phy {
+ };
+ 
+ &usb_1 {
+-	qcom,select-utmi-as-pipe-clk;
+ 	status = "okay";
+ };
+ 
+ &usb_1_dwc3 {
+ 	dr_mode = "otg";
+ 	usb-role-switch;
+-	maximum-speed = "high-speed";
+-	/* Remove USB3 phy */
+-	phys = <&usb_1_hsphy>;
+-	phy-names = "usb2-phy";
+ };
+ 
+ &usb_1_dwc3_hs {
+@@ -1017,6 +1019,17 @@ &usb_1_hsphy {
+ 	status = "okay";
+ };
+ 
++&usb_1_qmpphy {
++	vdda-pll-supply = <&vdda_usb_ss_dp_1p2>;
++	vdda-phy-supply = <&vdda_usb_ss_dp_core>;
++	orientation-switch;
++	status = "okay";
++};
++
++&usb_1_qmpphy_out {
++	remote-endpoint = <&pm6150_typec_mux_in>;
++};
++
+ &venus {
+ 	//status = "okay";
+ };
+-- 
+2.43.0
+

@@ -1,0 +1,46 @@
+From 783790d268c62fad0b27379ac0292ea253bcfcb2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 01:05:36 +0200
+Subject: [PATCH 037/106] arm64: dts: qcom: sm7150-xiaomi-common: pin WCD9375
+ rails to 1.8V
+
+The wcd937x driver only calls regulator_bulk_get_enable() and never sets
+a voltage, so the codec's supplies come up at whatever the constraint
+minimum happens to be. On the Xiaomi sm7150 boards that left ldo10 at
+1720 mV and ldo15 at 1696 mV, while the downstream sm6150/sdmmagpie audio
+configuration (sdmmagpie is SM7150 downstream) runs both at 1800 mV.
+
+Raise the constraint minimums to 1800 mV so the codec is supplied at the
+voltage it is specified for. Both rails are within their existing max.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index 8f496ad2c..eecf968d4 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -284,7 +284,7 @@ vreg_l9a_0p8: ldo9 {
+ 
+ 		vddpx_3:
+ 		vreg_l10a_1p8: ldo10 {
+-			regulator-min-microvolt = <1720000>;
++			regulator-min-microvolt = <1800000>;
+ 			regulator-max-microvolt = <1832000>;
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
+@@ -322,7 +322,7 @@ vreg_l14a_1p8: ldo14 {
+ 		};
+ 
+ 		vreg_l15a_1p8: ldo15 {
+-			regulator-min-microvolt = <1696000>;
++			regulator-min-microvolt = <1800000>;
+ 			regulator-max-microvolt = <1904000>;
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
+-- 
+2.43.0
+

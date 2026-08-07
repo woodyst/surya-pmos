@@ -1,0 +1,69 @@
+From fd7eb3f6393be3aad30dece7d8260f0cf00ea731 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 14:13:36 +0200
+Subject: [PATCH 094/106] Bluetooth: hci_qca: let the core use SCO flow control
+
+Without it hci_sched_sco() has no idea when the controller has room: it
+sends sco_pkts packets in a row and requeues its work, so the pacing
+comes from the workqueue rather than from the link. This controller
+reports four SCO buffers, so a burst is 30 ms of audio - a call to a
+headset arrives chopped into fast pulses, which is exactly what we hear,
+and overrunning those four buffers is easy enough to take the firmware
+down with it (Reading QCA version information failed, hci0 DOWN).
+
+Only hci_vhci, the virtual test driver, sets this quirk today, so no
+real controller in mainline uses SCO flow control at all.
+
+The core still checks that the controller advertises Write Sync Flow
+Control before using it, so this is a no-op where it is unsupported. A
+module parameter turns it back off for comparison.
+---
+ drivers/bluetooth/hci_qca.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index 767c1658b..77f11f261 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -234,6 +234,14 @@ struct qca_serdev {
+ 	const char *firmware_name[2];
+ };
+ 
++/*
++ * Whether the core may use SCO flow control on this controller. Off turns the
++ * quirk back off without a rebuild, to compare the two.
++ */
++static bool sco_flowctl = true;
++module_param(sco_flowctl, bool, 0644);
++MODULE_PARM_DESC(sco_flowctl, "use SCO flow control when the controller offers it");
++
+ static int qca_regulator_enable(struct qca_serdev *qcadev);
+ static void qca_regulator_disable(struct qca_serdev *qcadev);
+ static void qca_power_off(struct hci_uart *hu);
+@@ -1933,6 +1941,22 @@ static int qca_setup(struct hci_uart *hu)
+ 	 */
+ 	hci_set_quirk(hdev, HCI_QUIRK_SIMULTANEOUS_DISCOVERY);
+ 
++	/*
++	 * Let the core use SCO flow control if the controller offers it.
++	 *
++	 * Without it hci_sched_sco() has no idea when the controller has room:
++	 * it just sends sco_pkts packets in a row and requeues its work, so the
++	 * pacing comes from the workqueue and not from the link. This one
++	 * reports only four SCO buffers, so a burst is 30 ms of audio - a call
++	 * to a headset arrives chopped into fast pulses, and overrunning those
++	 * four buffers is easy enough to take the firmware down with it.
++	 *
++	 * The core still checks that the controller advertises Write Sync Flow
++	 * Control before using it, so this is a no-op where it is unsupported.
++	 */
++	if (sco_flowctl)
++		hci_set_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED);
++
+ 	switch (soc_type) {
+ 	case QCA_QCA2066:
+ 		soc_name = "qca2066";
+-- 
+2.43.0
+

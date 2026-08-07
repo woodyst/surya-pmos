@@ -1,0 +1,69 @@
+From 72c62f379b9e8e04bbab4ee806b724f116b0cc01 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 23:13:49 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7150-xiaomi-surya: wire up the main
+ camera's focus motor
+
+The module has a focus actuator at 0x0c on the sensor's I2C bus. It answers
+whenever the camera is powered, and the factory device tree lists it as a
+generic qcom,actuator whose cam_vaf-supply is uw_ldo_ois_drv.
+
+That regulator was already described here but had no consumer at all, so it
+stayed disabled: the chip acknowledged writes and nothing moved. Add the lens
+node with vcc-supply pointing at it, and link the sensor to it with
+lens-focus, which gets the ancillary link and the FOCUS_ABSOLUTE control.
+
+Note this does not move the lens yet. Neither the Dongwoon nor the AK7375
+protocol produces any visible change with the rail confirmed enabled, so
+either the board needs another enable we have not found, or whatever answers
+at 0x0c is not the actuator. Wiring the power correctly is a prerequisite
+either way.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 777349e06..2fb678754 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -396,6 +396,25 @@ &battery {
+ };
+ 
+ &cci0_i2c0 {
++	/*
++	 * Focus actuator of the main camera module. It answers at 0x0c whenever
++	 * the camera is powered, and takes a plain 16-bit write with no register
++	 * index, which is the Dongwoon protocol rather than the DW9807 or AK7375
++	 * one. The factory device tree describes it only as a generic
++	 * "qcom,actuator" and its stack carries drivers for four different
++	 * chips, so the protocol is what identifies it.
++	 *
++	 * Its coil driver hangs off uw_ldo_ois_drv. That regulator was already
++	 * described here but had no consumer at all, so it sat disabled: the
++	 * chip acknowledged every position write and the lens never moved.
++	 */
++	dw9714: camera-lens@c {
++		compatible = "dongwoon,dw9714";
++		reg = <0x0c>;
++
++		vcc-supply = <&vreg_uw_ldo_ois_drv>;
++	};
++
+ 	/*
+ 	 * Main 64MP camera. The 0x50 that also answers on this bus is the
+ 	 * module's EEPROM, not the sensor.
+@@ -409,6 +428,8 @@ camera@1a {
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&cam_rear_default>;
+ 
++		lens-focus = <&dw9714>;
++
+ 		/*
+ 		 * Mounted a quarter turn from the display's natural (portrait)
+ 		 * orientation, facing away from the user. Without this the
+-- 
+2.43.0
+

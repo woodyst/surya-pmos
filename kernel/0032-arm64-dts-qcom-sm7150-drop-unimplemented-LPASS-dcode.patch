@@ -1,0 +1,85 @@
+From 5595cb3d58e515109f034d73abb0f2ba2f733ba5 Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 16:19:32 +0200
+Subject: [PATCH 032/106] arm64: dts: qcom: sm7150: drop unimplemented LPASS
+ dcodec vote from macros
+
+The VA/TX/RX LPASS macros failed to probe with -110 (-ETIMEDOUT): the
+sm7150 ADSP firmware does not implement the AFE_CMD_REMOTE_LPASS_CORE_HW
+"dcodec" vote (hw block 4, opcode 0x000100f4), so preparing that vote
+clock blocks for 3s and then times out, failing the whole macro probe
+(the VA macro is the fsgen master, so TX/RX and both SoundWire
+controllers defer forever and no sound card registers).
+
+Drop the HW_DCODEC_VOTE clock from the three macro nodes. The "macro"
+vote (hw block 3) is kept: it is implemented and works, as proven by the
+lpass_tlmm pinctrl node which already votes it successfully at boot
+(clk_summary shows LPASS_HW_MACRO prepare/enable count 1) and keeps the
+LPASS core powered for MMIO. macro/dcodec are optional in the macro
+drivers, so dropping dcodec is safe.
+
+Also give the RX macro its own RX_CORE_MCLK / RX_CORE_NPL_MCLK instead of
+the TX core clocks; on sm7150 each macro has its own core mclk (confirmed
+against the downstream sm6150 audio DT). The VA macro keeps TX_CORE_MCLK
+as it shares the TX clock island, same as sm8250.
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 25 ++++++++++++++++---------
+ 1 file changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 3e619ba3a..3d333d213 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4698,10 +4698,19 @@ lpass_va_macro: codec@62f20000 {
+ 			compatible = "qcom,sm8250-lpass-va-macro";
+ 			reg = <0 0x62f20000 0 0x1000>;
+ 
++			/*
++			 * The VA macro shares the TX core mclk island (same as
++			 * sm8250), so "mclk" is TX_CORE_MCLK, and VA is the fsgen
++			 * master for TX/RX. The HW_DCODEC vote (block 4) is
++			 * dropped: the sm7150 ADSP firmware does not implement it
++			 * and its APR request times out (-110), which previously
++			 * failed the whole probe. The HW_MACRO vote (block 3) is
++			 * kept: it works (proven by the lpass_tlmm pinctrl node,
++			 * which votes it successfully and keeps the LPASS core up).
++			 */
+ 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+-				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+-				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+-			clock-names = "mclk", "macro", "dcodec";
++				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
++			clock-names = "mclk", "macro";
+ 
+ 			#clock-cells = <0>;
+ 			clock-output-names = "fsgen";
+@@ -4720,9 +4729,8 @@ lpass_tx_macro: codec@62ec0000 {
+ 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+ 				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+ 				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+-				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+ 				 <&lpass_va_macro>;
+-			clock-names = "mclk", "npl", "macro", "dcodec", "fsgen";
++			clock-names = "mclk", "npl", "macro", "fsgen";
+ 
+ 			#clock-cells = <0>;
+ 			clock-output-names = "mclk";
+@@ -4767,12 +4775,11 @@ lpass_rx_macro: codec@62ee0000 {
+ 			pinctrl-names = "default";
+ 			pinctrl-0 = <&rx_swr_active>;
+ 
+-			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+-				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++			clocks = <&q6afecc LPASS_CLK_ID_RX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
++				 <&q6afecc LPASS_CLK_ID_RX_CORE_NPL_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+ 				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+-				 <&q6afecc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+ 				 <&lpass_va_macro>;
+-			clock-names = "mclk", "npl", "macro", "dcodec", "fsgen";
++			clock-names = "mclk", "npl", "macro", "fsgen";
+ 
+ 			#clock-cells = <0>;
+ 			clock-output-names = "mclk";
+-- 
+2.43.0
+

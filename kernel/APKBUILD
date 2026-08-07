@@ -1,0 +1,304 @@
+# Co-Maintainer: David Wronek <david@mainlining.org>
+# Co-Maintainer: Aelin <aelin@postmarketos.org>
+maintainer="Danila Tikhonov <danila@jiaxyga.com>"
+_flavor="postmarketos-qcom-sm7150"
+pkgname=linux-$_flavor
+pkgver=7.1_rc3
+pkgrel=67
+pkgdesc="Mainline Kernel fork for SM7150 devices"
+arch="aarch64"
+_carch="arm64"
+url="https://github.com/sm7150-mainline/linux"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+	"
+makedepends="
+	bison
+	clang
+	findutils
+	flex
+	lld
+	llvm
+	openssl-dev
+	perl
+	postmarketos-installkernel
+	python3
+	zstd
+"
+
+_tag="$pkgver"
+
+# Source
+source="
+	$pkgname-v$_tag.tar.gz::$url/archive/v$_tag.tar.gz
+	config-$_flavor.$arch
+	0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
+	0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
+	0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
+	0004-power-supply-qcom_qg-use-empirically-calibrated-OCV-.patch
+	0005-ASoC-qcom-sm8250-call-set_fmt-on-every-codec-DAI-in-.patch
+	0006-ASoC-tas2562-force-a-real-hardware-reset-pulse-at-pr.patch
+	0007-ASoC-tas2562-widen-reset-pulse-settle-time-to-100ms.patch
+	0008-ASoC-qcom-experimental-TAS256x-smart-amp-AFE-module-.patch
+	0009-Revert-remove-experimental-smart-amp-AFE-call-from-s.patch
+	0010-ASoC-qcom-fix-TAS256x-smart-amp-AFE-experiment-port-.patch
+	0011-Revert-remove-smart-amp-AFE-call-from-sm8250.c-start.patch
+	0012-ASoC-qcom-q6afe-dai-try-smart-amp-AFE-registration-p.patch
+	0013-ASoC-tas2562-write-vendor-test-page-registers-at-pro.patch
+	0014-ASoC-tas2562-replicate-the-rest-of-the-vendor-driver.patch
+	0015-ASoC-tas2562-implement-book-switching-for-the-last-3.patch
+	0016-ASoC-tas2562-apply-the-real-tas256x_reg.bin-PRE_POWE.patch
+	0017-Revert-remove-the-smart-amp-AFE-experiment-from-q6af.patch
+	0018-ASoC-tas2562-set-the-RX-slot-length-from-hw_params-n.patch
+	0019-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-amps-.patch
+	0020-ASoC-qcom-sm7150-xiaomi-surya-drive-the-tertiary-bus.patch
+	0021-Revert-ASoC-qcom-sm7150-xiaomi-surya-drive-the-terti.patch
+	0022-ASoC-tas2562-write-the-digital-volume-as-one-burst-n.patch
+	0023-ASoC-tas2562-drop-the-regmap-defaults-they-do-not-ma.patch
+	0024-ASoC-tas2562-mark-TDM_CFG2-volatile-so-the-channel-m.patch
+	0025-Revert-ASoC-tas2562-mark-TDM_CFG2-volatile-so-the-ch.patch
+	0026-ASoC-tas2562-re-assert-the-channel-mux-from-the-DAC-.patch
+	0027-ASoC-tas2562-force-the-RX-slot-length-too-in-the-DAC.patch
+	0028-ASoC-remoteproc-q6v5-pas-keep-modem-proxy-power-vote.patch
+	0029-ASoC-qcom-q6voice-import-CS-voice-call-driver-from-m.patch
+	0030-arm64-dts-qcom-sm7150-wire-up-q6voice-CS-Voice-call-.patch
+	0031-arm64-dts-qcom-sm7150-surya-wire-up-WCD9375-SoundWir.patch
+	0032-arm64-dts-qcom-sm7150-drop-unimplemented-LPASS-dcode.patch
+	0033-ASoC-codecs-wcd937x-use-cansleep-accessor-for-the-re.patch
+	0034-arm64-dts-qcom-sm7150-fix-SoundWire-controller-inter.patch
+	0035-arm64-dts-qcom-sm7150-mux-WCD9375-reset-GPIO-as-gpio.patch
+	0036-arm64-dts-qcom-sm7150-don-t-force-WCD9375-reset-pin-.patch
+	0037-arm64-dts-qcom-sm7150-xiaomi-common-pin-WCD9375-rail.patch
+	0038-pinctrl-qcom-sm7150-lpass-lpi-fix-swr_tx_data-mux-on.patch
+	0039-arm64-dts-qcom-sm7150-add-SoundWire-TX-wake-interrup.patch
+	0040-arm64-dts-qcom-sm7150-xiaomi-surya-fix-WCD9375-TX-po.patch
+	0041-regulator-add-Will-Semiconductor-WL2866D-camera-PMIC.patch
+	0042-arm64-dts-qcom-sm7150-xiaomi-surya-add-WL2866D-camer.patch
+	0043-media-i2c-add-Sony-IMX682-sensor-driver.patch
+	0044-arm64-dts-qcom-sm7150-xiaomi-surya-add-IMX682-main-c.patch
+	0045-arm64-dts-qcom-sm7150-xiaomi-common-fix-CSIPHY-analo.patch
+	0046-media-qcom-camss-vote-for-refgen-on-sm7150.patch
+	0047-media-i2c-add-Samsung-S5K3T2-sensor-driver.patch
+	0048-arm64-dts-qcom-sm7150-xiaomi-surya-add-S5K3T2-front-.patch
+	0049-media-qcom-camss-follow-the-vendor-s-CSIPHY-sequence.patch
+	0050-media-qcom-camss-fix-a-typo-in-sm7150-s-cphy_rx-cloc.patch
+	0051-media-qcom-camss-keep-sm7150-s-CSIPHY-RX-clock-at-th.patch
+	0052-ASoC-qcom-q6voice-allow-taking-the-call-uplink-from-.patch
+	0053-ASoC-qcom-q6voice-implement-the-CVS-stream-and-voice.patch
+	0054-ASoC-qcom-q6voice-use-the-vendor-s-vocproc-topologie.patch
+	0055-WIP-load-captured-RX-volume-calibration-into-the-DSP.patch
+	0056-ASoC-qcom-q6voice-pair-CVD-sessions-using-the-voicem.patch
+	0057-ASoC-qcom-q6voice-default-the-vocproc-Tx-topology-to.patch
+	0058-ASoC-qcom-q6voice-log-the-vocproc-ports-at-call-setu.patch
+	0059-media-qcom-camss-add-a-runtime-tunable-settle-delay-.patch
+	0060-arm64-dts-qcom-sm7150-xiaomi-common-enable-the-PM615.patch
+	0061-media-input-pm8xxx-vibrator-fix-the-drv2-extended-vo.patch
+	0062-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-dedicated-M.patch
+	0063-arm64-dts-qcom-sm7150-xiaomi-common-the-Bluetooth-ch.patch
+	0064-ASoC-tas2562-live-6-dB-gain-volume-trim-over-proc.patch
+	0065-arm64-dts-qcom-sm7150-xiaomi-common-enable-the-USB3-.patch
+	0066-slimbus-qcom-ngd-fixes-para-que-el-NGD-funcione-en-s.patch
+	0067-Bluetooth-hci_qca-declarar-HFP-hw-offload-en-el-wcn3.patch
+	0068-ASoC-qcom-q6dsp-puerto-SLIMBUS_7-completo-para-el-au.patch
+	0069-arm64-dts-qcom-sm7150-surya-SLIMBus-NGD-WCN3990-enla.patch
+	0070-quitar-el-WIP-de-calibracion-alinear-con-la-serie-de.patch
+	0071-ASoC-qcom-tomas-de-audio-de-llamada-in-call-record-p.patch
+	0072-q6voice-incall_taps-desactivado-por-defecto-y-dispar.patch
+	0073-q6voice-record_dirs-para-elegir-direcciones-de-las-t.patch
+	0074-q6voice-q6routing-disparo-de-grabacion-en-llamada-de.patch
+	0075-ASoC-qdsp6-pseudo-ports-need-real-AFE-config-standar.patch
+	0076-ASoC-qdsp6-fix-in-call-record-playback-stop-opcodes.patch
+	0077-ASoC-qdsp6-route-audio-into-a-call-through-the-injec.patch
+	0078-Bluetooth-hci_qca-do-not-claim-HFP-hw-offload-on-wcn.patch
+	0079-input-touchscreen-nt36xxx-read-the-firmware-size-bef.patch
+	0080-media-qcom-camss-vfe-keep-the-interrupt-disabled-unt.patch
+	0081-arm64-dts-qcom-sm7150-xiaomi-surya-give-call-injecti.patch
+	0082-ASoC-qdsp6-q6voice-arm-the-call-taps-the-way-the-ven.patch
+	0083-ASoC-qdsp6-q6asm-dai-remember-a-stream-that-is-open-.patch
+	0084-ASoC-qdsp6-q6routing-tell-the-voice-stream-before-wi.patch
+	0085-ASoC-qdsp6-q6routing-rebuild-the-ADM-matrix-when-a-r.patch
+	0086-ASoC-qdsp6-q6afe-set-the-AFE-topology-of-the-in-call.patch
+	0087-ASoC-qdsp6-q6routing-knobs-for-the-in-call-injection.patch
+	0088-ASoC-qdsp6-match-the-vendor-ADM-AFE-command-stream-f.patch
+	0089-ASoC-qdsp6-q6asm-dai-do-not-rebuild-the-DSP-session-.patch
+	0090-ASoC-qdsp6-q6asm-open-PCM-streams-with-media-format-.patch
+	0091-ASoC-qdsp6-q6asm-knob-for-the-stream-post-processing.patch
+	0092-ASoC-qdsp6-q6core-ask-the-DSP-to-load-a-topology-s-m.patch
+	0093-ASoC-qdsp6-q6afe-send-port-parameters-the-way-the-ve.patch
+	0094-Bluetooth-hci_qca-let-the-core-use-SCO-flow-control.patch
+	0095-Bluetooth-check-the-right-bit-for-Write-Synchronous-.patch
+	0096-Bluetooth-hci_qca-do-not-ask-for-SCO-flow-control-by.patch
+	0097-ASoC-qcom-sm8250-the-Bluetooth-SCO-link-is-not-48-kH.patch
+	0098-ASoC-tas2562-resync-the-register-page-at-every-DAC-p.patch
+	0099-ASoC-qdsp6-q6voice-repeat-a-device-move-once-unpromp.patch
+	0100-ASoC-qcom-sm8250-register-the-card-without-Bluetooth.patch
+	0101-ASoC-qcom-sm8250-no-esperar-al-propio-trabajo-al-can.patch
+	0102-slimbus-qcom-ngd-ctrl-arreglar-la-descarga-del-modul.patch
+	0103-slimbus-qcom-ngd-ctrl-quitar-el-of_node_put-de-mas.patch
+	0104-slimbus-no-aplazar-el-sondeo-si-el-dispositivo-aun-n.patch
+	0105-ASoC-qdsp6-q6voice-fotografiar-los-puertos-antes-de-.patch
+	0106-Revert-ASoC-qdsp6-q6voice-fotografiar-los-puertos-an.patch
+	0107-media-qcom-camss-vfe-arm-the-interrupt-before-resett.patch
+	0108-media-i2c-imx682-add-a-lane_mode-knob-to-probe-the-C.patch
+	0109-media-qcom-camss-csiphy-add-a-settle_cnt-override-to.patch
+	0110-media-qcom-camss-add-C-PHY-support-and-switch-surya-.patch
+	0111-media-qcom-camss-sm7150-give-VFE1-and-VFE_LITE-the-r.patch
+	0112-media-i2c-imx682-s5k3t2-report-mounting-rotation-and.patch
+	0113-media-i2c-imx682-knobs-for-the-mounting-rotation-and.patch
+	0114-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-main-.patch
+	0115-media-dw9807-vcm-regulator-support-and-non-fatal-I2C.patch
+"
+builddir="$srcdir/linux-$_tag"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/config-$_flavor.$arch" .config
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" LLVM=1 \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-$_flavor"
+}
+
+package() {
+	make modules_install zinstall dtbs_install \
+		ARCH="$_carch" \
+		LLVM=1 \
+		INSTALL_PATH="$pkgdir"/boot \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs-tmp
+
+	mkdir -p "$pkgdir"/boot/dtbs/qcom
+	cp -r "$pkgdir"/boot/dtbs-tmp/qcom/sm7150* "$pkgdir"/boot/dtbs/qcom
+	rm -rf "$pkgdir"/boot/dtbs-tmp
+
+	rm -f "$pkgdir"/lib/modules/*/build "$pkgdir"/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}
+
+
+sha512sums="
+bb837959e337c66ff374d8f3aac6593723c4f4eb69fb18f9ff25c5c096c6656fd71149e105255c0f97c83e0bf547b0b0e94ca23eabde7b5f88308e9ecd784e3d  linux-postmarketos-qcom-sm7150-v7.1_rc3.tar.gz
+fa874e4459737a618faffbee36b9d8271211ce52840ab296ba9ccdb599d0bb51243754486a51cd9daff96cf2c6746d7c1974114f0893bb32c6277beeac230c2a  config-$_flavor.$arch
+78f0c13f84a10aad84cce37a08d851ef13c4cdd10f1db0f1447d295db48e49a1310d57dc1beb862099c9c6c3096a177d5c02aaca8b48b800dac5babc96c815b3  0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
+93bb7e4dce5131240dffc73fa63c94e9f9c2cdbcb9f9cb36b94f61e603dae3d2f933b3c6da36285b21dbafe0f95b4080af51ed0bf8988d2a711cbdc9ca57ca16  0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
+d66b9f6f8cd6b8c6c168313471f10a86f050e634557b236a330b2c860f33efc9c5b01da42576819537008daac37a1fbcab5ccc0e80b3eb2bc2e0da815d104226  0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
+b556537d037f8205194d05d4182835e28b91883cff82366eb574e6ffc81e4c14216fbc561766664517b596b449ee8861c8484e28fd5578290ef077c7c7c653e4  0004-power-supply-qcom_qg-use-empirically-calibrated-OCV-.patch
+4997b0b6b1f9f669f72450daf342cf6adebdde88945379eaa846e418d335ecaf6327fa3ad3cbd77848cd149e71839710a97b96b12e6515dff3461defccce4781  0005-ASoC-qcom-sm8250-call-set_fmt-on-every-codec-DAI-in-.patch
+d6cf64e4ca500c8d3aff0cee560abdf61eaff6bc940ed43cc1be1cafdbcb77b8c9082949cca8bb4b901323c1c5c00befab7dc9a704855afa1fec033d42a2913c  0006-ASoC-tas2562-force-a-real-hardware-reset-pulse-at-pr.patch
+e3e20ddbb84c79c84dd07a2975759e727fb18d447b1a8572d95c53e02a0a97d3f1e1c81511015677319e9bdb66d4a9d4b419de694b61a005dc5741ea978430fb  0007-ASoC-tas2562-widen-reset-pulse-settle-time-to-100ms.patch
+076e393204f917e1cf80ae95b8dce935d998d702f1fced3c78bf207982353263102fb1fd0b26515688be672b7c9f7b79b5a964a2fc254707a049447d18d68c31  0008-ASoC-qcom-experimental-TAS256x-smart-amp-AFE-module-.patch
+e4cd435c5b1393c8998d720f9298de2fba18ccea7ae345a9e09de2e44e5ac5f28e2adb0d11ada6ddf81c29e4e74f936b5668a437d1f88dc30dfb5e4014d377c3  0009-Revert-remove-experimental-smart-amp-AFE-call-from-s.patch
+71d66fa4e099182edfb2f8fea9c654825df56179a6fc55859e2342b3d97fa522e75cd03faf13f544cdc2eee48ab706ca2f3ba50a10f3f539ba05892ccfba2011  0010-ASoC-qcom-fix-TAS256x-smart-amp-AFE-experiment-port-.patch
+c6961c3a0b3d5c61882158b8ebf52298d3692362bccb9bd5fc88aeaf29f3e3a28228eae029372628b02a15e1cf800d32492a83254332997773eb94345b1dda8a  0011-Revert-remove-smart-amp-AFE-call-from-sm8250.c-start.patch
+4463c37a0c42009e3358bd51ab6159efe0e801ca02b5d9667bc4ef8a4d129039a27247b3e33c657b9580ff0ce6ab69c1508e671b1716734c45037e8153179cbc  0012-ASoC-qcom-q6afe-dai-try-smart-amp-AFE-registration-p.patch
+43836b8b59ba3925d97293b8d408e57f44e4df93486a8ccc514dca066ab50c15ca0a43c2c974f1464ae382c117bf5fd32eece60fb479012c88b850b1c4e8488c  0013-ASoC-tas2562-write-vendor-test-page-registers-at-pro.patch
+6b0e605835989b6248e8378aa88caf2e87c26ece8aaed44dc682c045fac4b8392f7d4f6fefa2d8db54b1f94f724b1d667ce72a52c76940a8e6b50154d5c1f660  0014-ASoC-tas2562-replicate-the-rest-of-the-vendor-driver.patch
+a0d494143711194433f7b85b96ada839d7d732f0411a1be21a2bb364e1d5c39499d555b681e5e4482910b1051f8f3c3595b349fb8c7fbff0535b6894579867d5  0015-ASoC-tas2562-implement-book-switching-for-the-last-3.patch
+6a3d46f24835b0109b5c5251de42064142984babcec76e4e7d1605ac30332fb4b8037134090858a629ad8b1bac1f5056a713f19cf97a8a3718c39ebfabe86dd3  0016-ASoC-tas2562-apply-the-real-tas256x_reg.bin-PRE_POWE.patch
+aa9e4ae8ba69e5285e858976358c8bf732a19f05cde1af8c76ecb6e0b19a1f5c0c085b53b3e3f0e4866c78339bea7f1f25d005c6dec2cda3cf745c789c6c3a4d  0017-Revert-remove-the-smart-amp-AFE-experiment-from-q6af.patch
+2014aa44efc6c27211788b131c6975fd6f3dfcb79f59094cd9ff8d6e20fc94c64816a8b724e40e8716a58da1317bbcf882460c130b5c478cf58a646034b674a1  0018-ASoC-tas2562-set-the-RX-slot-length-from-hw_params-n.patch
+428bad38e7edb3a3ce05a60ee1b19c80ef167e5fea0186dd154730b5e54f9d81e7bcf55f02c7050870d0d52de989a7ce305a76bc34128d069783f71d5e662bca  0019-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-amps-.patch
+d125bde539d68a2bb3170f04039799b4b3a762e70a12cbe419f0e043f293707950b96447ded2214dc0642ffa059496a11f3eaff3c48f80f9977398810d965719  0020-ASoC-qcom-sm7150-xiaomi-surya-drive-the-tertiary-bus.patch
+d823410d472bd6488a4102cc6b1d651650aa5bfd651c52a863d55f880a616d2625ed6aaab25a2dee28bbba448abfb8dbee372a2d3f1fb812fad92624d2623b6b  0021-Revert-ASoC-qcom-sm7150-xiaomi-surya-drive-the-terti.patch
+3c057b085182f58cbf5f1102858323737828a44f398e086bb71afb0210060509d29a9a4231a865c1d40368174cf1b47cf28b10e522a2fc4bd594e552cff4e30e  0022-ASoC-tas2562-write-the-digital-volume-as-one-burst-n.patch
+a5f9df750bebc4de3a9870da189e97486006633c954aeb2731fcf2fb7fadb9d8891ad7f0bf96dca49c86e053d90978551335095d6aa29ac2da5e146418400da9  0023-ASoC-tas2562-drop-the-regmap-defaults-they-do-not-ma.patch
+6d945fe56ccc73fc7c2c988b2b149bb96858ca6f4017649d22ccac6ab09592c3328070e9de53598f75b527ada2658a6d631a039fbfeee3f86b64a1ef4680003b  0024-ASoC-tas2562-mark-TDM_CFG2-volatile-so-the-channel-m.patch
+f9cd229a447a07d6f08392727a435d9dccb3bc63a335f5eedac0dc6f0d17b1fef7f51f97eb7df354674e05fbf829d5ca3223c2b7fffea46b66a47df47f6d299d  0025-Revert-ASoC-tas2562-mark-TDM_CFG2-volatile-so-the-ch.patch
+32b2522ffdd67d64bc3c614fa667c902ba6ed98ccf7d256d8c09ad77a010055ebfcbff9edb7691ac91829e89f8a25bc24dcca7d3093c2c47dda4bd99cd8ccdcd  0026-ASoC-tas2562-re-assert-the-channel-mux-from-the-DAC-.patch
+ecc5cc2aac18834bb49aad92d90c73ac3ed90ca483b77234cb1c9b09b7e56529561b1ff7b96225e39e4220dcce7a69eaa3988d62a993f460d59669fb12e7bb8c  0027-ASoC-tas2562-force-the-RX-slot-length-too-in-the-DAC.patch
+cfe44afa4dbcd52d3f8fe1f7cc1d9782bf68dab96f78ae6fbe2240a831ca18969eba009d4e0975f324a4f77eb0b1771175e695986c07085fbc2120b87afd4458  0028-ASoC-remoteproc-q6v5-pas-keep-modem-proxy-power-vote.patch
+15eb9385a26e08aa3fa5d24817537af7a36a91b5eef700b2982b8e1eaa2d3d0de5ee4c3137f4c47272dd3af18683d5de2bdf2b59c606f0373fad48ebff711bdf  0029-ASoC-qcom-q6voice-import-CS-voice-call-driver-from-m.patch
+bc9acd772a89cf7f1e6bfaf18d18413991d487c290bd446ddae7ad8b8070e47abf717317c3c167b45aa4de6865517dcee88c3a34c3d414c7ad7cf678b84ad514  0030-arm64-dts-qcom-sm7150-wire-up-q6voice-CS-Voice-call-.patch
+55b159077589f73574a7f8ceb1d3ec50372150a5ad9d2a6d7054b238a5e173a5fdea745480113911a9136f8eb28c5ac8fc229424e7bbb66f99182272fa6ab258  0031-arm64-dts-qcom-sm7150-surya-wire-up-WCD9375-SoundWir.patch
+30fd441bd0eb902165e332b98a9a40a6bbe8ebabf09551dbd1cff69218c81a910a23371ee3dc8e8889d6a05a560d910ad2afd03ed371635224821807b9f7e481  0032-arm64-dts-qcom-sm7150-drop-unimplemented-LPASS-dcode.patch
+aeeb01a07873114ad96bc8e39ef35874979b9e362ea70f0e739b8d4b01420e2897c74e5e2894ceb17cd3c975c4cc909867d4254fe68ad8f4f331994787c91635  0033-ASoC-codecs-wcd937x-use-cansleep-accessor-for-the-re.patch
+ba3ff2be0e5e71234f67145e7718e0bd5647e387286b7b5efb0bba0306d551b08d197128ec72668ba59239dbfe0ac25d2efc35ada63bd0ba36971b7bb3f12635  0034-arm64-dts-qcom-sm7150-fix-SoundWire-controller-inter.patch
+3af3e9305905b547b33c3ad4479379f1b2185736699191712c8d35b7ea7f8b745758610f05758bbb19fe7dfe2669caf3524aa10f2aa49342dc916800002e3e2e  0035-arm64-dts-qcom-sm7150-mux-WCD9375-reset-GPIO-as-gpio.patch
+bc7ab48a4b9925241c00f07cab7149008d4a72b5577061311642e6d8cdab1067af4d10955e4816a3de5b9b639ecfb818dce5464563b170693b536586bab3f99f  0036-arm64-dts-qcom-sm7150-don-t-force-WCD9375-reset-pin-.patch
+d4df520e65cceffe3af33b9ca209e9207e1c6690f7d404fe9233a293891f15f6d9b98c36cca07ab1f8bd608c417987797083fcb4c474203b63749a68ec5a3c1a  0037-arm64-dts-qcom-sm7150-xiaomi-common-pin-WCD9375-rail.patch
+26ad6f6a71ecbd29e11fe56c776673e53a9ed2a030f4b7b5992ccfe1f15f4bc1d66d4027d2c2a26bf477e339fbc530a5c8a2fe9bc58c778a03fac12a56a19a6e  0038-pinctrl-qcom-sm7150-lpass-lpi-fix-swr_tx_data-mux-on.patch
+59de3fa97d80d89337768dd618b27d809bc00008343f48890a2d6a2933d0aec41740f2e34baf50a3e113b5b38e9e2787e164170eb8a43973fb7951e9660bbcb3  0039-arm64-dts-qcom-sm7150-add-SoundWire-TX-wake-interrup.patch
+e7822fa4195fdfd447ef4ab0b643c5fb5253242d7f7700ddc9e04cfca72200015e5447fda0754cfff07db83862eef3497985f25192c93353e0885bc3523a8a42  0040-arm64-dts-qcom-sm7150-xiaomi-surya-fix-WCD9375-TX-po.patch
+006d4d47c7759d87b0fa5e92a51e9d14fa861b125f1d6f10e4f3361b093040d14f80ab8af333be57b20e41615244ab6b3e9424bc6c05fa71747999897cc91c83  0041-regulator-add-Will-Semiconductor-WL2866D-camera-PMIC.patch
+442b8342a4cb0f597ebf123d24d0fcf0bc9aaae676d2a41470103535065a02b0a3b18f5ad3ce4c9f99581d74501828cb22ee5774d3cac5f8176af31000f228ba  0042-arm64-dts-qcom-sm7150-xiaomi-surya-add-WL2866D-camer.patch
+166869a2fcbcf133d3077da74081fac9097a3b4d1a39605e983000d6067c4c8e7db54609db0bae3d65a40ded9f4d56fe2cd95454679122b90cda4b618eaab7fd  0043-media-i2c-add-Sony-IMX682-sensor-driver.patch
+b5a4ddbcef676c6010774348631425bd36c9b5d1cf71a0f0fb7a7b1e7089428678c36d85fd47f8b42d0ef4d5a7fa9dcfe392f68cf7c9c578697852cb2187b3f5  0044-arm64-dts-qcom-sm7150-xiaomi-surya-add-IMX682-main-c.patch
+a1c02ef184783a4efa5ffc25fda787acc761e6c23c5d515ee7a2772bff48af8973ec16949d8eb016f0c70fcc2d1dad7db029ad13fc770ad0a92cd93465c46ffc  0045-arm64-dts-qcom-sm7150-xiaomi-common-fix-CSIPHY-analo.patch
+ce68fe23f20e195e63bebc66349abf9d3646dd4dc7bea9ced4de41be23188a6e0c9f73a4d42f7224fa63bc924eb82accd3f59ada1ac74bf99832f803c81fd44d  0046-media-qcom-camss-vote-for-refgen-on-sm7150.patch
+26d0f67a3952aafcdacec32049457b370b070f424d1a7df1ac80d64b43e194bbec93af0af02024ee8943338264e7fdc0f8b31bdd3a96a83b88b53485698abeab  0047-media-i2c-add-Samsung-S5K3T2-sensor-driver.patch
+4a1762eb08654afd73a144e854a37d6cd137a8098591ea499db2535b81a8fa2525b5b2df4a8d67e9f35eab006578ad1f4515edbd30064191027cd77b9f25c667  0048-arm64-dts-qcom-sm7150-xiaomi-surya-add-S5K3T2-front-.patch
+31f04d6407f189760b715ee549bc5d0338a1002304dbd9b4479aafcd2a090cd10f06dd788035dc8531d75d12944f77a9dd8a7be728183933670aea276b157a83  0049-media-qcom-camss-follow-the-vendor-s-CSIPHY-sequence.patch
+b569e379d69942e2365da8df1765c64d00c2edd1603e91810d61198296a53c5a965c10a09345892371ee4b517a2571e18080607218ad799af2bf89ca755ce512  0050-media-qcom-camss-fix-a-typo-in-sm7150-s-cphy_rx-cloc.patch
+618b0e287c41715049891c82f249483a9303e6296cb18ccf5753981f1dbcee60248dad6bb7237cb8ec8bfc2792f7842f437d17fb3a6ea0f65c6908a0690288ec  0051-media-qcom-camss-keep-sm7150-s-CSIPHY-RX-clock-at-th.patch
+180e8e2bea602f39af7f0be133ecca8acb45749188074515933cf6cb5af1ca8fadb84fd3673b37058f814a424d04b5c6fe2fbe82ea5374d40eb2ac06b4ab6f4e  0052-ASoC-qcom-q6voice-allow-taking-the-call-uplink-from-.patch
+d659697bde9925fa762b7da95118db1425baec645a2c18d84b96acdf89e7dae13e7a572c732d6bd81d151a03b09e062b5ab2b0780dcafe5457e4b4d00e03715f  0053-ASoC-qcom-q6voice-implement-the-CVS-stream-and-voice.patch
+23fa9cbd4bde8bcdf65ab15b5a8b2db24dd9342262fb7df26ce09a9fc91bce1ec58aaf867b7870bd8809c5a538f4aaafdf43607acdd95d4ab64a1754bf3e05a5  0054-ASoC-qcom-q6voice-use-the-vendor-s-vocproc-topologie.patch
+b7f64ce307395d30c9327bd67a3c283e1a67a8633e01fae345a7e95db1b9ea778577129b9700acb09046829805eaa534c6a8d19392cf3eb7a07fe461a9dd47d2  0055-WIP-load-captured-RX-volume-calibration-into-the-DSP.patch
+26d4ada530c4c1356f185b8d8c3c94ee3871b8eb362c4c90544a96cce8c991e00a3766dee2080c26251ab2a8a0815b9b0cf6cdd14128a9235f7bad8c4b0abca9  0056-ASoC-qcom-q6voice-pair-CVD-sessions-using-the-voicem.patch
+8fc4076ba93df0d0a602d073cad5329c59f7a1ff27eba9db0a808334fb89a01e7d29345c6856d1092e6b3e91c3f7632d5ece2be68f7ef84d83b785238f1e2d7d  0057-ASoC-qcom-q6voice-default-the-vocproc-Tx-topology-to.patch
+5ce52d8c15e4af8a288d9701e6117b97422f91e04f0fe68748893729d7e07791c9052b2bd868963c7072c05c9f525b75378ba4d933814b7069a38253841a8e27  0058-ASoC-qcom-q6voice-log-the-vocproc-ports-at-call-setu.patch
+1434de8117572e314ab0bfeb613e8fb6f9bf186a9722ef2d9a8052e079af93688259ea74a17da6926b6a5bfeda8847af41a6b751d0d0034e6308a373b9e8c016  0059-media-qcom-camss-add-a-runtime-tunable-settle-delay-.patch
+bc1cf3ca6fef50cad72fe6337e92d1b78883f5cbd2c31ddcb621fec350f49522dbf92b64ff57a584711c3e9ca8d88a869631598d9a004ab0bb64b0de3eebef39  0060-arm64-dts-qcom-sm7150-xiaomi-common-enable-the-PM615.patch
+4930ccf53d88e69009e6911ccb57bca205a5be9dade1f28853d6f6e9862d9eef302ecb463297c0bfd6488f005f924ffb4942571b5a02970a38276a8dbb49a878  0061-media-input-pm8xxx-vibrator-fix-the-drv2-extended-vo.patch
+11020401530cb531b3c03baedd25c920cdba5afa58d5677ee7c4f6f53a845c9c84c214561b8d7eb2f9b6ca3cd469af966ba87333bad0e035dea329d32416e1ee  0062-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-dedicated-M.patch
+fd9483a8bad682884fb7cfe934b7269fbec96d8426d92d92aab3d62aa0d0c299c5ec46dd962db2158216b8a0290af92a80409e3dd425264403a579fe91ad35c5  0063-arm64-dts-qcom-sm7150-xiaomi-common-the-Bluetooth-ch.patch
+5451492119288c00e93f8d947fda679214b9fec71a8c777b0cfe6844a36b941cf3eb4c5d4d34230636c9793c3afeddee8e496145560b498e15d9a035d4c3dd4a  0064-ASoC-tas2562-live-6-dB-gain-volume-trim-over-proc.patch
+c72aaac16d1378f70413136126109cd63d4def9bc8e6de03bcf94c8444ee244e120497c491ad7e956a33e338b22c2c4c04c2f07d9537577bd20d5d4ca075e134  0065-arm64-dts-qcom-sm7150-xiaomi-common-enable-the-USB3-.patch
+5cb0c9a580018000a39761163a6aea95fe8f914e4d52a4c4198277a1c781ecef97c11544a74e326bf7bbbbe7debe55d71d5fa66560e1f57d5e8d0034b5e9992a  0066-slimbus-qcom-ngd-fixes-para-que-el-NGD-funcione-en-s.patch
+bb7baedfb46de7aad5fbc6a3e99dae51ebb5070bec5def542e5a492cd356a62cbec74b2114e10ddf55ce13ba44a238f367b779181feba24d02f92f092c93db67  0067-Bluetooth-hci_qca-declarar-HFP-hw-offload-en-el-wcn3.patch
+d81f5da81f6b3d804d4acfd1e6704706f5d61a55fda967a28e0a74dcc7c2c855c7f33e509c2562ed9a49f2656d03ae4ab1750928ed2220ef9896ad410e028cb4  0068-ASoC-qcom-q6dsp-puerto-SLIMBUS_7-completo-para-el-au.patch
+79b4f2858386a83d6bd469a92b081099540b706e8d255a4d4b5ed6819f8f40902a77bdf125046c415be6b5541d9c2f506e8d068cd1e0769510aeb7a010e2d1ff  0069-arm64-dts-qcom-sm7150-surya-SLIMBus-NGD-WCN3990-enla.patch
+633403cdf3ccc6b6828df38e50d528c5e03d830682dc4f47e6981168a6d0a77f7157473fd197266f3886fc9e29593d941d5c6c092dbc713f8d16ea1b0fedc61c  0070-quitar-el-WIP-de-calibracion-alinear-con-la-serie-de.patch
+563210c9f2000d1bf510054fb7362c3b91e1b8a000af1c46ecc5b5cd962e37abc2523c3a1e2254f4c12476e9bf557019ca40868be89e358d7f4172a3756db01f  0071-ASoC-qcom-tomas-de-audio-de-llamada-in-call-record-p.patch
+e1e5dbf5e807ca4b631576abf6cd6be196fbe6452cb167b5d4e45c9010eb9252d86c84d5b8e1af4f55c2e049609b269fd8bbd5b8e5f3b02d99921b65afdfae82  0072-q6voice-incall_taps-desactivado-por-defecto-y-dispar.patch
+d06861b7654d43123b0f9f3c1822310661a98c6b773914adbc77c8a0e13ccc310a2c8c3f5dfef2928e19147aedad114c5edfd7737ab5c7f0fdc1d242271d32b3  0073-q6voice-record_dirs-para-elegir-direcciones-de-las-t.patch
+e41c930593057119ef42af2f21c28960c8d8251bc02a2ddde841599c45e2ba9b6636d547c9ce021e0ddf991e8f53ae93c3493c091695af182d0dc6e6c5f87008  0074-q6voice-q6routing-disparo-de-grabacion-en-llamada-de.patch
+98cbce62c7256f9b1731cb83d7aed9ae41da745aff7c1f53d8d366306ab9df6e3387263f7c197b3575c76740a04d0941dd2eb0837f6bf19d8610ae3d922f7ad1  0075-ASoC-qdsp6-pseudo-ports-need-real-AFE-config-standar.patch
+ab4face93e92c711217d9f63b213f0f052de5953257bf30051b0aab581f4ccc7523f00ab2798559f60911e3f6383b64bd05aa08d32751af7f4787ccdc4697a2f  0076-ASoC-qdsp6-fix-in-call-record-playback-stop-opcodes.patch
+216bf6c9230e1e7dfa39e29cf8747ed503b6ba02e31ebb7f760a2d550a65d46d96ee5fa76228ff82f2773edbca281131adef2f97897887c574dc68282ce4fac4  0077-ASoC-qdsp6-route-audio-into-a-call-through-the-injec.patch
+2cd1cc45ea7f2d98c6bfc1926ee78b6efa542d4dad01772c650f2037fb189197e74b529ce07bc5fe32b21e6407f197ad1de005a02dcdc4b686535034dca88f8d  0078-Bluetooth-hci_qca-do-not-claim-HFP-hw-offload-on-wcn.patch
+aa3f38a3906fcaa82e8d0982100f8dcf3344a46aef055c7e7459aac8398f4445a1b218fd7d2488276f315361d79120886574ad04c42524df282b08ecf0fb9b1e  0079-input-touchscreen-nt36xxx-read-the-firmware-size-bef.patch
+aa25dd20ef70e1f512c8b04220bd8684568c1d0f2179c0d67e10027c6aed99e6984fa13a4a672c9df7997a38edb41b4e2b504cbfc6b74b4f5aad723412dd3231  0080-media-qcom-camss-vfe-keep-the-interrupt-disabled-unt.patch
+adb0de46b0d5b93f325e5935f3d5e2b69e94131d3139c6cad45961ea45f69364e5d751a09b1ead361f34ea319ede98780cb5e512464fce05ceef42181f5f3b22  0081-arm64-dts-qcom-sm7150-xiaomi-surya-give-call-injecti.patch
+3094f3f57d3b8f00ff18e657cd64d73c2945c125621dd311e3ca1fb0a350d147aad375cbcb1e67b955cda6e8e1038beb5cced8f88fe01b2a2c141bfb8dd97048  0082-ASoC-qdsp6-q6voice-arm-the-call-taps-the-way-the-ven.patch
+2de5f61ca183bc5e9d5171cba71281aae4db4df16826a0ab2a8caaf352914d90aebc95862582b58cc626dcbdcaeeb8192defca4ce5ebe4af73428576d9a2ba8c  0083-ASoC-qdsp6-q6asm-dai-remember-a-stream-that-is-open-.patch
+744a24c7fe5f465ce9d79c7047e09e4e0428aaa7a54dd8f702dc344e919453a75a5e27c401e5e5ba57e1b7bc37ee17cd47f9721d571835f99e19fe7df90c4a32  0084-ASoC-qdsp6-q6routing-tell-the-voice-stream-before-wi.patch
+44918b5642fc336ad8c7eff8a50e23729a808512f5fca554bf75c5b1c3a12db490342fdd92dd358985ca25f5dd775e5e76716f87f297ee04bfc8442ed9c765a7  0085-ASoC-qdsp6-q6routing-rebuild-the-ADM-matrix-when-a-r.patch
+a518fa98da3dbb39b80c2a9924a0736fb9a0d6aab42bc83415117b150a6eb022c4aa85b7416b36cfcf4d3216fb65815e91dad05586c7a7cce6da2c5f27e830c9  0086-ASoC-qdsp6-q6afe-set-the-AFE-topology-of-the-in-call.patch
+221a73d6f6b4d55d020c5595187e307f46a9f5d87cd8c75a1fa93f84a20b0a7855926981df19656af77f202702d73e946eb30b68b857bae133b5c223ef7f6c1b  0087-ASoC-qdsp6-q6routing-knobs-for-the-in-call-injection.patch
+b0e2f97718dbb81b527dabfee50e7ca30a5af298db860f45ce112ab6f611412b00e3fb712e50328a3bda1c4fe314315de883990075029c269fa9b8562b6e544a  0088-ASoC-qdsp6-match-the-vendor-ADM-AFE-command-stream-f.patch
+c72f8a4a45dd443b01c41e84de83ca87f5fbdbf0f54660943faabf3f3b4d1f92b9dc859bdd8e8aa22f2b6a995183b4569cd3e6dea2decac1a33fb0dad5629a6b  0089-ASoC-qdsp6-q6asm-dai-do-not-rebuild-the-DSP-session-.patch
+7cea53cfb88f56628011f8ae0ecfd5df1a8f7a17d8da2b7c8ca2ad5e48ff71857c29f2215d576a963c191cbf97556d0f1a8c51d4bcad68956b6f461c4ef3a75c  0090-ASoC-qdsp6-q6asm-open-PCM-streams-with-media-format-.patch
+8e1971451d015f10314aa6fc6af1670ca46f7e1f95c7b6d8f797f07b6bd398a670425038faf131a602e41142bdf0d80c82b54c388d56a86941a9e894b60d9ec2  0091-ASoC-qdsp6-q6asm-knob-for-the-stream-post-processing.patch
+70a2d59b37d33338a76d1d291affdefc975a287dcd9952c1f781074578d5faaccb2b780aebc711a3d75959190f50e7faafc9e509d3a3b0e7a3d3a972d25888a3  0092-ASoC-qdsp6-q6core-ask-the-DSP-to-load-a-topology-s-m.patch
+97690b51a47b8e4ead46f67c1b01e98f0aeb70573f613260cc80ba2719fd62ac04a25682927d7d55fae3810ac5586881f70cef46de314f826b3a2ba0fa382795  0093-ASoC-qdsp6-q6afe-send-port-parameters-the-way-the-ve.patch
+1c12bb212b1d0bc21b064f8221055c5bf7c9c0317bb255c0049028181892ad9f916996b855b555bfc4b747e72c45f8aa883db2ce61389c2478c5b0ae2ddfa704  0094-Bluetooth-hci_qca-let-the-core-use-SCO-flow-control.patch
+9932350f04e1110799dfbf1105bc1df0fd5908ccf6b2f5b21b9ba526a584985daf5d24a62e2a088660585606b3f3cc7e6182127b76ebcb328bded4c69a90df97  0095-Bluetooth-check-the-right-bit-for-Write-Synchronous-.patch
+700c751656d321d6d6a818079d0162744a50f789191f22ceb3dd93e9ac4e5df2e3c8d27deb46cb3381911a86f6abd5bbc84befd9a851a03ebeb87ce244d25dff  0096-Bluetooth-hci_qca-do-not-ask-for-SCO-flow-control-by.patch
+40c76e42532f2847948ab997cef00aba26ac088902cdfa93c8b8dc23b7ac701f72ca3b2e7f4d15821c5150e1361b0c6e2665964d40628ffa041ab6df55af0955  0097-ASoC-qcom-sm8250-the-Bluetooth-SCO-link-is-not-48-kH.patch
+27b8b498b49c3b928bb8ec04496387111a8d950c44916e2398bd516f92e0a541727b21bacbdb8a68fdc15cc889633c57495d88c1589849688c9c35ef1872fcb7  0098-ASoC-tas2562-resync-the-register-page-at-every-DAC-p.patch
+0cbae40aef70ea96460a7d6f8db3941f96fc6d373215937ce6da3a5deb430dea7c821e9330f948b68193fa4cad54f6e97134d898ee83dace23e408db34d88f1c  0099-ASoC-qdsp6-q6voice-repeat-a-device-move-once-unpromp.patch
+ca1fdf4e72abcd110d4dc40e47b93991009b284a7c377a1b879caeb71611fcabef8330ab249ad3e661fd1a52e5bcfc9151543a58c9cf73b3502b3702aa584b8e  0100-ASoC-qcom-sm8250-register-the-card-without-Bluetooth.patch
+ed31e62f80a51f676a7750661b34f05e2f6522800e71ab4b1a87d638eee46cbe51010d1ece388164f4206c1572c7ec724866b856723a2bd52a558d9361524797  0101-ASoC-qcom-sm8250-no-esperar-al-propio-trabajo-al-can.patch
+f1f31807efeb7b22e5e7a21c7fcbb9b01f2994f3cf7cf335bda790fb8a368723a1922b13fbe3742df81620c039f1939e83419e6762c613ca0dcab4fb20387a7c  0102-slimbus-qcom-ngd-ctrl-arreglar-la-descarga-del-modul.patch
+757e4c1c14761c3a6507da971719c776e4b13c2c1b41c51353de633761b2acd6198fb7ce79ee220ae143826fa2704530aa607608b71b47be61913e25e381b7a5  0103-slimbus-qcom-ngd-ctrl-quitar-el-of_node_put-de-mas.patch
+6f3b4a6ec1553e3bbc821675327b49b395257bfbb068ed0ef88c746e2f382805fb3b7a47746385f22fc2b80c5b2b086f54400c36b1ef2d87df7372a0a22f814d  0104-slimbus-no-aplazar-el-sondeo-si-el-dispositivo-aun-n.patch
+d7e0723e5d8af4334682c3430a2f6633d997573ca8a0ee768e8a9dc881f45684238a6bfd87dcab62434b3e6d958770dfccec3a2e7e272a24d2282b9a02a91a2e  0105-ASoC-qdsp6-q6voice-fotografiar-los-puertos-antes-de-.patch
+a752d2380991f6f90bc86957a438c6db9c3a18aaa334c4f0749c6a83538ea4985a887af4dfba65116b5c80db8157b308c2463c471bb59fb7d086adf27344eddf  0106-Revert-ASoC-qdsp6-q6voice-fotografiar-los-puertos-an.patch
+88a4645a43e3cc384d69bedc3dc58da55bcc6ee10073d1264203e2893bff0010041d8556152a4a3dfaa032437663b1005729e50b74334f6766c3b3c2f5c79820  0107-media-qcom-camss-vfe-arm-the-interrupt-before-resett.patch
+2b972e0dea54358d4063d1927424dc05f9185ec2f3daa65222dd2ed6eb014788153c3a178a2119dd0faab078c2ad0d7d3ba662175f151bcd304acb029f7f3cce  0108-media-i2c-imx682-add-a-lane_mode-knob-to-probe-the-C.patch
+2f941936cc15ed0eb52c186ffaedbaef1c76ae9ee807ee36e2ebecee0ded7b56bdccaaf223a30a07763656d3d61c2ddbc72506e82152de31f4fc16eaa8967f58  0109-media-qcom-camss-csiphy-add-a-settle_cnt-override-to.patch
+cf081299f537d26d655f5f3edcd4a6d1245df97e6874018ecc26075debb541206363b5f1aa8f3efd92dba67bac7e5050b70aaf19551dc0bb55b39f557b8d2876  0110-media-qcom-camss-add-C-PHY-support-and-switch-surya-.patch
+1841fc01d471cf5e5c54cc5fd47927c115d56ffaa2e7d41e9c4507c6a69f3cc28a4d6ac7f312953b3f754d7041fb698c646b44cd98e9ac63a86f9183c0515c22  0111-media-qcom-camss-sm7150-give-VFE1-and-VFE_LITE-the-r.patch
+433b2788e3dc87ec270a84916d24bd193e44df4106cdd8d125f9f8b8775ecfa112eae949eb8355027cfa732a383addd31e766031d2a706e9e6d5a6797ff55351  0112-media-i2c-imx682-s5k3t2-report-mounting-rotation-and.patch
+0956e6af2cbed6c9eaf2d01566a91b578888bd8c1bd4ba4b61d9ef515d101baf4683a97f1965979627d74b5a13d58104ba4e5c60b6ce86f94dc28ee4c1ce0136  0113-media-i2c-imx682-knobs-for-the-mounting-rotation-and.patch
+12b7cab68219c3bcdcb49ccf3221b3ca217d7918dfe9f69080ba3f52bc55245186a3a18fab2361ac8cf620ca12dc906be3f59dfed74a421210d2339436a1d583  0114-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-main-.patch
+bcaea7d5f911caf73d7eabd1985aa59ed98a5cfbaff07a55a36b6a3696dbd0824588acd40774075a3fb34ab25e33c207196e621760f6dfddcc6981ae8b5733d2  0115-media-dw9807-vcm-regulator-support-and-non-fatal-I2C.patch
+"

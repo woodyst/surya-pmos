@@ -1,0 +1,150 @@
+From 7af9e54d9b8a58ddc48084f67921e222460821bc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 21:24:52 +0200
+Subject: [PATCH 015/106] ASoC: tas2562: implement book-switching for the last
+ 3 Class-H registers
+
+tas256x_set_classH_config()'s remaining three registers (CLASSHHEADROOM,
+CLASSHHYSTERESIS, CLASSHMTCT) live in the vendor's book 0x64, reached via
+tas256x_change_book_page(): force page->0, write the book-select register
+(page 0, reg 0x7f), then select the target page. Book doesn't exist as a
+concept in mainline's flat page-only regmap, but the book-select register
+and the page selector are both ordinary book-0 registers, and regmap only
+tracks the last page-selector value it wrote (not which book that page
+belongs to) - so the whole switch, both directions, works through plain
+snd_soc_component_write() calls with no regmap changes, as long as nothing
+else in this driver legitimately uses real book-0 page 5 or page 7 (it
+doesn't - only pages 0, 2, 253 are used elsewhere).
+
+This closes the only gap flagged in the previous load_init() patch.
+---
+ sound/soc/codecs/tas2562.c | 60 ++++++++++++++++++++++++++++++++++----
+ sound/soc/codecs/tas2562.h | 25 ++++++++++++----
+ 2 files changed, 74 insertions(+), 11 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index a1c9fb7b1..3f3e2638e 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -379,6 +379,32 @@ static int tas2562_mute(struct snd_soc_dai *dai, int mute, int direction)
+ 	return tas2562_update_pwr_ctrl(tas2562);
+ }
+ 
++/*
++ * tas256x_change_book_page() into book 0x64, write the data, change back
++ * to book 0 - see the comment above TAS2562_BOOK_CTL in tas2562.h for why
++ * this needs no special regmap support beyond ordinary component writes.
++ */
++static int tas2562_write_classh_book0x64(struct snd_soc_component *component,
++					  unsigned int base_reg,
++					  const u8 *data, int len)
++{
++	int ret, i;
++
++	ret = snd_soc_component_write(component, TAS2562_BOOK_CTL,
++				       TAS2562_BOOK_CLASSH);
++	if (ret < 0)
++		return ret;
++
++	for (i = 0; i < len; i++) {
++		ret = snd_soc_component_write(component, base_reg + i, data[i]);
++		if (ret < 0)
++			return ret;
++	}
++
++	/* Back to book 0 - every other register access in this driver assumes it. */
++	return snd_soc_component_write(component, TAS2562_BOOK_CTL, 0);
++}
++
+ /*
+  * tas256x_load_init()'s reachable unconditional steps, beyond icn_config()
+  * (already added in a prior patch). Same real-world provenance: the
+@@ -451,13 +477,35 @@ static int tas2562_load_init(struct tas2562_data *tas2562)
+ 	}
+ 
+ 	/*
+-	 * tas256x_set_classH_config(): bulk-loads p_tas256x_classh_d_data.
+-	 * Only the entries reachable without book-switching are here -
+-	 * CLASSHHEADROOM/HYSTERESIS/MTCT live in book 0x64 and are skipped
+-	 * (see tas2562.h). TESTPAGECONFIGURATION duplicates TAS2562_ICN_REG13
+-	 * (same register, same value) in the real vendor table too - this
+-	 * isn't a mistake, the vendor writes it twice as well.
++	 * tas256x_set_classH_config(): bulk-loads p_tas256x_classh_d_data, in
++	 * the same order as the real table. TESTPAGECONFIGURATION duplicates
++	 * TAS2562_ICN_REG13 (same register, same value) in the real vendor
++	 * table too - this isn't a mistake, the vendor writes it twice as well.
+ 	 */
++	{
++		static const u8 classh_headroom[4] = { 0x09, 0x99, 0x99, 0x9a };
++		static const u8 classh_hysteresis[4] = { 0x00, 0x00, 0x00, 0x00 };
++		static const u8 classh_mtct[4] = { 0x0b, 0x00, 0x00, 0x00 };
++
++		ret = tas2562_write_classh_book0x64(component,
++						     TAS2562_CLASSH_HEADROOM,
++						     classh_headroom,
++						     ARRAY_SIZE(classh_headroom));
++		if (ret < 0)
++			return ret;
++		ret = tas2562_write_classh_book0x64(component,
++						     TAS2562_CLASSH_HYSTERESIS,
++						     classh_hysteresis,
++						     ARRAY_SIZE(classh_hysteresis));
++		if (ret < 0)
++			return ret;
++		ret = tas2562_write_classh_book0x64(component,
++						     TAS2562_CLASSH_MTCT,
++						     classh_mtct,
++						     ARRAY_SIZE(classh_mtct));
++		if (ret < 0)
++			return ret;
++	}
+ 	ret = snd_soc_component_write(component, TAS2562_VBAT_FILTER, 0x38);
+ 	if (ret < 0)
+ 		return ret;
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index 9113cbc84..e94a15d38 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -47,11 +47,7 @@
+ /*
+  * Remaining unconditional steps of the vendor driver's tas256x_load_init(),
+  * beyond the icn_config() pair above - same provenance (real tas256x.c
+- * source, not guessed). Reachable ones only: three of load_init()'s
+- * Class-H registers (TAS256X_CLASSHHEADROOM/HYSTERESIS/MTCT) live in book
+- * 0x64, which needs a book-select write mainline's flat page-only regmap
+- * doesn't do yet - those three are intentionally left out until book
+- * switching is added.
++ * source, not guessed).
+  */
+ #define TAS2562_CLOCK_CFG	TAS2562_REG(0, 0x38)
+ #define TAS2562_BOOST_SLOPE	TAS2562_REG(0, 0x35)
+@@ -62,6 +58,25 @@
+ #define TAS2562_CLASSD_CFG3	TAS2562_REG(253, 0x33)
+ #define TAS2562_CLASSD_CFG4	TAS2562_REG(253, 0x3f)
+ #define TAS2562_EFFICIENCY_CFG	TAS2562_REG(253, 0x5f)
++
++/*
++ * TAS256X_CLASSHHEADROOM/HYSTERESIS/MTCT live in the vendor's book 0x64,
++ * reached via tas256x_change_book_page(): force page->0 (to reach the book
++ * register), write the book register, then select the target page. Book 0
++ * has no concept in mainline's flat page-only regmap - but the book
++ * register (page 0, reg 0x7f) and the page selector (reg 0) are both
++ * ordinary book-0 registers, so the switch itself needs no regmap changes,
++ * just the right write order. TAS2562_REG(page, reg)'s virtual-address
++ * formula is then reused for the book-0x64 pages purely because regmap
++ * only tracks "last page selector value written" and has no idea a book
++ * even exists - that's exactly what we want here, and is safe because nothing
++ * else in this driver ever addresses real book-0 page 5 or page 7.
++ */
++#define TAS2562_BOOK_CTL	TAS2562_REG(0, 0x7f)
++#define TAS2562_BOOK_CLASSH	0x64
++#define TAS2562_CLASSH_HEADROOM	TAS2562_REG(7, 0x48)	/* book 0x64 */
++#define TAS2562_CLASSH_HYSTERESIS	TAS2562_REG(7, 0x4c)	/* book 0x64 */
++#define TAS2562_CLASSH_MTCT	TAS2562_REG(5, 0x4c)	/* book 0x64 */
+ /* 12-byte HPF reverse-path coefficient block (tas256x_HPF_FB_Bypass()) */
+ #define TAS2562_HPF_CFG		TAS2562_REG(2, 0x70)
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,54 @@
+From 55ac1a1ee708a5bd58c8dfa8a529c439eaa9a63d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 11:11:14 +0200
+Subject: [PATCH 091/106] ASoC: qdsp6: q6asm: knob for the stream
+ post-processing topology
+
+The vendor opens its in-call streams with a post-processing topology of
+its own out of ACDB (0x10000018 on the reference device) where we always
+ask for none, and it was the last field of the whole command stream that
+still differed.
+
+It cannot be used here: the DSP answers ADSP_EUNSUPPORTED to it, which
+makes sense - that topology lives in the vendor's ACDB and we never load
+one. Default stays at none.
+---
+ sound/soc/qcom/qdsp6/q6asm.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6asm.c b/sound/soc/qcom/qdsp6/q6asm.c
+index 8fd2af585..1409b5f88 100644
+--- a/sound/soc/qcom/qdsp6/q6asm.c
++++ b/sound/soc/qcom/qdsp6/q6asm.c
+@@ -114,6 +114,11 @@ struct asm_multi_channel_pcm_fmt_blk_v2 {
+  * format block the DSP is given (48 bytes against 20), so a DSP that only
+  * expects v5 on a path would be reading our block wrong.
+  */
++static uint popp_topology;
++module_param(popp_topology, uint, 0644);
++MODULE_PARM_DESC(popp_topology,
++		 "stream post-processing topology (0 = none, as mainline always did)");
++
+ static bool pcm_fmt_v5 = true;
+ module_param(pcm_fmt_v5, bool, 0644);
+ MODULE_PARM_DESC(pcm_fmt_v5, "open PCM streams with media format v5 (vendor) instead of v2");
+@@ -977,7 +982,14 @@ int q6asm_open_write(struct audio_client *ac, uint32_t stream_id,
+ 	/* source endpoint : matrix */
+ 	open->sink_endpointype = ASM_END_POINT_DEVICE_MATRIX;
+ 	open->bits_per_sample = bits_per_sample;
+-	open->postprocopo_id = ASM_NULL_POPP_TOPOLOGY;
++	/*
++	 * The vendor opens its in-call streams with a post-processing topology
++	 * of its own (0x10000018 on the reference device), out of ACDB, where
++	 * we have always asked for none. It is the last field of the whole
++	 * command stream that still differs, so it is a parameter to try.
++	 */
++	open->postprocopo_id = popp_topology ? popp_topology
++					     : ASM_NULL_POPP_TOPOLOGY;
+ 
+ 	switch (format) {
+ 	case SND_AUDIOCODEC_MP3:
+-- 
+2.43.0
+

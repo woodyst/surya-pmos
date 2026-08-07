@@ -1,0 +1,46 @@
+From aace87f01324d26b6a391f3c1054a05d06ae650a Mon Sep 17 00:00:00 2001
+From: claude <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 18:09:30 +0200
+Subject: [PATCH 035/106] arm64: dts: qcom: sm7150: mux WCD9375 reset GPIO as
+ gpio, not cdc_pdm_rx
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The wcd9375_reset_active/sleep LPI pinctrl states muxed lpass_tlmm gpio6
+(the WCD9375 reset line, WCD9375_RST_N) to function "cdc_pdm_rx" — a codec
+PDM RX hardware function — instead of "gpio". With the pin driving a PDM
+signal, the wcd937x driver's gpiod reset can't control the line and the
+codec never gets a clean reset, so its SoundWire TX interface powers up in
+an undefined state and clashes on the bus (qcom-soundwire: SWR bus clsh
+detected), the TX slave never reaches SDW_SLAVE_ATTACHED, and the codec
+probe times out (-110). Use function "gpio" like every other LPI reset
+line.
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 625c059d6..f8b372fa3 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -4909,14 +4909,14 @@ data-pins {
+ 
+ 			wcd9375_reset_active: wcd9375-reset-active-state {
+ 				pins = "gpio6";
+-				function = "cdc_pdm_rx";
++				function = "gpio";
+ 				drive-strength = <16>;
+ 				output-high;
+ 			};
+ 
+ 			wcd9375_reset_sleep: wcd9375-reset-sleep-state {
+ 				pins = "gpio6";
+-				function = "cdc_pdm_rx";
++				function = "gpio";
+ 				drive-strength = <16>;
+ 				bias-disable;
+ 				output-low;
+-- 
+2.43.0
+

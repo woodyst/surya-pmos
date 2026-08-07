@@ -1,0 +1,68 @@
+From 2e74b7c9dfa9765de3f37ddf8e35eb4a99fb9c5a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 21:50:08 +0200
+Subject: [PATCH 073/106] q6voice: record_dirs para elegir direcciones de las
+ tomas en record_now
+
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 8b92208ff..bf87c1b57 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -72,22 +72,37 @@ MODULE_PARM_DESC(incall_taps, "copy call audio to the record/playback pseudo por
+  * different moment entirely. Writing 1 here reproduces that order without
+  * wiring the whole path first.
+  */
++static int record_dirs = 1;	/* downlink only by default: the safe one */
++
+ static int q6voice_record_now_set(const char *val, const struct kernel_param *kp)
+ {
+ 	struct q6voice *v = q6voice_live;
+ 	struct q6voice_path *p;
+-	int ret, i;
++	int ret, i, want;
+ 
+ 	if (!v)
+ 		return -ENODEV;
+ 
++	if (!kstrtoint(val, 0, &want) && want > 0 && want <= 3)
++		record_dirs = want;
++
+ 	for (i = 0; i < Q6VOICE_PATH_COUNT; i++) {
+ 		p = &v->paths[i];
+ 		mutex_lock(&p->lock);
+ 		if (p->runtime && p->runtime->sessions[Q6VOICE_SERVICE_CVS]) {
++			/*
++			 * Which directions to tap comes from the value written:
++			 * 1 = downlink only, 2 = uplink only, 3 = both. Tapping
++			 * the uplink has been seen to take it away from the
++			 * modem, so being able to ask for just the downlink is
++			 * how that gets pinned down.
++			 */
++			bool rx = record_dirs & 1, tx = record_dirs & 2;
++
+ 			ret = q6cvs_start_record(p->runtime->sessions[Q6VOICE_SERVICE_CVS],
+-						 true, true);
+-			dev_info(v->dev, "record taps started by hand: %d\n", ret);
++						 rx, tx);
++			dev_info(v->dev, "record taps started by hand (rx=%d tx=%d): %d\n",
++				 rx, tx, ret);
+ 			mutex_unlock(&p->lock);
+ 			return 0;
+ 		}
+@@ -103,6 +118,8 @@ static const struct kernel_param_ops q6voice_record_now_ops = {
+ };
+ module_param_cb(record_now, &q6voice_record_now_ops, NULL, 0200);
+ MODULE_PARM_DESC(record_now, "write 1 while a call is up to arm the record taps");
++module_param(record_dirs, int, 0644);
++MODULE_PARM_DESC(record_dirs, "which directions to tap: 1 downlink, 2 uplink, 3 both");
+ 
+ static int q6voice_path_start(struct q6voice_path *p)
+ {
+-- 
+2.43.0
+

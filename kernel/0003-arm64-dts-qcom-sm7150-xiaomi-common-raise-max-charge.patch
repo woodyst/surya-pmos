@@ -1,0 +1,42 @@
+From 056a2aad62fc0300a608c5c96f036a5859cc63c4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 11 Jul 2026 16:48:13 +0200
+Subject: [PATCH 003/106] arm64: dts: qcom: sm7150-xiaomi-common: raise max
+ charge current to 3A
+
+Matches downstream's own upper limit. The previous 1.5A was a
+conservative placeholder pending thermal handling in the mainline
+charging driver, which still doesn't exist - so this trades some
+safety margin for charge speed; monitor battery/PMIC temperature
+(info_carga.sh) during extended full-current charging.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index ee13797fc..b77be88f0 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -38,11 +38,12 @@ battery: battery {
+ 		device-chemistry = "lithium-ion-polymer";
+ 
+ 		/*
+-		 * Keep the maximum charging current conservative for now,
+-		 * until we have thermal handling in the charging driver.
+-		 * Downstream seems to have a upper limit of 3A.
++		 * Matches downstream's own upper limit of 3A. There's still
++		 * no thermal handling in the mainline charging driver, so
++		 * keep an eye on battery/PMIC temperature (info_carga.sh) if
++		 * you charge at the full 3A/15W for extended periods.
+ 		 */
+-		constant-charge-current-max-microamp = <1500000>;
++		constant-charge-current-max-microamp = <3000000>;
+ 
+ 		voltage-min-design-microvolt = <3400000>;
+ 		voltage-max-design-microvolt = <4400000>;
+-- 
+2.43.0
+

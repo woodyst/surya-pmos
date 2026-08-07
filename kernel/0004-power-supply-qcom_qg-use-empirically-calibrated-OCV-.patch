@@ -1,0 +1,100 @@
+From c561715502522aa38b68fa88ae3ecabd125f6430 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 13:53:30 +0200
+Subject: [PATCH 004/106] power: supply: qcom_qg: use empirically-calibrated
+ OCV table for capacity
+
+qcom_qg_get_capacity() previously did a plain linear interpolation of
+voltage_now between voltage-min/max-design, which the driver's own
+comment already flagged as a stopgap. Li-ion cells are strongly
+non-linear (long flat plateau through most of the usable range), so
+this produced the erratic percentage swings seen throughout normal
+use (e.g. dropping several points in seconds under load with no real
+change in stored energy).
+
+Logged voltage_now/current_now from a clean 100% (Full, near-zero
+current) anchor through a real full discharge to the battery
+physically dying, coulomb-counted the actual usable capacity, and
+binned rest-current voltage samples against that real capacity scale
+to produce an ocv-capacity-table-0 for the battery devicetree node.
+qcom_qg_get_capacity() now uses power_supply_ocv2cap_simple() against
+that table when present, falling back to the old linear method
+otherwise (e.g. other boards using this same driver without a
+calibrated table yet).
+---
+ .../boot/dts/qcom/sm7150-xiaomi-common.dtsi   | 23 +++++++++++++++++++
+ drivers/power/supply/qcom_qg.c                | 16 +++++++++++--
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index b77be88f0..8f496ad2c 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -47,6 +47,29 @@ battery: battery {
+ 
+ 		voltage-min-design-microvolt = <3400000>;
+ 		voltage-max-design-microvolt = <4400000>;
++
++		/*
++		 * Empirically measured on this specific unit (2026-07-12):
++		 * logged voltage_now/current_now from a clean 100% (Full,
++		 * near-zero current) anchor through a real full discharge to
++		 * the battery physically dying, coulomb-counted the actual
++		 * usable capacity (~1.42Ah - well below the gauge's own
++		 * "learned" charge_full of 5.216Ah, so this battery is
++		 * significantly more degraded than the driver assumes), then
++		 * binned rest-current (<=260mA) voltage samples against that
++		 * real capacity scale. No samples landed between 65% and 25%
++		 * (the discharge moved through that range quickly) - relying
++		 * on power_supply_ocv2cap_simple()'s linear interpolation
++		 * there, which should be reasonably accurate since that's the
++		 * flattest part of a typical Li-ion discharge curve anyway.
++		 * Replaces qcom_qg_get_capacity()'s previous plain linear
++		 * voltage_now interpolation between voltage-min/max-design.
++		 */
++		ocv-capacity-celsius = <25>;
++		ocv-capacity-table-0 = <4320317 100>, <4193998 95>, <4086309 90>,
++				       <3998561 85>, <3904597 80>, <3835627 75>,
++				       <3754318 70>, <3727354 20>, <3703980 15>,
++				       <3664265 10>, <3617286 5>, <3539833 0>;
+ 	};
+ 
+ 	chosen {
+diff --git a/drivers/power/supply/qcom_qg.c b/drivers/power/supply/qcom_qg.c
+index 18276976c..00d0364fb 100644
+--- a/drivers/power/supply/qcom_qg.c
++++ b/drivers/power/supply/qcom_qg.c
+@@ -79,8 +79,13 @@ static int qcom_qg_get_voltage(struct qcom_qg_chip *chip, u8 offset, int *val)
+ }
+ 
+ /*
+- * Yes, this function simply calculates the capacity based on
+- * the current voltage. This will be rewritten in the future.
++ * Prefers a real per-device ocv-capacity-table-N (see power_supply_battery_info,
++ * populated from devicetree by power_supply_get_battery_info()) binned against
++ * voltage_now during real low-current rest periods, which is a far better SoC
++ * estimate than a flat line between voltage-min/max-design - Li-ion cells are
++ * strongly non-linear and don't spend most of their time near either end.
++ * Falls back to the old linear interpolation for any board using this driver
++ * without such a table (e.g. not yet calibrated).
+  */
+ static int qcom_qg_get_capacity(struct qcom_qg_chip *chip, int *val)
+ {
+@@ -95,6 +100,13 @@ static int qcom_qg_get_capacity(struct qcom_qg_chip *chip, int *val)
+ 		return ret;
+ 	}
+ 
++	if (chip->batt_info->ocv_table[0]) {
++		*val = power_supply_ocv2cap_simple(chip->batt_info->ocv_table[0],
++						   chip->batt_info->ocv_table_size[0],
++						   voltage_now);
++		return 0;
++	}
++
+ 	if (voltage_now <= voltage_min)
+ 		*val = 0;
+ 	else if (voltage_now >= voltage_max)
+-- 
+2.43.0
+

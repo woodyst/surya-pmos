@@ -1,0 +1,96 @@
+From 9dd6d6d3fbe564134548fb191ba7ba9a5a77edd8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 23:09:22 +0200
+Subject: [PATCH 101/106] ASoC: qcom: sm8250: no esperar al propio trabajo al
+ cancelar el plazo
+
+El camino de exito de probe() cancelaba el temporizador del plazo con
+cancel_delayed_work_sync(). Pero probe() puede estar ejecutandose DENTRO
+de ese mismo elemento de trabajo: sm8250_bt_deadline_expired() llama a
+device_reprobe(), que reentra en sm8250_platform_probe() de forma
+sincrona en el mismo hilo de la cola de trabajo. La variante _sync espera
+a que el trabajo en curso termine, es decir, se espera a si misma.
+
+La tarjeta llegaba a registrarse (el bloqueo ocurre despues), asi que la
+prueba parecia buena; 120 s mas tarde el detector de tareas colgadas
+mataba el movil, que arranca con hung_task_panic=1:
+
+  Kernel panic - not syncing: hung_task: blocked tasks
+    sm8250_platform_probe+0x22c/0x28c [snd_soc_sm8250]
+    really_probe / driver_probe_device / __device_attach
+    device_reprobe+0x6c/0xa4
+    sm8250_bt_deadline_expired+0x54/0x280 [snd_soc_sm8250]
+    process_scheduled_works
+
+La cancelacion no bloqueante basta: bt_probe_settled, puesto justo antes,
+ya convierte en no-op a un temporizador en curso o posterior, y el
+temporizador es de un solo disparo (sm8250_bt_deadline_check() solo lo
+arma en el primer aplazamiento).
+
+Verificado en surya: plazo cumplido, tarjeta registrada, y 195 s despues
+sigue vivo sin kworkers bloqueados ni hung_task.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ sound/soc/qcom/sm8250.c | 30 ++++++++++++++++++++++++------
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index 33fce3997..232415c51 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -302,7 +302,7 @@ static void sm8250_bt_deadline_expired(struct work_struct *work);
+ /*
+  * Statically initialized on purpose, not via INIT_DELAYED_WORK() inside
+  * probe(): probe() only reaches that branch when Bluetooth is actually
+- * deferred, but the unconditional cancel_delayed_work_sync() on the
++ * deferred, but the unconditional cancel_delayed_work() on the
+  * ordinary success path (below) has to be safe to call every single time,
+  * including the common case where this work item was never armed at all.
+  * Cancelling a work item that was declared like this but never scheduled is
+@@ -369,10 +369,11 @@ static void sm8250_disable_dai_link_node(struct device_node *parent, const char
+  * Guarded by bt_probe_settled: if the card already registered through an
+  * ordinary retry before this fires (Bluetooth turned up in time after all),
+  * calling device_reprobe() here would tear down a working card just to
+- * probe it again. bt_deadline_work is also cancelled synchronously the
+- * moment probe succeeds (see below), so reaching this function at all
+- * without the flag set should not happen in practice; the check is a second
+- * line of defence, not the only one.
++ * probe it again. bt_deadline_work is also cancelled the moment probe
++ * succeeds (see below - with the non-waiting cancel_delayed_work(), which
++ * matters because probe() can be running inside this very work item), so
++ * reaching this function at all without the flag set should not happen in
++ * practice; the check is a second line of defence, not the only one.
+  */
+ static void sm8250_bt_deadline_expired(struct work_struct *work)
+ {
+@@ -503,7 +504,24 @@ static int sm8250_platform_probe(struct platform_device *pdev)
+ 	mutex_lock(&bt_deadline_lock);
+ 	bt_probe_settled = true;
+ 	mutex_unlock(&bt_deadline_lock);
+-	cancel_delayed_work_sync(&bt_deadline_work);
++
++	/*
++	 * NOT the _sync variant. cancel_delayed_work_sync() waits for a running
++	 * work item to finish, and this probe() can BE that work item:
++	 * sm8250_bt_deadline_expired() calls device_reprobe(), which re-enters
++	 * probe() synchronously on the same workqueue thread. Waiting there is
++	 * a deadlock against ourselves - the card registers fine, then the
++	 * kworker never returns and hung_task_panic reboots the machine two
++	 * minutes later. (Seen on surya: hung_task panic with
++	 * sm8250_platform_probe <- device_reprobe <- sm8250_bt_deadline_expired
++	 * on the stack.)
++	 *
++	 * The non-waiting cancel is sufficient: bt_probe_settled, set just
++	 * above, already makes a timer that is running or fires later a no-op,
++	 * and the timer is one-shot - sm8250_bt_deadline_check() only arms it
++	 * on the first defer.
++	 */
++	cancel_delayed_work(&bt_deadline_work);
+ 
+ 	return 0;
+ }
+-- 
+2.43.0
+

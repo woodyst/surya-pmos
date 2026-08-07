@@ -1,0 +1,44 @@
+From ac59cd81c54baa94058440cd7249892168c0da92 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 18 Jul 2026 00:36:12 +0200
+Subject: [PATCH 061/106] media: input: pm8xxx-vibrator: fix the drv2 (extended
+ voltage) shift direction
+
+pmi632_regs uses a two-byte LDO voltage register pair (drv_offset=0x40
+low byte, drv2_offset=0x41 with a 4-bit mask holding the upper bits of
+a ~12-bit millivolt-scaled level, matching downstream's
+qpnp-vibrator-ldo VSET_LB/VSET_LB+1 pair). Extracting the upper bits of
+a value that can exceed 8 bits needs a RIGHT shift before masking into
+the narrower drv2 register - the code does 'vib->level << drv2_shift'
+instead, which for drv2_shift=8 always produces zero in the masked low
+nibble (shifting left by 8 puts zero in bits 0-3 unconditionally),
+capping the LDO's requested output voltage far below the 1504-3544mV
+range the hardware needs to actually drive the motor.
+
+Found and fixed while bringing up the vibrator on a Qualcomm SM7150
+phone (surya) using this same register set. Not yet confirmed
+sufficient on its own to produce physical vibration - see the surya
+bring-up notes for the ongoing investigation.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ drivers/input/misc/pm8xxx-vibrator.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/input/misc/pm8xxx-vibrator.c b/drivers/input/misc/pm8xxx-vibrator.c
+index 381b06473..94d51739f 100644
+--- a/drivers/input/misc/pm8xxx-vibrator.c
++++ b/drivers/input/misc/pm8xxx-vibrator.c
+@@ -118,7 +118,7 @@ static int pm8xxx_vib_set(struct pm8xxx_vib *vib, bool on)
+ 	vib->reg_vib_drv = val;
+ 
+ 	if (regs->drv2_mask) {
+-		val = vib->level << regs->drv2_shift;
++		val = vib->level >> regs->drv2_shift;
+ 		rc = regmap_write_bits(vib->regmap, vib->drv2_addr,
+ 				regs->drv2_mask, on ? val : 0);
+ 		if (rc < 0)
+-- 
+2.43.0
+

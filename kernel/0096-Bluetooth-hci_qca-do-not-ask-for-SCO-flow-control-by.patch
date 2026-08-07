@@ -1,0 +1,57 @@
+From 78d52e70dbb7938b8b721fe0513b783f47652827 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 14:40:01 +0200
+Subject: [PATCH 096/106] Bluetooth: hci_qca: do not ask for SCO flow control
+ by default
+
+The WCN3990 lies about it. It advertises Write Synchronous Flow Control
+Enable, accepts the command and afterwards reports the feature as
+enabled - but it never sends the completed-packet events that hand the
+credits back.
+
+Measured with the quirk on: transmission stops dead after exactly
+sco_pkts packets, four of them, while reception carries on at a hundred
+a second and the headset goes silent. Left as a module parameter because
+the next controller may be honest.
+---
+ drivers/bluetooth/hci_qca.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index 77f11f261..63e8f8dc5 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -235,10 +235,16 @@ struct qca_serdev {
+ };
+ 
+ /*
+- * Whether the core may use SCO flow control on this controller. Off turns the
+- * quirk back off without a rebuild, to compare the two.
++ * Whether the core may use SCO flow control on this controller.
++ *
++ * Off by default because a WCN3990 lies about it: it advertises Write
++ * Synchronous Flow Control Enable, accepts the command and then reports the
++ * feature as enabled, but never sends the completed-packet events that give
++ * the credits back. Measured: SCO transmission stops dead after exactly
++ * sco_pkts packets - four - while reception carries on at a hundred a second.
++ * Left as a parameter because the next controller may be honest.
+  */
+-static bool sco_flowctl = true;
++static bool sco_flowctl;
+ module_param(sco_flowctl, bool, 0644);
+ MODULE_PARM_DESC(sco_flowctl, "use SCO flow control when the controller offers it");
+ 
+@@ -1953,6 +1959,9 @@ static int qca_setup(struct hci_uart *hu)
+ 	 *
+ 	 * The core still checks that the controller advertises Write Sync Flow
+ 	 * Control before using it, so this is a no-op where it is unsupported.
++	 *
++	 * ⚠ Off by default: this controller advertises the feature and then
++	 * never returns the credits. See the comment on sco_flowctl.
+ 	 */
+ 	if (sco_flowctl)
+ 		hci_set_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED);
+-- 
+2.43.0
+

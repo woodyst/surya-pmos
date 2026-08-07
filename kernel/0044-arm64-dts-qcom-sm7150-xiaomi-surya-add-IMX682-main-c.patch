@@ -1,0 +1,113 @@
+From 32c51b8a12fd443736c16919c72c91c08e3aecdd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 04:01:25 +0200
+Subject: [PATCH 044/106] arm64: dts: qcom: sm7150-xiaomi-surya: add IMX682
+ main camera
+
+Wire up the rear 64MP sensor: it sits on cci0_i2c0 at 0x1a, takes MCLK1
+at 19.2MHz, and is reset and taken out of standby over tlmm 25 and 66.
+
+Its I/O rail comes from the SoC PMIC, while the digital core and the
+analogue rail come from the WL2866D camera PMIC. The second analogue
+rail is the board's own GPIO-switched 2.8V one, which downstream labels
+"vdig" even though the digital core is the 1.1V rail from the WL2866D.
+
+The sensor is wired to CSIPHY0 with three data lanes.
+
+Note the 0x50 that also answers on this bus is the module's EEPROM, not
+the sensor; the comment this replaces had them confused.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 63 ++++++++++++++++++-
+ 1 file changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index d49ee7e2c..c4856b14d 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -7,6 +7,7 @@
+ /dts-v1/;
+ 
+ #include "sm7150-xiaomi-common.dtsi"
++#include <dt-bindings/clock/qcom,sm7150-camcc.h>
+ #include <dt-bindings/sound/qcom,q6voice.h>
+ 
+ / {
+@@ -235,7 +236,36 @@ &battery {
+ };
+ 
+ &cci0_i2c0 {
+-	/* Sony IMX682 Main @ 50 */
++	/*
++	 * Main 64MP camera. The 0x50 that also answers on this bus is the
++	 * module's EEPROM, not the sensor.
++	 */
++	camera@1a {
++		compatible = "sony,imx682";
++		reg = <0x1a>;
++
++		reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
++		standby-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&cam_rear_default>;
++
++		clocks = <&camcc CAMCC_MCLK1_CLK>;
++		assigned-clocks = <&camcc CAMCC_MCLK1_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		dovdd-supply = <&vreg_l13a_1p8>;
++		avdd-supply = <&vreg_cam_avdd2>;
++		avdd2-supply = <&vreg_wide_ldo_avdd2>;
++		dvdd-supply = <&vreg_cam_dvdd2>;
++
++		port {
++			imx682_ep: endpoint {
++				remote-endpoint = <&csiphy0_ep>;
++				data-lanes = <0 1 2>;
++				link-frequencies = /bits/ 64 <953600000>;
++			};
++		};
++	};
+ };
+ 
+ &cci0_i2c1 {
+@@ -657,3 +687,34 @@ &vreg_l18a_2p8 {
+ &wifi {
+ 	qcom,ath10k-calibration-variant = "xiaomi_surya";
+ };
++
++&camss {
++	ports {
++		/* CSIPHY0: main IMX682 */
++		port@0 {
++			csiphy0_ep: endpoint {
++				clock-lanes = <7>;
++				data-lanes = <0 1 2>;
++				remote-endpoint = <&imx682_ep>;
++			};
++		};
++	};
++};
++
++&tlmm {
++	cam_rear_default: cam-rear-default-state {
++		mclk-pins {
++			pins = "gpio14";
++			function = "cam_mclk";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		gpio-pins {
++			pins = "gpio25", "gpio66";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++};
+-- 
+2.43.0
+

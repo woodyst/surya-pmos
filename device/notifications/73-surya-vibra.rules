@@ -1,0 +1,4 @@
+# surya lleva DOS dispositivos con vibracion: el del PMIC (pm8xxx_vib_ffmemless),
+# que acepta ordenes y no mueve nada, y el motor haptico real (aw8695-haptics).
+# feedbackd coge el primero que encuentra, asi que hay que desetiquetar el malo.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="pm8xxx_vib_ffmemless", ENV{FEEDBACKD_TYPE}=""

@@ -1,0 +1,71 @@
+From e6d2ae17c45eee94dd4f64b6f0d15bf123238e2d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 20:52:35 +0200
+Subject: [PATCH 083/106] ASoC: qdsp6: q6asm-dai: remember a stream that is
+ open but not yet running
+
+prepare() only tears the previous session down when the stream is
+RUNNING, and that flag is set at the very end of prepare(). If anything
+between the open and that point fails - or if prepare() runs again
+before the trigger, which happens when enabling a mixer route rebuilds
+the DPCM graph - the session is still open in the DSP while the driver
+believes it is not. The next open then comes back as ADSP_EALREADY and
+the stream is unusable from then on.
+
+Mark the stream as opened as soon as the DSP accepts it, and tear that
+state down on the next prepare() too.
+
+Found while tracing why audio injected into a call never reached the
+modem: the injection stream was reopened when the record tap route went
+on, failed with error 9, and silently stopped feeding the DSP.
+---
+ sound/soc/qcom/qdsp6/q6asm-dai.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6asm-dai.c b/sound/soc/qcom/qdsp6/q6asm-dai.c
+index 4f8f7db6c..bab1913bb 100644
+--- a/sound/soc/qcom/qdsp6/q6asm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6asm-dai.c
+@@ -46,6 +46,13 @@
+ enum stream_state {
+ 	Q6ASM_STREAM_IDLE = 0,
+ 	Q6ASM_STREAM_STOPPED,
++	/*
++	 * La sesion existe en el DSP pero aun no se ha disparado. Hace falta
++	 * distinguirlo de STOPPED: si prepare() vuelve a pasar por aqui sin
++	 * cerrar antes, el DSP rechaza la segunda apertura con ADSP_EALREADY
++	 * y el flujo se queda inservible.
++	 */
++	Q6ASM_STREAM_OPENED,
+ 	Q6ASM_STREAM_RUNNING,
+ };
+ 
+@@ -225,7 +232,8 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 
+ 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
+ 	/* rate and channels are sent to audio driver */
+-	if (prtd->state == Q6ASM_STREAM_RUNNING) {
++	if (prtd->state == Q6ASM_STREAM_RUNNING ||
++	    prtd->state == Q6ASM_STREAM_OPENED) {
+ 		/* clear the previous setup if any  */
+ 		q6asm_cmd(prtd->audio_client, prtd->stream_id, CMD_CLOSE);
+ 		q6asm_unmap_memory_regions(substream->stream,
+@@ -261,6 +269,14 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 		goto open_err;
+ 	}
+ 
++	/*
++	 * Anotarlo YA: si algo de lo que viene despues falla, la sesion sigue
++	 * abierta en el DSP, y sin esta marca el siguiente prepare() no la
++	 * cierra y el DSP rechaza la reapertura con ADSP_EALREADY, dejando el
++	 * flujo inservible para siempre.
++	 */
++	prtd->state = Q6ASM_STREAM_OPENED;
++
+ 	prtd->session_id = q6asm_get_session_id(prtd->audio_client);
+ 	ret = q6routing_stream_open(soc_prtd->dai_link->id, LEGACY_PCM_MODE,
+ 			      prtd->session_id, substream->stream);
+-- 
+2.43.0
+

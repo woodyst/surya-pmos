@@ -1,0 +1,23 @@
+[Unit]
+Description=Keep the modem GNSS engine unlocked (Xiaomi ships it locked in NV)
+# El modem de fabrica de surya trae el motor GNSS BLOQUEADO en NV (engine
+# lock). Android lo desbloquea desde su HAL residente; sin esto, cualquier
+# intento de arrancar el GPS (ModemManager, GeoClue, qmicli) falla con
+# "QMI protocol error (46): GeneralError", indistinguible de otros fallos.
+#
+# CONFIRMADO EMPIRICAMENTE (2026-07-18): el desbloqueo NO persiste - el
+# lock reaparece cuando la sesion GPS se para (por eso Android lo re-aplica
+# desde un proceso residente). Un oneshot al arrancar NO basta: este
+# servicio re-afirma el desbloqueo en bucle. Es idempotente y barato
+# (un mensaje QMI cada 10 s); re-afirmarlo con una sesion activa es inocuo.
+After=ModemManager.service
+Wants=ModemManager.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'while true; do qmicli -d qrtr://0 --loc-set-engine-lock=none >/dev/null 2>&1; sleep 10; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

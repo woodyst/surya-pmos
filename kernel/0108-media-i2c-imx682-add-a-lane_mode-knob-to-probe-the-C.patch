@@ -1,0 +1,82 @@
+From bea0f314895aed0fcfb6fa7b610e42c7703736d7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 18:45:50 +0200
+Subject: [PATCH] media: i2c: imx682: add a lane_mode knob to probe the CSI
+ link
+
+Diagnostic-only. The mode tables always set CSI_LANE_MODE (0x0114) to 0x02,
+three lanes, matching how the sensor is wired. This parameter overrides it
+after the mode table is written (Sony encodes 0=1 lane, 1=2, 2=3, 3=4;
+-1 leaves it alone), so the number of lanes the sensor drives can be swept
+without touching the device tree or rebooting.
+
+The point is not a working stream with fewer lanes - the link frequency
+stays configured for three, so the timing is wrong - but to find out whether
+the CSIPHY can lock onto anything at all.
+
+Result on a POCO X3 NFC (SM7150): it cannot. With 3, 2 and 1 lanes, and the
+capture verified to be streaming in each case, the CSID reports zero packets,
+zero ECC, zero CRC errors and zero MISR on all four lanes. A malformed stream
+would still produce CRC errors; getting none means nothing arrives at all.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/media/i2c/imx682.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/drivers/media/i2c/imx682.c b/drivers/media/i2c/imx682.c
+index 4ac1f65e5..d8e2e4c85 100644
+--- a/drivers/media/i2c/imx682.c
++++ b/drivers/media/i2c/imx682.c
+@@ -63,6 +63,17 @@
+ #define IMX682_LINK_FREQ	953600000
+ #define IMX682_NUM_DATA_LANES	3
+ 
++/*
++ * Experiment knob (see imx682_start_streaming()): override CSI_LANE_MODE
++ * (0x0114) after the mode table has been written. Sony encodes it as
++ * 0 = 1 lane, 1 = 2 lanes, 2 = 3 lanes, 3 = 4 lanes. -1 leaves the mode
++ * table's own value (0x02, three lanes) alone.
++ */
++static int lane_mode = -1;
++module_param(lane_mode, int, 0644);
++MODULE_PARM_DESC(lane_mode,
++		 "override CSI_LANE_MODE 0x0114: 0=1 lane, 1=2, 2=3, 3=4; -1 = leave as the mode table sets it");
++
+ #define IMX682_REG_MIN		0x00
+ #define IMX682_REG_MAX		0xffff
+ 
+@@ -1340,6 +1351,29 @@ static int imx682_start_streaming(struct imx682 *imx682)
+ 		return ret;
+ 	}
+ 
++	/*
++	 * Experiment knob: override CSI_LANE_MODE after the mode table, which
++	 * always sets it to 0x02 (three lanes). Sony encodes it as
++	 * 0=1 lane, 1=2 lanes, 2=3 lanes, 3=4 lanes.
++	 *
++	 * The point is not to get a working stream with fewer lanes - the
++	 * timing would be wrong - but to find out whether the CSIPHY can lock
++	 * onto ANYTHING at all. Right now the CSID reports zero packets AND
++	 * zero errors on all four lanes, so any non-zero counter would be a
++	 * result: it would mean the link can come up and the problem is in how
++	 * the three-lane stream is assembled, not in the physical link.
++	 */
++	if (lane_mode >= 0) {
++		dev_info(imx682->dev,
++			 "EXPERIMENT: forcing CSI_LANE_MODE (0x0114) = 0x%02x (%d lane%s)\n",
++			 lane_mode, lane_mode + 1, lane_mode ? "s" : "");
++		ret = imx682_write_reg(imx682, 0x0114, 1, lane_mode);
++		if (ret) {
++			dev_err(imx682->dev, "fail to override CSI_LANE_MODE");
++			return ret;
++		}
++	}
++
+ 	/* Setup handler will write actual exposure and gain */
+ 	ret =  __v4l2_ctrl_handler_setup(imx682->sd.ctrl_handler);
+ 	if (ret) {
+-- 
+2.43.0
+

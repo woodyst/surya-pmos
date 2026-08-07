@@ -1,0 +1,111 @@
+From 58d45ed017e48b2e96c4e012706c170c2a9f32f4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 10:23:46 +0200
+Subject: [PATCH 048/106] arm64: dts: qcom: sm7150-xiaomi-surya: add S5K3T2
+ front camera
+
+Wire up the 20MP front sensor: CSIPHY1 with four lanes, MCLK0 on tlmm13,
+reset on tlmm23 and its two analogue rails, the WL2866D's AVDD1 and the
+GPIO-switched 2.8V camera_vdig.
+
+The bus is cci0_i2c1, not cci1_i2c0 as the placeholder comment guessed:
+the factory device tree puts this sensor on cci-device 0 / cci-master 1,
+sharing the bus with the depth camera.
+
+The sensor shares CSIPHY1 with the ultrawide through a board mux, picked
+by pm6150_gpios 3. Note that camera_mipi_switch_en (pm6150_gpios 2) must
+stay off for this sensor: with it asserted CSIPHY1 sees nothing from the
+front sensor at all, which is measurable in the PHY's per-lane registers.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 60 ++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index c4856b14d..194a0e13d 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -270,10 +270,43 @@ imx682_ep: endpoint {
+ 
+ &cci0_i2c1 {
+ 	/* OmniVision ov02b1b Depth @ 50 */
++
++	/*
++	 * Front 20MP camera. The factory device tree puts it on cci-device 0 /
++	 * cci-master 1, i.e. this bus, sharing it with the depth sensor.
++	 */
++	camera@10 {
++		compatible = "samsung,s5k3t2";
++		reg = <0x10>;
++
++		reset-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;
++		/*
++		 * Picks whether this sensor or the ultrawide one drives
++		 * CSIPHY1. Both hang off the same pin.
++		 */
++		select-gpios = <&pm6150_gpios 3 GPIO_ACTIVE_HIGH>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&cam_front_default>;
++
++		clocks = <&camcc CAMCC_MCLK0_CLK>;
++		assigned-clocks = <&camcc CAMCC_MCLK0_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		dovdd-supply = <&vreg_l13a_1p8>;
++		avdd-supply = <&vreg_cam_avdd1>;
++		avdd2-supply = <&vreg_camera_vdig>;
++
++		port {
++			s5k3t2_ep: endpoint {
++				remote-endpoint = <&csiphy1_ep>;
++				data-lanes = <0 1 2 3>;
++				link-frequencies = /bits/ 64 <896000000>;
++			};
++		};
++	};
+ };
+ 
+ &cci1_i2c0 {
+-	/* Samsung S5K3T2 Front @ ? */
+ 	/* Sk Hynix Hi-259 Macro @ ? */
+ 	/* Sk Hynix Hi-1337 Ultrawide @ ? */
+ };
+@@ -698,10 +731,35 @@ csiphy0_ep: endpoint {
+ 				remote-endpoint = <&imx682_ep>;
+ 			};
+ 		};
++
++		/* CSIPHY1: front S5K3T2, muxed with the ultrawide */
++		port@1 {
++			csiphy1_ep: endpoint {
++				clock-lanes = <7>;
++				data-lanes = <0 1 2 3>;
++				remote-endpoint = <&s5k3t2_ep>;
++			};
++		};
+ 	};
+ };
+ 
+ &tlmm {
++	cam_front_default: cam-front-default-state {
++		mclk-pins {
++			pins = "gpio13";
++			function = "cam_mclk";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		gpio-pins {
++			pins = "gpio23";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
+ 	cam_rear_default: cam-rear-default-state {
+ 		mclk-pins {
+ 			pins = "gpio14";
+-- 
+2.43.0
+

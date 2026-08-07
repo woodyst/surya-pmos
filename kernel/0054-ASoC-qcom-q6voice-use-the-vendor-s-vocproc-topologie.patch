@@ -1,0 +1,54 @@
+From f2b02a1cba5131fef967d525f27d09f32e9c4bed Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 17:55:54 +0200
+Subject: [PATCH 054/106] ASoC: qcom: q6voice: use the vendor's vocproc
+ topologies
+
+The previous commit picked VSS_IVOCPROC_TOPOLOGY_ID_NONE for both
+directions, assuming without testing that the stock topologies (echo
+cancellation on Tx, the default processing chain on Rx) would fail to
+create without calibration data - the pre-existing 'TODO: Implement
+calibration' comment they came with suggested as much.
+
+Tested on a POCO X3 NFC: they do not. Vocproc creation and enable ACK
+exactly like with the NONE topologies; the only rejected command in
+either case is CVP_SET_STEP (RX volume, still needs a calibration
+table this port does not load). Topology choice makes no difference to
+whether a call comes up silent, so there is no reason to prefer the
+passthrough topologies over the vendor's actual choice, which should
+give proper echo cancellation and noise suppression once/if the
+silence is fixed.
+---
+ sound/soc/qcom/qdsp6/q6cvp.c | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index 86dd356e0..fd0b5256e 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -114,13 +114,15 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 	cmd.hdr.opcode = VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
+ 
+ 	/*
+-	 * The ECNS Tx and default Rx topologies need calibration data from the
+-	 * vendor ACDB files, which we do not load. Ask for the NONE topologies,
+-	 * a passthrough vocproc that needs no calibration, so voice at least
+-	 * flows. (TODO: real calibration for echo cancellation / noise supp.)
++	 * The stock topologies (echo cancellation on Tx, the default
++	 * processing chain on Rx) create and enable the vocproc without any
++	 * error, same as VSS_IVOCPROC_TOPOLOGY_ID_NONE - a passthrough
++	 * topology needs no more calibration than these do for a call to
++	 * come up. Nothing about topology choice makes the difference between
++	 * a silent and a working call, so keep the vendor's actual choice.
+ 	 */
+-	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+-	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
++	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
++	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
+ 
+ 	cmd.direction = VSS_IVOCPROC_DIRECTION_RX_TX;
+ 	cmd.tx_port_id = tx_port;
+-- 
+2.43.0
+

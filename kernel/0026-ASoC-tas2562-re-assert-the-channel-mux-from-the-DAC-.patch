@@ -1,0 +1,118 @@
+From 49cc39e0106aaa3ea5659a72debf4d3a4096d51b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 15 Jul 2026 17:15:34 +0200
+Subject: [PATCH 026/106] ASoC: tas2562: re-assert the channel mux from the DAC
+ power-up event
+
+The ASI1 channel-select mux (TDM_CFG2 bits 5:4) is unreliable when set
+while the codec is idle: a machine driver that applies it at UCM
+profile-activation time, before any stream, hits the part while it is
+runtime-suspended (cache-only, reset asserted via the shutdown GPIO), and
+the selection does not survive the resume - the mux lands on 0, the
+I2C-offset/mute code, silently killing that channel. Setting the same mux
+during steady playback is always reliable.
+
+Observed on a Xiaomi surya driving two of these amps as a stereo pair
+(top = Left channel, bottom = Right): the routing itself is correct - with
+the mux forced during playback, each amp cleanly reproduces only its own
+channel - but the UCM cset at activation left the top amp muted every time.
+
+Wrap the mux control with a put that records the selection, and re-assert
+it from the DAC POST_PMU event, which runs once the part is powered and
+the stream is up. (An earlier attempt to fix this by marking TDM_CFG2
+volatile made it worse: volatile writes are dropped in cache-only mode, so
+the idle write was lost outright - reverted.)
+---
+ sound/soc/codecs/tas2562.c | 45 +++++++++++++++++++++++++++++++++++++-
+ sound/soc/codecs/tas2562.h |  3 +++
+ 2 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 81f6caff2..f8235c3ec 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -56,6 +56,7 @@ struct tas2562_data {
+ 	bool dac_powered;
+ 	bool unmuted;
+ 	bool tdm_slots_configured;
++	unsigned int asi1_sel;
+ };
+ 
+ enum tas256x_model {
+@@ -683,8 +684,31 @@ static const char * const tas2562_ASI1_src[] = {
+ static SOC_ENUM_SINGLE_DECL(tas2562_ASI1_src_enum, TAS2562_TDM_CFG2, 4,
+ 			    tas2562_ASI1_src);
+ 
++/*
++ * Remember the channel selection so it can be re-asserted from the DAC
++ * power-up event. Setting it here alone is not reliable: when a machine
++ * driver applies it while the codec is runtime-suspended (idle, cache-only,
++ * reset asserted) - which is exactly what UCM does at profile-activation
++ * time - the write does not survive the resume, and the mux lands on the
++ * I2C-offset/mute code, silently killing that channel.
++ */
++static int tas2562_asi1_sel_put(struct snd_kcontrol *kcontrol,
++				struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_dapm_context *dapm =
++		snd_soc_dapm_kcontrol_to_dapm(kcontrol);
++	struct snd_soc_component *component =
++		snd_soc_dapm_to_component(dapm);
++	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
++
++	tas2562->asi1_sel = ucontrol->value.enumerated.item[0];
++
++	return snd_soc_dapm_put_enum_double(kcontrol, ucontrol);
++}
++
+ static const struct snd_kcontrol_new tas2562_asi1_mux =
+-	SOC_DAPM_ENUM("ASI1 Source", tas2562_ASI1_src_enum);
++	SOC_DAPM_ENUM_EXT("ASI1 Source", tas2562_ASI1_src_enum,
++			  snd_soc_dapm_get_enum_double, tas2562_asi1_sel_put);
+ 
+ /*
+  * tas256x_reg.bin's PRE_POWER_UP block for this board (dev_idx 1 / SPK /
+@@ -758,6 +782,25 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 			if (ret < 0)
+ 				return ret;
+ 		}
++		/*
++		 * Re-assert the channel select now that the part is powered and
++		 * the stream is up - this is the only point where the write is
++		 * reliable (see tas2562_asi1_sel_put).
++		 *
++		 * The cache must be bypassed: the DAPM mux write landed in the
++		 * cache, hw_params then clobbered these bits on the actual chip
++		 * without updating the cache, so a normal cached update_bits sees
++		 * the cache already holding the right value and skips the write -
++		 * leaving the hardware wrong. Force it straight to the part.
++		 */
++		regcache_cache_bypass(tas2562->regmap, true);
++		ret = regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG2,
++					 TAS2562_ASI1_SEL_MASK,
++					 tas2562->asi1_sel <<
++					 TAS2562_ASI1_SEL_SHIFT);
++		regcache_cache_bypass(tas2562->regmap, false);
++		if (ret < 0)
++			return ret;
+ 		tas2562->dac_powered = true;
+ 		ret = tas2562_update_pwr_ctrl(tas2562);
+ 		break;
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index 7e02ec915..2d2d721fb 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -144,6 +144,9 @@
+ 
+ #define TAS2562_TDM_CFG2_RIGHT_JUSTIFY	BIT(6)
+ 
++#define TAS2562_ASI1_SEL_MASK	GENMASK(5, 4)
++#define TAS2562_ASI1_SEL_SHIFT	4
++
+ #define TAS2562_TDM_CFG2_RXLEN_MASK	GENMASK(1, 0)
+ #define TAS2562_TDM_CFG2_RXLEN_16B	0x0
+ #define TAS2562_TDM_CFG2_RXLEN_24B	BIT(0)
+-- 
+2.43.0
+

@@ -1,0 +1,186 @@
+From 95ef481decf25a4f5ab99c68e967e25023e46652 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 7 Aug 2026 00:27:59 +0200
+Subject: [PATCH] media: dw9807-vcm: regulator support and non-fatal I2C, and
+ use it for surya
+
+The focus actuator of surya's main camera is a DW9800. The module's own
+firmware blob names it (actuatorName = dw9800), which is what settles it: the
+factory stack carries drivers for four different chips and the device tree
+only says qcom,actuator. The DW9800 is register-addressed like the DW9807 and
+unlike the DW9714, so with the DW9714 protocol it acknowledges every position
+write and never moves.
+
+Two things the mainline driver needs for this board:
+
+- A vcc supply. It requested none, and the coil driver here hangs off a
+  regulator that consequently had no consumer at all and stayed disabled.
+- Tolerating I2C failures in the runtime PM callbacks. The chip is only
+  reachable while the camera is powered, so the suspend that follows probe
+  fails, and a runtime PM callback that returns an error makes the core latch
+  power.runtime_error - after which every later operation, including opening
+  the subdev, fails with EINVAL for good.
+
+Verified on the device: asking for 100, 500 and 900 through FOCUS_ABSOLUTE
+reads back 0x0064, 0x01F4 and 0x0384 from the chip, and the preview visibly
+comes into focus.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 18 ++++----
+ drivers/media/i2c/dw9807-vcm.c                | 45 +++++++++++++++----
+ 2 files changed, 45 insertions(+), 18 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 2fb678754..f7a1b1a08 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -397,19 +397,19 @@ &battery {
+ 
+ &cci0_i2c0 {
+ 	/*
+-	 * Focus actuator of the main camera module. It answers at 0x0c whenever
+-	 * the camera is powered, and takes a plain 16-bit write with no register
+-	 * index, which is the Dongwoon protocol rather than the DW9807 or AK7375
+-	 * one. The factory device tree describes it only as a generic
+-	 * "qcom,actuator" and its stack carries drivers for four different
+-	 * chips, so the protocol is what identifies it.
++	 * Focus actuator of the main camera module, at 0x0c on the sensor's bus.
++	 * The factory device tree only calls it a generic "qcom,actuator", but
++	 * the module's own firmware blob names it: actuatorName = dw9800. That
++	 * part is register-addressed like the DW9807 and unlike the DW9714, so
++	 * it needs the dw9807-vcm driver. Verified on the device: with the
++	 * DW9714 protocol the lens acknowledges everything and never moves.
+ 	 *
+ 	 * Its coil driver hangs off uw_ldo_ois_drv. That regulator was already
+ 	 * described here but had no consumer at all, so it sat disabled: the
+ 	 * chip acknowledged every position write and the lens never moved.
+ 	 */
+-	dw9714: camera-lens@c {
+-		compatible = "dongwoon,dw9714";
++	dw9800: camera-lens@c {
++		compatible = "dongwoon,dw9807-vcm";
+ 		reg = <0x0c>;
+ 
+ 		vcc-supply = <&vreg_uw_ldo_ois_drv>;
+@@ -428,7 +428,7 @@ camera@1a {
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&cam_rear_default>;
+ 
+-		lens-focus = <&dw9714>;
++		lens-focus = <&dw9800>;
+ 
+ 		/*
+ 		 * Mounted a quarter turn from the display's natural (portrait)
+diff --git a/drivers/media/i2c/dw9807-vcm.c b/drivers/media/i2c/dw9807-vcm.c
+index 4148009e0..7d1df1af3 100644
+--- a/drivers/media/i2c/dw9807-vcm.c
++++ b/drivers/media/i2c/dw9807-vcm.c
+@@ -7,6 +7,7 @@
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
+ #include <media/v4l2-ctrls.h>
+ #include <media/v4l2-device.h>
+ 
+@@ -41,6 +42,7 @@
+ struct dw9807_device {
+ 	struct v4l2_ctrl_handler ctrls_vcm;
+ 	struct v4l2_subdev sd;
++	struct regulator *vcc;
+ 	u16 current_val;
+ };
+ 
+@@ -185,6 +187,20 @@ static int dw9807_probe(struct i2c_client *client)
+ 	if (dw9807_dev == NULL)
+ 		return -ENOMEM;
+ 
++	/*
++	 * Supply for the coil driver. The chip answers on I2C off the sensor's
++	 * digital supply, so without this the lens acknowledges every position
++	 * and never moves. Boards that do not describe it get a dummy.
++	 */
++	dw9807_dev->vcc = devm_regulator_get(&client->dev, "vcc");
++	if (IS_ERR(dw9807_dev->vcc))
++		return PTR_ERR(dw9807_dev->vcc);
++
++	rval = regulator_enable(dw9807_dev->vcc);
++	if (rval)
++		return dev_err_probe(&client->dev, rval,
++				     "failed to enable vcc: %d\n", rval);
++
+ 	v4l2_i2c_subdev_init(&dw9807_dev->sd, client, &dw9807_ops);
+ 	dw9807_dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+ 	dw9807_dev->sd.internal_ops = &dw9807_int_ops;
+@@ -210,6 +226,7 @@ static int dw9807_probe(struct i2c_client *client)
+ 	return 0;
+ 
+ err_cleanup:
++	regulator_disable(dw9807_dev->vcc);
+ 	v4l2_ctrl_handler_free(&dw9807_dev->ctrls_vcm);
+ 	media_entity_cleanup(&dw9807_dev->sd.entity);
+ 
+@@ -222,6 +239,9 @@ static void dw9807_remove(struct i2c_client *client)
+ 	struct dw9807_device *dw9807_dev = sd_to_dw9807_vcm(sd);
+ 
+ 	pm_runtime_disable(&client->dev);
++	if (!pm_runtime_status_suspended(&client->dev))
++		regulator_disable(dw9807_dev->vcc);
++	pm_runtime_set_suspended(&client->dev);
+ 
+ 	dw9807_subdev_cleanup(dw9807_dev);
+ }
+@@ -231,6 +251,13 @@ static void dw9807_remove(struct i2c_client *client)
+  * The lens position is gradually moved in units of DW9807_CTRL_STEPS,
+  * to make the movements smoothly.
+  */
++/*
++ * I2C failures here are logged but not propagated. On boards where the lens
++ * shares the sensor's digital supply it is only reachable while the camera is
++ * powered, and a runtime PM callback that returns an error makes the core
++ * latch power.runtime_error, after which every later operation - including
++ * opening the subdev - fails with EINVAL for good.
++ */
+ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
+ {
+ 	struct i2c_client *client = to_i2c_client(dev);
+@@ -249,12 +276,10 @@ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
+ 
+ 	/* Power down */
+ 	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
+-	if (ret < 0) {
+-		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+-		return ret;
+-	}
++	if (ret < 0)
++		dev_err_once(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+ 
+-	return 0;
++	return regulator_disable(dw9807_dev->vcc);
+ }
+ 
+ /*
+@@ -271,12 +296,14 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
+ 	const char tx_data[2] = { DW9807_CTL_ADDR, 0x00 };
+ 	int ret, val;
+ 
++	ret = regulator_enable(dw9807_dev->vcc);
++	if (ret)
++		return ret;
++
+ 	/* Power on */
+ 	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
+-	if (ret < 0) {
+-		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+-		return ret;
+-	}
++	if (ret < 0)
++		dev_err_once(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+ 
+ 	for (val = dw9807_dev->current_val % DW9807_CTRL_STEPS;
+ 	     val < dw9807_dev->current_val + DW9807_CTRL_STEPS - 1;
+-- 
+2.43.0
+

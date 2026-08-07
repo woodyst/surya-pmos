@@ -1,0 +1,175 @@
+From 3f562c74cfc1b54d6a6d76d78e9f3b2fe99f8cc5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 14 Jul 2026 16:30:36 +0200
+Subject: [PATCH 021/106] Revert "ASoC: qcom: sm7150-xiaomi-surya: drive the
+ tertiary bus as TDM, not I2S"
+
+This reverts commit 331dac5b535f3935d573ac7b4227c06c1f1dd9ac.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 35 +++-------
+ sound/soc/qcom/sm8250.c                       | 70 +------------------
+ 2 files changed, 9 insertions(+), 96 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 56ddd8dc3..6953113e4 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -97,7 +97,7 @@ cpu {
+ 		i2s-dai-link {
+ 			link-name = "I2S Playback";
+ 			cpu {
+-				sound-dai = <&q6afedai TERTIARY_TDM_RX_0>;
++				sound-dai = <&q6afedai TERTIARY_MI2S_RX>;
+ 			};
+ 
+ 			platform {
+@@ -119,7 +119,7 @@ codec {
+ 		i2s-capture-dai-link {
+ 			link-name = "I2S Capture";
+ 			cpu {
+-				sound-dai = <&q6afedai TERTIARY_TDM_TX_0>;
++				sound-dai = <&q6afedai TERTIARY_MI2S_TX>;
+ 			};
+ 
+ 			platform {
+@@ -325,33 +325,14 @@ &pm6150l_wled {
+ };
+ 
+ &q6afedai {
+-	/*
+-	 * The amps are driven as TDM, not plain I2S. Android cannot be using
+-	 * I2S here: its smart-amp algorithm consumes four I/V sense channels
+-	 * (current and voltage from both amps) and a single I2S data line
+-	 * only ever carries two - the DSP rejects anything else outright with
+-	 * "Invalid Channel mode". Four slots on one line means TDM. The
+-	 * parameters below are the ones the stock Android DT uses for this
+-	 * bus (short sync, internal source, one-bit data delay).
+-	 */
+-	tdm@56 {
+-		reg = <TERTIARY_TDM_RX_0>;
+-		qcom,tdm-sync-mode = <1>;
+-		qcom,tdm-sync-src = <1>;
+-		qcom,tdm-data-out = <0>;
+-		qcom,tdm-invert-sync = <1>;
+-		qcom,tdm-data-delay = <1>;
+-		qcom,tdm-data-align = <0>;
++	qi2s@20 {
++		reg = <TERTIARY_MI2S_RX>;
++		qcom,sd-lines = <0>;
+ 	};
+ 
+-	tdm@57 {
+-		reg = <TERTIARY_TDM_TX_0>;
+-		qcom,tdm-sync-mode = <1>;
+-		qcom,tdm-sync-src = <1>;
+-		qcom,tdm-data-out = <0>;
+-		qcom,tdm-invert-sync = <1>;
+-		qcom,tdm-data-delay = <1>;
+-		qcom,tdm-data-align = <0>;
++	qi2s@21 {
++		reg = <TERTIARY_MI2S_TX>;
++		qcom,sd-lines = <1>;
+ 	};
+ };
+ 
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index eb3d26c26..1f88181b8 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -18,16 +18,6 @@
+ 
+ #define MI2S_BCLK_RATE		1536000
+ 
+-/*
+- * The tertiary bus runs as TDM: 4 slots x 16 bits x 48 kHz. Playback only
+- * uses slots 0 and 1, but the amps' I/V sense feedback needs all four
+- * (current and voltage from each of the two amps), which is precisely why
+- * this cannot be plain I2S - one I2S data line carries only two channels.
+- */
+-#define TDM_BCLK_RATE		3072000
+-#define TDM_SLOTS		4
+-#define TDM_SLOT_WIDTH		16
+-
+ struct sm8250_snd_data {
+ 	bool stream_prepared[AFE_PORT_MAX];
+ 	struct snd_soc_card *card;
+@@ -73,20 +63,9 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 	struct snd_interval *channels = hw_param_interval(params,
+ 					SNDRV_PCM_HW_PARAM_CHANNELS);
+ 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 
+ 	rate->min = rate->max = 48000;
+-
+-	/*
+-	 * The amps' I/V sense feedback occupies all four TDM slots - current
+-	 * and voltage from each of the two amps - so the capture port carries
+-	 * four channels, not the two every other backend uses.
+-	 */
+-	if (cpu_dai->id == TERTIARY_TDM_TX_0)
+-		channels->min = channels->max = TDM_SLOTS;
+-	else
+-		channels->min = channels->max = 2;
+-
++	channels->min = channels->max = 2;
+ 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+ 
+ 	return 0;
+@@ -161,53 +140,6 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+ 		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+-	case TERTIARY_TDM_RX_0:
+-	case TERTIARY_TDM_TX_0: {
+-		struct snd_soc_dai *codec_dai;
+-		/*
+-		 * Playback puts stereo into the first two slots; capture reads
+-		 * all four (each amp reports its speaker current and voltage).
+-		 * The masks and channel maps differ per direction - handing the
+-		 * playback port a four-entry map for a two-channel stream makes
+-		 * the DSP reject the whole port config.
+-		 */
+-		bool playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+-		unsigned int rx_mask = GENMASK(1, 0);
+-		unsigned int tx_mask = GENMASK(TDM_SLOTS - 1, 0);
+-		unsigned int rx_slots[2] = { 0, 1 };
+-		unsigned int tx_slots[TDM_SLOTS] = { 0, 1, 2, 3 };
+-		int i;
+-
+-		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_DSP_A;
+-
+-		snd_soc_dai_set_sysclk(cpu_dai,
+-			Q6AFE_LPASS_CLK_ID_TER_TDM_IBIT, TDM_BCLK_RATE,
+-			playback ? SNDRV_PCM_STREAM_PLAYBACK :
+-				   SNDRV_PCM_STREAM_CAPTURE);
+-		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_tdm_slot(cpu_dai, tx_mask, rx_mask,
+-					 TDM_SLOTS, TDM_SLOT_WIDTH);
+-
+-		if (playback)
+-			snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
+-						    ARRAY_SIZE(rx_slots),
+-						    rx_slots);
+-		else
+-			snd_soc_dai_set_channel_map(cpu_dai,
+-						    ARRAY_SIZE(tx_slots),
+-						    tx_slots, 0, NULL);
+-
+-		/*
+-		 * Each amp sits on its own slot, so every codec DAI in the link
+-		 * needs the layout - not just the first.
+-		 */
+-		for_each_rtd_codec_dais(rtd, i, codec_dai) {
+-			snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
+-			snd_soc_dai_set_tdm_slot(codec_dai, rx_mask, rx_mask,
+-						 TDM_SLOTS, TDM_SLOT_WIDTH);
+-		}
+-		break;
+-	}
+ 	default:
+ 		break;
+ 	}
+-- 
+2.43.0
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Reiniciar goa-daemon si arrancó antes que el llavero
+After=graphical-session.target gnome-keyring-daemon.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/goa-keyring-fix.sh
+
+[Install]
+WantedBy=graphical-session.target

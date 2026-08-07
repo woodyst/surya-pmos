@@ -1,0 +1,101 @@
+From 58e61adacbea93b123840e960aafa338bc2651d7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 23:52:34 +0200
+Subject: [PATCH 057/106] ASoC: qcom: q6voice: default the vocproc Tx topology
+ to passthrough
+
+TX_SM_ECNS (the vendor's echo-canceller topology) running WITHOUT its
+ACDB calibration outputs pure silence, while the sidetone - tapped before
+Tx processing - stays audible locally: a perfectly ACKed call whose
+uplink is dead, with the local mic even causing acoustic feedback on the
+handset. The earlier "topology choice makes no difference" conclusion
+was drawn while every call was silent because of the mismatched CVD
+session name, so that comparison was invalid.
+
+Default Tx to VSS_IVOCPROC_TOPOLOGY_ID_NONE (bypass) and expose both
+topologies as runtime-writable module parameters for A/B testing between
+calls. Switch Tx back to ECNS only once real vocproc calibration loading
+works.
+
+Verified on real VoLTE calls on sm7150 (surya): with ECNS the far end
+hears nothing, with NONE the mic audio arrives fine.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ sound/soc/qcom/qdsp6/q6cvp.c | 45 +++++++++++++++++++++++++++---------
+ 1 file changed, 34 insertions(+), 11 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index 63f77b56d..df239c68f 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -106,6 +106,29 @@ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
+ 	char name[20];
+ } __packed;
+ 
++/*
++ * Vocproc topologies, runtime-tunable for A/B testing between calls
++ * (/sys/module/q6cvp/parameters/{tx,rx}_topology, read at session create,
++ * i.e. at call setup).
++ *
++ * Tx defaults to VSS_IVOCPROC_TOPOLOGY_ID_NONE (passthrough), NOT the
++ * vendor's TX_SM_ECNS: the echo-canceller running WITHOUT its ACDB
++ * calibration outputs pure silence, while the sidetone (tapped before Tx
++ * processing) stays audible locally - a perfectly ACKed call whose uplink
++ * is dead. Verified on a real call: with ECNS the far end hears nothing,
++ * with NONE the mic reaches it fine. The earlier "topology makes no
++ * difference" conclusion predated the CVD session-name fix, when every
++ * call was silent for that unrelated reason - it was invalid. Switch Tx
++ * back to 0x10F71 only once real vocproc calibration loading works.
++ */
++static uint tx_topology = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
++module_param(tx_topology, uint, 0644);
++MODULE_PARM_DESC(tx_topology, "Vocproc Tx topology ID (0x10F70=none/passthrough)");
++
++static uint rx_topology = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
++module_param(rx_topology, uint, 0644);
++MODULE_PARM_DESC(rx_topology, "Vocproc Rx topology ID (0x10F70=none/passthrough)");
++
+ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 					     u16 tx_port, u16 rx_port)
+ {
+@@ -114,16 +137,8 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 	cmd.hdr.pkt_size = sizeof(cmd);
+ 	cmd.hdr.opcode = VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
+ 
+-	/*
+-	 * The stock topologies (echo cancellation on Tx, the default
+-	 * processing chain on Rx) create and enable the vocproc without any
+-	 * error, same as VSS_IVOCPROC_TOPOLOGY_ID_NONE - a passthrough
+-	 * topology needs no more calibration than these do for a call to
+-	 * come up. Nothing about topology choice makes the difference between
+-	 * a silent and a working call, so keep the vendor's actual choice.
+-	 */
+-	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
+-	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
++	cmd.tx_topology_id = tx_topology;
++	cmd.rx_topology_id = rx_topology;
+ 
+ 	cmd.direction = VSS_IVOCPROC_DIRECTION_RX_TX;
+ 	cmd.tx_port_id = tx_port;
+@@ -132,7 +147,15 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 	cmd.vocproc_mode = VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
+ 	cmd.ec_ref_port_id = VSS_IVOCPROC_PORT_ID_NONE;
+ 
+-	return q6voice_session_create(Q6VOICE_SERVICE_CVP, path, &cmd.hdr);
++	{
++		struct q6voice_session *s;
++
++		s = q6voice_session_create(Q6VOICE_SERVICE_CVP, path, &cmd.hdr);
++		if (!IS_ERR(s))
++			dev_info(s->dev, "vocproc topologies tx=0x%x rx=0x%x\n",
++				 tx_topology, rx_topology);
++		return s;
++	}
+ }
+ EXPORT_SYMBOL_GPL(q6cvp_session_create);
+ 
+-- 
+2.43.0
+

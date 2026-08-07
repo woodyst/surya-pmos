@@ -1,0 +1,132 @@
+From c636a73b8729d31b3751427491b3c0eb896a7a69 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 23:08:49 +0200
+Subject: [PATCH 085/106] ASoC: qdsp6: q6routing: rebuild the ADM matrix when a
+ running stream is rerouted
+
+The vendor stack calls msm_pcm_routing_build_matrix() whenever the routes
+of an already running front-end change; mainline only mapped the matrix
+when the stream was opened, so a route touched mid-stream left the DSP
+with the previous mapping.
+
+Only the front-end whose route changed is rebuilt, which is what the
+vendor does. Re-mapping every running session instead was tried and
+hangs: with a call up the ADM never answers a matrix map for a session
+that is already mapped, and the control write blocks inside the kcontrol
+handler until the stream goes away.
+---
+ sound/soc/qcom/qdsp6/q6routing.c | 62 ++++++++++++++++++++++++++++++++
+ 1 file changed, 62 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 4574401eb..75a016469 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -401,6 +401,7 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	session->sample_rate = pdata->sample_rate;
+ 	session->channels = pdata->channels;
+ 	session->bits_per_sample = pdata->bits_per_sample;
++	session->perf_mode = perf_mode;
+ 
+ 	payload.num_copps = 0; /* only RX needs to use payload */
+ 	topology = NULL_COPP_TOPOLOGY;
+@@ -427,6 +428,9 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	if (num_copps) {
+ 		payload.num_copps = num_copps;
+ 		payload.session_id = stream_id;
++		dev_info(routing_data->dev,
++			 "stream open: fe %d session %d -> port %#x (%d copp)\n",
++			 fedai_id, stream_id, session->port_id, num_copps);
+ 		q6adm_matrix_map(routing_data->dev, session->path_type,
+ 				 payload, perf_mode);
+ 	}
+@@ -466,6 +470,9 @@ void q6routing_stream_close(int fedai_id, int stream_type)
+ 	if (!session)
+ 		return;
+ 
++	dev_info(routing_data->dev, "stream close: fe %d (port %#x)\n",
++		 fedai_id, session->port_id);
++
+ 	for_each_set_bit(idx, &session->copp_map, MAX_COPPS_PER_PORT) {
+ 		if (session->copps[idx]) {
+ 			q6adm_close(routing_data->dev, session->copps[idx]);
+@@ -478,6 +485,59 @@ void q6routing_stream_close(int fedai_id, int stream_type)
+ }
+ EXPORT_SYMBOL_GPL(q6routing_stream_close);
+ 
++/*
++ * Re-send the ADM matrix for a session that is already streaming.
++ *
++ * The vendor stack rebuilds the matrix (msm_pcm_routing_build_matrix) every
++ * time the routes of a running front-end change; mainline only ever mapped it
++ * when the stream was opened. Touching a route mid-stream therefore left the
++ * DSP with the mapping it had before - which is exactly what happens when the
++ * in-call record tap is switched on while the injection stream is running.
++ */
++static void q6routing_build_matrix(struct msm_routing_data *data, int idx)
++{
++	struct session_data *session = &data->sessions[idx];
++	struct route_payload payload;
++	int num_copps = 0;
++	int j;
++
++	if (!session->copp_map || session->port_id < 0)
++		return;
++
++	memset(&payload, 0, sizeof(payload));
++	for_each_set_bit(j, &session->copp_map, MAX_COPPS_PER_PORT) {
++		payload.port_id[num_copps] = session->port_id;
++		payload.copp_idx[num_copps] = j;
++		num_copps++;
++	}
++
++	if (!num_copps)
++		return;
++
++	payload.num_copps = num_copps;
++	payload.session_id = idx + 1;
++
++	dev_info(data->dev, "rebuild matrix: session %d -> port %#x (%d copp)\n",
++		 idx + 1, session->port_id, num_copps);
++	q6adm_matrix_map(data->dev, session->path_type, payload,
++			 session->perf_mode);
++	dev_info(data->dev, "rebuild matrix: session %d done\n", idx + 1);
++}
++
++/*
++ * Only the front-end whose route just changed, which is what the vendor does.
++ *
++ * Re-mapping every running session instead was tried and hangs: the ADM never
++ * answers a matrix map for a session that is already mapped while a call is
++ * up, and the control write blocks inside the kcontrol handler forever.
++ */
++static void q6routing_rebuild_matrix(struct msm_routing_data *data, int idx)
++{
++	mutex_lock(&data->lock);
++	q6routing_build_matrix(data, idx);
++	mutex_unlock(&data->lock);
++}
++
+ static int msm_routing_get_audio_mixer(struct snd_kcontrol *kcontrol,
+ 				       struct snd_ctl_elem_value *ucontrol)
+ {
+@@ -530,6 +590,7 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 
+ 		session->port_id = be_id;
+ 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
++		q6routing_rebuild_matrix(data, session_id);
+ 	} else {
+ 		if (session->port_id == -1 || session->port_id != be_id)
+ 			return 0;
+@@ -542,6 +603,7 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 
+ 		session->port_id = -1;
+ 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
++		q6routing_rebuild_matrix(data, session_id);
+ 	}
+ 
+ 	return 1;
+-- 
+2.43.0
+

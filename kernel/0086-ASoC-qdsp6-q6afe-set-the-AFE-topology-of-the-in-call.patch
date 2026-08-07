@@ -1,0 +1,88 @@
+From a4c1456e33a7da018fef93be051a365bf4ca3a05 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 00:21:46 +0200
+Subject: [PATCH 086/106] ASoC: qdsp6: q6afe: set the AFE topology of the
+ in-call injection port
+
+Caught on a device running the factory stack, where in-call injection
+does work: for the injection port 0x8005 it looks a topology up in ACDB
+and sets it (0x112fc there), while for the record ports it finds none
+and sets none - which is the same asymmetry we see, with the record taps
+working and the injection accepted, consumed and never mixed in.
+
+There is no ACDB on this side, so the id is a module parameter. The DSP
+accepts the command, though on its own it is not enough to get the
+injected stream into the uplink.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 47 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index acdc65117..5973e5847 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1368,6 +1368,47 @@ static bool q6afe_port_is_pseudo(int port_id)
+ 	       port_id == AFE_PORT_ID_VOICE_PLAYBACK_TX;
+ }
+ 
++/*
++ * The AFE topology of the in-call injection port.
++ *
++ * The factory stack was caught doing this and nothing else different: for the
++ * injection port 0x8005 it looks a topology up in ACDB and sets it (0x112fc on
++ * the reference device), while for the record ports it finds none and sets
++ * none. That matches exactly what we see here - the record taps work, and the
++ * injection is accepted and consumed but never mixed into the uplink.
++ *
++ * There is no ACDB on this side, so the value is a module parameter; 0 keeps
++ * the previous behaviour of not sending it at all.
++ */
++#define AFE_PARAM_ID_SET_TOPOLOGY	0x0001025A
++#define AFE_API_VERSION_TOPOLOGY_V1	0x1
++
++struct afe_param_id_set_topology_cfg {
++	u32 minor_version;
++	u32 topology_id;
++} __packed;
++
++static uint playback_topology = 0x000112fc;
++module_param(playback_topology, uint, 0644);
++MODULE_PARM_DESC(playback_topology,
++		 "AFE topology for the in-call injection port (0 = send none)");
++
++static int q6afe_pseudo_port_set_topology(struct q6afe_port *port)
++{
++	struct afe_param_id_set_topology_cfg topology;
++
++	if (port->id != AFE_PORT_ID_VOICE_PLAYBACK_TX || !playback_topology)
++		return 0;
++
++	topology.minor_version = AFE_API_VERSION_TOPOLOGY_V1;
++	topology.topology_id = playback_topology;
++
++	return q6afe_port_set_param_v2(port, &topology,
++				       AFE_PARAM_ID_SET_TOPOLOGY,
++				       AFE_MODULE_AUDIO_DEV_INTERFACE,
++				       sizeof(topology));
++}
++
+ int q6afe_port_stop(struct q6afe_port *port)
+ {
+ 	struct afe_port_cmd_device_stop *stop;
+@@ -1802,6 +1843,12 @@ int q6afe_port_start(struct q6afe_port *port)
+ 		return ret;
+ 	}
+ 
++	/* Between the config and the start, which is where the vendor does it. */
++	ret = q6afe_pseudo_port_set_topology(port);
++	if (ret)
++		dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
++			port_id, ret);
++
+ 	if (port->scfg) {
+ 		ret  = q6afe_port_set_param_v2(port, port->scfg,
+ 					AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG,
+-- 
+2.43.0
+

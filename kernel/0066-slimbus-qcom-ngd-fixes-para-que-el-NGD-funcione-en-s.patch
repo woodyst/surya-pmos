@@ -1,0 +1,297 @@
+From d8481b3ca8d0cb68ef59fa538e6a7193f13a0c80 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 13:09:01 +0200
+Subject: [PATCH 066/106] slimbus: qcom-ngd: fixes para que el NGD funcione en
+ sm7150 (surya)
+
+- propiedad qcom,slim-hw-instance (la instancia QMI no siempre es id>>1)
+- CHECK_FRAMER_STATUS tras seleccionar instancia (sin el, el maestro del
+  ADSP nunca enumera nuestro NGD y nada dirigido al bus obtiene ACK)
+- comprobar y rehacer la enumeracion antes de cada transferencia, como
+  el downstream (ngd_check_hw_status)
+- fallar la transferencia al recibir NACK en vez de esperar el timeout
+  (el -110 tapaba que el chip rechazaba activamente)
+- no tocar ctrl->ngd tras remove en runtime_resume/check_hw_status
+  (NULL deref reproducido en ramoops; validado con 3000 transacciones)
+---
+ drivers/slimbus/qcom-ngd-ctrl.c | 178 +++++++++++++++++++++++++++++++-
+ 1 file changed, 176 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/slimbus/qcom-ngd-ctrl.c b/drivers/slimbus/qcom-ngd-ctrl.c
+index 1ed6be6e8..a2f31c16b 100644
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -54,6 +54,7 @@
+ #define SLIMBUS_QMI_SELECT_INSTANCE_REQ_V01	0x0020
+ #define SLIMBUS_QMI_SELECT_INSTANCE_RESP_V01	0x0020
+ #define SLIMBUS_QMI_POWER_REQ_V01		0x0021
++#define SLIMBUS_QMI_CHECK_FRAMER_STATUS_REQ_V01	0x0022
+ #define SLIMBUS_QMI_POWER_RESP_V01		0x0021
+ #define SLIMBUS_QMI_CHECK_FRAMER_STATUS_REQ	0x0022
+ #define SLIMBUS_QMI_CHECK_FRAMER_STATUS_RESP	0x0022
+@@ -175,6 +176,21 @@ struct qcom_slim_ngd_ctrl {
+ 	int tx_tail;
+ 	int tx_head;
+ 	u32 ver;
++	/*
++	 * Set by the interrupt handler when the hardware reports that the
++	 * message it just sent was not accepted, so the transfer can fail
++	 * straight away instead of waiting out a reply that is never coming.
++	 */
++	int tx_err;
++	/*
++	 * Which SLIMBus hardware instance the ADSP should attach this NGD to.
++	 * Negative means "derive it from the NGD id", which is all a SoC with a
++	 * single SLIMBus needs. A SoC with more than one - sm7150 has an audio
++	 * instance and a separate one for the WCN399x's Bluetooth audio - has to
++	 * say which is which, because the NGD id only describes the register
++	 * block within a controller and both controllers use the same one.
++	 */
++	s32 hw_instance;
+ };
+ 
+ enum slimbus_mode_enum_type_v01 {
+@@ -444,6 +460,47 @@ static const struct qmi_msg_handler qcom_slim_qmi_msg_handlers[] = {
+ 	{}
+ };
+ 
++/*
++ * Ask the ADSP to confirm its framer is running on our instance. Downstream
++ * sends this whenever it suspects the bus is not being driven; mainline never
++ * sends it at all, and without a running framer the master will not enumerate
++ * the NGD, which leaves us able to talk to the manager but unable to address
++ * any other device.
++ */
++static int qcom_slim_qmi_check_framer_request(struct qcom_slim_ngd_ctrl *ctrl)
++{
++	struct slimbus_power_resp_msg_v01 resp = { { 0, 0 } };
++	struct qmi_txn txn;
++	int rc;
++
++	rc = qmi_txn_init(ctrl->qmi.handle, &txn,
++			  slimbus_power_resp_msg_v01_ei, &resp);
++	if (rc < 0)
++		return rc;
++
++	rc = qmi_send_request(ctrl->qmi.handle, NULL, &txn,
++			      SLIMBUS_QMI_CHECK_FRAMER_STATUS_REQ_V01, 0,
++			      NULL, NULL);
++	if (rc < 0) {
++		qmi_txn_cancel(&txn);
++		return rc;
++	}
++
++	rc = qmi_txn_wait(&txn, SLIMBUS_QMI_RESP_TOUT);
++	if (rc < 0)
++		return rc;
++
++	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
++		dev_err(ctrl->dev, "framer status request failed: 0x%x\n",
++			resp.resp.result);
++		return -EREMOTEIO;
++	}
++
++	dev_info(ctrl->dev, "framer confirmed running\n");
++
++	return 0;
++}
++
+ static int qcom_slim_qmi_init(struct qcom_slim_ngd_ctrl *ctrl,
+ 			      bool apps_is_master)
+ {
+@@ -471,7 +528,10 @@ static int qcom_slim_qmi_init(struct qcom_slim_ngd_ctrl *ctrl,
+ 	}
+ 
+ 	/* Instance is 0 based */
+-	req.instance = (ctrl->ngd->id >> 1);
++	if (ctrl->hw_instance >= 0)
++		req.instance = ctrl->hw_instance;
++	else
++		req.instance = (ctrl->ngd->id >> 1);
+ 	req.mode_valid = 1;
+ 
+ 	/* Mode indicates the role of the ADSP */
+@@ -488,6 +548,9 @@ static int qcom_slim_qmi_init(struct qcom_slim_ngd_ctrl *ctrl,
+ 		goto qmi_select_instance_failed;
+ 	}
+ 
++	/* Not fatal: report it and carry on, the bus may still come up. */
++	qcom_slim_qmi_check_framer_request(ctrl);
++
+ 	return 0;
+ 
+ qmi_select_instance_failed:
+@@ -775,6 +838,14 @@ static irqreturn_t qcom_slim_ngd_interrupt(int irq, void *d)
+ 		(stat & NGD_INT_MSG_TX_INVAL) || (stat & NGD_INT_DEV_ERR) ||
+ 		(stat & NGD_INT_TX_NACKED_2)) {
+ 		dev_err(ctrl->dev, "Error Interrupt received 0x%x\n", stat);
++
++		/*
++		 * Record it, so the transfer in flight can give up rather than
++		 * wait out a reply that will never arrive. The message was
++		 * rejected: the answer is already known.
++		 */
++		WRITE_ONCE(ctrl->tx_err,
++			   stat & NGD_INT_MSG_TX_INVAL ? -EINVAL : -EIO);
+ 	}
+ 
+ 	writel(stat, base + NGD_INT_CLR);
+@@ -782,6 +853,57 @@ static irqreturn_t qcom_slim_ngd_interrupt(int irq, void *d)
+ 	return IRQ_HANDLED;
+ }
+ 
++static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl);
++
++/*
++ * The NGD can be left without a logical address of its own - after a bus
++ * reconfiguration, or simply because the master never got round to enumerating
++ * it. While that is the case it can still exchange user messages with the
++ * manager, but anything addressed to another device on the bus goes out and is
++ * never answered, so every transfer times out.
++ *
++ * Downstream checks this before every transfer and powers the NGD back up when
++ * the address is gone; do the same.
++ */
++static int qcom_slim_ngd_check_hw_status(struct qcom_slim_ngd_ctrl *ctrl)
++{
++	u32 status;
++	int ret;
++
++	/* Same race as in runtime_resume: the NGD may already be gone. */
++	if (!ctrl->ngd)
++		return -ENODEV;
++
++	status = readl_relaxed(ctrl->ngd->base + NGD_STATUS);
++
++	if (status & NGD_LADDR)
++		return 0;
++
++	dev_dbg(ctrl->dev, "NGD has no logical address (status 0x%x), powering up\n",
++		status);
++
++	/*
++	 * Powering up on its own is not enough to get the address back: the
++	 * master only enumerates us once it has confirmed its framer is
++	 * running, so ask again here rather than only at bring-up.
++	 */
++	if (ctrl->qmi.handle)
++		qcom_slim_qmi_check_framer_request(ctrl);
++
++	ret = qcom_slim_ngd_power_up(ctrl);
++	if (ret)
++		return ret;
++
++	status = readl_relaxed(ctrl->ngd->base + NGD_STATUS);
++	if (!(status & NGD_LADDR)) {
++		dev_dbg(ctrl->dev, "still no logical address (status 0x%x)\n",
++			status);
++		return -EREMOTEIO;
++	}
++
++	return 0;
++}
++
+ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
+ 				  struct slim_msg_txn *txn)
+ {
+@@ -805,6 +927,10 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
+ 	if (txn->dt == SLIM_MSG_DEST_ENUMADDR)
+ 		return -EPROTONOSUPPORT;
+ 
++	ret = qcom_slim_ngd_check_hw_status(ctrl);
++	if (ret)
++		return ret;
++
+ 	if (txn->msg->num_bytes > SLIM_MSGQ_BUF_LEN ||
+ 			txn->rl > SLIM_MSGQ_BUF_LEN) {
+ 		dev_err(ctrl->dev, "msg exceeds HW limit\n");
+@@ -885,6 +1011,8 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
+ 		memcpy(puc, txn->msg->wbuf, txn->msg->num_bytes);
+ 
+ 	mutex_lock(&ctrl->tx_lock);
++	ctrl->tx_err = 0;
++
+ 	ret = qcom_slim_ngd_tx_msg_post(ctrl, pbuf, txn->rl);
+ 	if (ret) {
+ 		mutex_unlock(&ctrl->tx_lock);
+@@ -899,6 +1027,25 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
+ 		return -ETIMEDOUT;
+ 	}
+ 
++	/*
++	 * The hardware raises its error interrupt as the message goes out, so
++	 * by the time the send is confirmed we already know whether it was
++	 * accepted. If it was NACKed there is no reply coming, and returning
++	 * an error here stops the core from waiting for one: on a bus that is
++	 * NACKing everything that is the difference between failing in
++	 * microseconds and burning a second on every single message.
++	 *
++	 * The transaction ID has to be released here, because the core only
++	 * does that itself on timeout.
++	 */
++	ret = READ_ONCE(ctrl->tx_err);
++	if (ret) {
++		if (slim_tid_txn(txn->mt, txn->mc))
++			slim_free_txn_tid(sctrl, txn);
++		mutex_unlock(&ctrl->tx_lock);
++		return ret;
++	}
++
+ 	if (usr_msg) {
+ 		time_left = wait_for_completion_timeout(&done, HZ);
+ 		if (!time_left) {
+@@ -1310,8 +1457,29 @@ static int qcom_slim_ngd_runtime_resume(struct device *dev)
+ 	if (!ctrl->qmi.handle)
+ 		return 0;
+ 
+-	if (ctrl->state >= QCOM_SLIM_NGD_CTRL_ASLEEP)
++	/*
++	 * The NGD is freed and cleared on remove and on subsystem restart,
++	 * but the worker that brings the bus up can still be queued and will
++	 * resume us afterwards. Powering up then walks a pointer that is
++	 * already gone.
++	 *
++	 * Seen as a NULL dereference here with the worker in the backtrace,
++	 * after a burst of bus traffic - enough of it and the phone reboots.
++	 */
++	if (!ctrl->ngd)
++		return 0;
++
++	if (ctrl->state >= QCOM_SLIM_NGD_CTRL_ASLEEP) {
++		/*
++		 * Suspending drops the NGD's enumeration, and the master only
++		 * hands the logical address back once it has confirmed its
++		 * framer is running. Without asking, the bus comes back up but
++		 * every message addressed to another device on it goes
++		 * unanswered.
++		 */
++		qcom_slim_qmi_check_framer_request(ctrl);
+ 		ret = qcom_slim_ngd_power_up(ctrl);
++	}
+ 	if (ret) {
+ 		/* Did SSR cause this power up failure */
+ 		if (ctrl->state != QCOM_SLIM_NGD_CTRL_DOWN)
+@@ -1602,6 +1770,7 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct qcom_slim_ngd_ctrl *ctrl;
++	u32 hw_instance;
+ 	int ret;
+ 	struct pdr_service *pds;
+ 
+@@ -1624,6 +1793,11 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return dev_err_probe(&pdev->dev, ret, "request IRQ failed\n");
+ 
++	if (of_property_read_u32(dev->of_node, "qcom,slim-hw-instance", &hw_instance))
++		ctrl->hw_instance = -1;
++	else
++		ctrl->hw_instance = hw_instance;
++
+ 	ctrl->nb.notifier_call = qcom_slim_ngd_ssr_notify;
+ 	ctrl->notifier = qcom_register_ssr_notifier("lpass", &ctrl->nb);
+ 	if (IS_ERR(ctrl->notifier))
+-- 
+2.43.0
+

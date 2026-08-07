@@ -1,0 +1,89 @@
+From 69d37da1eacd738716df7ec18a8450326238e010 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 19:20:50 +0200
+Subject: [PATCH] media: qcom: camss: csiphy: add a settle_cnt override to
+ probe the LP->HS window
+
+Diagnostic-only. csiphy_settle_cnt_calc() takes T_HS_SETTLE to be
+t_hs_prepare_max, 85 ns + 6*UI, which is the LOWER EDGE of the window the
+MIPI D-PHY spec allows (min 85 ns + 6*UI, max 145 ns + 10*UI). For the
+IMX682 on a POCO X3 NFC (UI 524 ps, timer 300 MHz) that window is
+settle_cnt 20..39 and the formula lands on 20, right at the bottom.
+
+Sitting on the edge is a plausible failure mode: if the transmitter's real
+prepare phase runs long, the receiver samples while the sensor is still
+preparing and never syncs - which is what this board does.
+
+Result: not the cause. Swept 20, 22, 24, 26, 28, 29, 30, 32, 34, 36, 38, 39
+with the capture verified streaming each time. Every value gives zero SOT,
+zero EOT and zero packets in the CSID RX status. The link does not come up
+anywhere in the legal window.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../qcom/camss/camss-csiphy-3ph-1-0.c         | 34 +++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+index d41015c76..8d769fa99 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+@@ -13,6 +13,7 @@
+ #include "camss-csiphy.h"
+ 
+ #include <linux/delay.h>
++#include <linux/moduleparam.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ 
+@@ -1026,6 +1027,15 @@ static irqreturn_t csiphy_isr(int irq, void *dev)
+  * Return settle count value or 0 if the CSI2 link frequency
+  * is not available
+  */
++/*
++ * Override for the calculated T_HS_SETTLE count (see the use site below).
++ * -1 keeps whatever csiphy_settle_cnt_calc() works out.
++ */
++static int settle_cnt_override = -1;
++module_param(settle_cnt_override, int, 0644);
++MODULE_PARM_DESC(settle_cnt_override,
++		 "override the CSIPHY T_HS_SETTLE count; -1 = use the calculated value");
++
+ static u8 csiphy_settle_cnt_calc(s64 link_freq, u32 timer_clk_rate)
+ {
+ 	u32 ui; /* ps */
+@@ -1260,6 +1270,30 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
+ 
+ 	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
+ 
++	/*
++	 * Experiment knob. csiphy_settle_cnt_calc() takes T_HS_SETTLE to be
++	 * t_hs_prepare_max, that is 85 ns + 6*UI, which is the LOWER EDGE of
++	 * the window the MIPI D-PHY spec allows:
++	 *
++	 *   min = 85 ns + 6*UI        max = 145 ns + 10*UI
++	 *
++	 * For the IMX682 on this board (UI = 524 ps, timer at 300 MHz) that
++	 * window is settle_cnt 20..39, and the formula lands on 20 - right at
++	 * the bottom. Sitting on the edge is risky: if the transmitter's real
++	 * prepare phase runs a little long, the receiver starts sampling while
++	 * the sensor is still preparing and never syncs. That looks exactly
++	 * like what this board does: no SOT captured, no packets, no errors.
++	 *
++	 * Sweep this and watch the per-lane SOT capture bits in the CSID's RX
++	 * IRQ status (offset 0x20, bits 4-7).
++	 */
++	if (settle_cnt_override >= 0) {
++		dev_info(csiphy->camss->dev,
++			 "EXPERIMENT: settle_cnt %u -> %d\n",
++			 settle_cnt, settle_cnt_override);
++		settle_cnt = settle_cnt_override;
++	}
++
+ 	if (csiphy->camss->res->version == CAMSS_7150) {
+ 		csiphy_sm7150_config_lanes(csiphy, c, settle_cnt);
+ 		goto disable_irqs;
+-- 
+2.43.0
+

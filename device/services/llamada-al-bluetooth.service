@@ -1,0 +1,12 @@
+[Unit]
+Description=Sostiene el enlace SCO mientras hay llamada con auricular Bluetooth
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/llamada-al-bluetooth.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

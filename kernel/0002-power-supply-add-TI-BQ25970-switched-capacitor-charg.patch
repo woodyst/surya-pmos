@@ -1,0 +1,799 @@
+From 189440876a09c2687f436db949ceb592c994b3d3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 11 Jul 2026 16:38:54 +0200
+Subject: [PATCH 002/106] power: supply: add TI BQ25970 switched-capacitor
+ charge pump driver
+
+BQ25970 is the fast-charge charge pump on Xiaomi POCO X3 NFC (surya,
+SM7150). It's from the same TI family as the already-supported
+BQ25980/BQ25975/BQ25960 (drivers/power/supply/bq25980_charger.c), but
+its register layout only matches that family for the OVP/OCP threshold
+block (0x00-0x09); control, status/fault, and ADC registers are at
+different offsets entirely. Extending the shared driver with per-chip
+register-address fields would mean an invasive refactor risking the
+already-correct 980/975/960 support, so this chip gets its own,
+minimal driver instead.
+
+Register map derived from the GPL vendor bq2597x_charger driver used
+by Xiaomi's downstream sdmmagpie/surya kernel (TI doesn't publish a
+public register-level datasheet for this part). Cross-checked against
+a genuine full TI datasheet for the sibling BQ25960 (which does have
+one): its real 0x00-0x0E layout matches bq25980_charger.h's assumptions
+exactly, confirming both that driver's accuracy and that BQ25970's
+control/status block (0x0A onward) genuinely differs, exactly as the
+vendor driver's offsets show.
+
+Deliberately registers only a "charger" (Mains-type) power_supply, no
+"battery" psy: this chip's VBAT/IBAT would duplicate what the
+platform's real fuel gauge (qcom_qg) already reports, and registering
+a second POWER_SUPPLY_TYPE_BATTERY device confused UPower's
+DisplayDevice merge logic badly enough to show a wrong battery
+percentage system-wide on a first attempt that did add one.
+
+TS_BUS/TS_BAT/TDIE protection is disabled in hw_init to match the
+vendor board's own proven config (no thermistor pins wired on this
+board) - leaving it enabled against floating pins previously produced
+a spurious HEALTH_OVERHEAT purely from reading the wrong status
+register on this chip via the shared driver's assumed offsets.
+
+Verified on real hardware: chip probes and binds correctly over I2C,
+reports sane VBUS/status/health (no more garbage ADC/false overheat).
+Not yet doing anything useful power-wise since nothing in this tree
+negotiates the Xiaomi HVDCP handshake needed to raise VBUS above 5V,
+which this chip requires as a minimum input.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ .../bindings/power/supply/ti,bq25970.yaml     |  65 +++
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    |  17 +-
+ drivers/power/supply/Kconfig                  |  10 +
+ drivers/power/supply/Makefile                 |   1 +
+ drivers/power/supply/bq25970_charger.c        | 456 ++++++++++++++++++
+ drivers/power/supply/bq25970_charger.h        | 138 ++++++
+ 6 files changed, 686 insertions(+), 1 deletion(-)
+ create mode 100644 Documentation/devicetree/bindings/power/supply/ti,bq25970.yaml
+ create mode 100644 drivers/power/supply/bq25970_charger.c
+ create mode 100644 drivers/power/supply/bq25970_charger.h
+
+diff --git a/Documentation/devicetree/bindings/power/supply/ti,bq25970.yaml b/Documentation/devicetree/bindings/power/supply/ti,bq25970.yaml
+new file mode 100644
+index 000000000..72ca68fc6
+--- /dev/null
++++ b/Documentation/devicetree/bindings/power/supply/ti,bq25970.yaml
+@@ -0,0 +1,65 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/power/supply/ti,bq25970.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: TI BQ25970 Switched-Capacitor Charge Pump
++
++maintainers:
++  - Edi <edi@example.org>
++
++description: |
++  The BQ25970 is a switched-capacitor ("charge pump") converter used
++  alongside a separate primary charger IC to enable higher-power fast
++  charging. Its register layout is not compatible with the BQ25980/
++  BQ25975/BQ25960 family beyond the OVP/OCP threshold block, so it is
++  handled by a dedicated driver.
++
++allOf:
++  - $ref: power-supply.yaml#
++
++properties:
++  compatible:
++    const: ti,bq25970
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++  ti,sc-ovp-limit-microvolt:
++    description: Input overvoltage protection threshold, 50000 microvolt step.
++    default: 12000000
++    minimum: 5950000
++    maximum: 12300000
++
++  ti,sc-ocp-limit-microamp:
++    description: Input overcurrent protection threshold, 250000 microamp step.
++    default: 3500000
++    minimum: 1000000
++    maximum: 4750000
++
++required:
++  - compatible
++  - reg
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/irq.h>
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        charge-pump@65 {
++            compatible = "ti,bq25970";
++            reg = <0x65>;
++            interrupt-parent = <&tlmm>;
++            interrupts = <43 IRQ_TYPE_EDGE_FALLING>;
++            ti,sc-ovp-limit-microvolt = <12000000>;
++            ti,sc-ocp-limit-microamp = <3500000>;
++        };
++    };
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 65aee9597..88f1aec71 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -189,7 +189,22 @@ tas2564: codec@4d { /* EAR */
+ 		sound-name-prefix = "Left";
+ 	};
+ 
+-	/* ti,bq25968 (charger) @ 65 */
++	/*
++	 * TI BQ25970 switched-cap charge pump ("fast charge" path). Only
++	 * kicks in for the proprietary Xiaomi HVDCP 3.0/3.5 handshake done
++	 * elsewhere (not by this driver) - the pump itself just converts
++	 * whatever high-voltage VBUS shows up into battery charge current.
++	 * Values below match the real board config (sdmmagpie-idp.dtsi in
++	 * the Halium/downstream kernel for this device).
++	 */
++	charge-pump@65 {
++		compatible = "ti,bq25970";
++		reg = <0x65>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <43 IRQ_TYPE_EDGE_FALLING>;
++		ti,sc-ovp-limit-microvolt = <12000000>;
++		ti,sc-ocp-limit-microamp = <3500000>;
++	};
+ };
+ 
+ &ipa {
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index 5c12e1928..fb569894d 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -849,6 +849,16 @@ config CHARGER_BQ25980
+ 	  Say Y to enable support for the TI BQ25980, BQ25975 and BQ25960
+ 	  series of fast battery chargers.
+ 
++config CHARGER_BQ25970
++	tristate "TI BQ25970 switched-capacitor charge pump driver"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  Say Y to enable support for the TI BQ25970 switched-capacitor
++	  charge pump. Unlike the BQ25980/BQ25975/BQ25960 family, its
++	  control/status/ADC register layout is not compatible with that
++	  driver, so it gets its own.
++
+ config CHARGER_BQ256XX
+ 	tristate "TI BQ256XX battery charger driver"
+ 	depends on I2C
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index f81ba3bed..472faee68 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -106,6 +106,7 @@ obj-$(CONFIG_CHARGER_BQ2515X)	+= bq2515x_charger.o
+ obj-$(CONFIG_CHARGER_BQ257XX)	+= bq257xx_charger.o
+ obj-$(CONFIG_CHARGER_BQ25890)	+= bq25890_charger.o
+ obj-$(CONFIG_CHARGER_BQ25980)	+= bq25980_charger.o
++obj-$(CONFIG_CHARGER_BQ25970)	+= bq25970_charger.o
+ obj-$(CONFIG_CHARGER_BQ256XX)	+= bq256xx_charger.o
+ obj-$(CONFIG_CHARGER_RK817)	+= rk817_charger.o
+ obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
+diff --git a/drivers/power/supply/bq25970_charger.c b/drivers/power/supply/bq25970_charger.c
+new file mode 100644
+index 000000000..950c3617c
+--- /dev/null
++++ b/drivers/power/supply/bq25970_charger.c
+@@ -0,0 +1,456 @@
++// SPDX-License-Identifier: GPL-2.0
++// TI BQ25970 switched-capacitor charge pump driver
++//
++// Deliberately does NOT register a "battery"-type power_supply: this
++// chip's own VBAT/IBAT readings duplicate what the platform's real fuel
++// gauge already reports, and having two competing POWER_SUPPLY_TYPE_BATTERY
++// devices confuses userspace battery-percentage aggregation (UPower's
++// DisplayDevice merge logic in particular). Only "charger" (Mains) is
++// exposed, describing the charge pump's own input (VBUS/IBUS) side.
++
++#include <linux/bitops.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/power_supply.h>
++#include <linux/regmap.h>
++
++#include "bq25970_charger.h"
++
++struct bq25970_device {
++	struct device *dev;
++	struct regmap *regmap;
++	struct power_supply *charger;
++	int busovp_uv;
++	int busocp_ua;
++};
++
++struct bq25970_state {
++	bool online;
++	bool ovp;
++	bool ocp;
++	bool ce;
++};
++
++static bool bq25970_is_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case BQ25970_FAULT_STAT0:
++	case BQ25970_ALARM_STAT:
++	case BQ25970_ALARM_FLAG:
++	case BQ25970_FAULT_STAT1:
++	case BQ25970_FAULT_FLAG1:
++	case BQ25970_DEV_ID:
++	case BQ25970_IBUS_ADC_MSB:
++	case BQ25970_IBUS_ADC_MSB + 1:
++	case BQ25970_VBUS_ADC_MSB:
++	case BQ25970_VBUS_ADC_MSB + 1:
++	case BQ25970_VBAT_ADC_MSB:
++	case BQ25970_VBAT_ADC_MSB + 1:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static const struct regmap_config bq25970_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.max_register = BQ25970_TDIE_ADC_MSB + 1,
++	.cache_type = REGCACHE_MAPLE,
++	.volatile_reg = bq25970_is_volatile_reg,
++};
++
++static int bq25970_read_adc_word(struct bq25970_device *bq, u8 reg, int *val)
++{
++	unsigned int msb, lsb;
++	int ret;
++
++	ret = regmap_read(bq->regmap, reg, &msb);
++	if (ret)
++		return ret;
++
++	ret = regmap_read(bq->regmap, reg + 1, &lsb);
++	if (ret)
++		return ret;
++
++	/* Signed 16-bit, already in native engineering units (mV/mA) -
++	 * confirmed against the vendor driver, which applies no further
++	 * per-channel scaling beyond this byte-order assembly. */
++	*val = (s16)((msb << 8) | lsb);
++	return 0;
++}
++
++static int bq25970_set_busovp(struct bq25970_device *bq, int uv)
++{
++	unsigned int code;
++
++	uv = clamp(uv, BQ25970_BUSOVP_MIN_uV, BQ25970_BUSOVP_MAX_uV);
++	code = (uv - BQ25970_BUSOVP_BASE_uV) / BQ25970_BUSOVP_STEP_uV;
++
++	return regmap_update_bits(bq->regmap, BQ25970_BUSOVP,
++				  BQ25970_BUSOVP_MASK, code);
++}
++
++static int bq25970_get_busovp(struct bq25970_device *bq, int *uv)
++{
++	unsigned int code;
++	int ret;
++
++	ret = regmap_read(bq->regmap, BQ25970_BUSOVP, &code);
++	if (ret)
++		return ret;
++
++	*uv = (code & BQ25970_BUSOVP_MASK) * BQ25970_BUSOVP_STEP_uV +
++	      BQ25970_BUSOVP_BASE_uV;
++	return 0;
++}
++
++static int bq25970_set_busocp(struct bq25970_device *bq, int ua)
++{
++	unsigned int code;
++
++	ua = clamp(ua, BQ25970_BUSOCP_MIN_uA, BQ25970_BUSOCP_MAX_uA);
++	code = (ua - BQ25970_BUSOCP_BASE_uA) / BQ25970_BUSOCP_STEP_uA;
++
++	return regmap_update_bits(bq->regmap, BQ25970_BUSOCP,
++				  BQ25970_BUSOCP_MASK, code);
++}
++
++static int bq25970_get_busocp(struct bq25970_device *bq, int *ua)
++{
++	unsigned int code;
++	int ret;
++
++	ret = regmap_read(bq->regmap, BQ25970_BUSOCP, &code);
++	if (ret)
++		return ret;
++
++	*ua = (code & BQ25970_BUSOCP_MASK) * BQ25970_BUSOCP_STEP_uA +
++	      BQ25970_BUSOCP_BASE_uA;
++	return 0;
++}
++
++static int bq25970_get_state(struct bq25970_device *bq,
++			      struct bq25970_state *state)
++{
++	unsigned int alarm_stat, fault_stat, ctrl1;
++	int ret;
++
++	ret = regmap_read(bq->regmap, BQ25970_ALARM_STAT, &alarm_stat);
++	if (ret)
++		return ret;
++
++	ret = regmap_read(bq->regmap, BQ25970_FAULT_STAT1, &fault_stat);
++	if (ret)
++		return ret;
++
++	ret = regmap_read(bq->regmap, BQ25970_CTRL1, &ctrl1);
++	if (ret)
++		return ret;
++
++	state->online = !!(alarm_stat & BQ25970_ADAPTER_INSERT_STAT);
++	state->ovp = !!(fault_stat & (BQ25970_BAT_OVP_FLT_STAT |
++				       BQ25970_BUS_OVP_FLT_STAT));
++	state->ocp = !!(fault_stat & (BQ25970_BAT_OCP_FLT_STAT |
++				       BQ25970_BUS_OCP_FLT_STAT));
++	state->ce = !!(ctrl1 & BQ25970_CHG_EN);
++
++	return 0;
++}
++
++static int bq25970_hw_init(struct bq25970_device *bq)
++{
++	int ret;
++
++	/* Disable the watchdog - nothing pets it from this driver yet. */
++	ret = regmap_update_bits(bq->regmap, BQ25970_CTRL0,
++				  BQ25970_WATCHDOG_DIS, BQ25970_WATCHDOG_DIS);
++	if (ret)
++		return ret;
++
++	/*
++	 * Standalone mode, TS_BUS/TS_BAT/TDIE protection disabled: this
++	 * board has no TS thermistor pins wired to this chip (confirmed
++	 * against the vendor driver's own board config for this exact
++	 * hardware, which disables the same three checks) - leaving them
++	 * enabled against floating pins is what previously produced a
++	 * spurious HEALTH_OVERHEAT.
++	 */
++	ret = regmap_update_bits(bq->regmap, BQ25970_CTRL1,
++				  BQ25970_MS_MASK | BQ25970_TSBUS_DIS |
++				  BQ25970_TSBAT_DIS | BQ25970_TDIE_DIS,
++				  BQ25970_MS_STANDALONE | BQ25970_TSBUS_DIS |
++				  BQ25970_TSBAT_DIS | BQ25970_TDIE_DIS);
++	if (ret)
++		return ret;
++
++	ret = bq25970_set_busovp(bq, bq->busovp_uv);
++	if (ret)
++		return ret;
++
++	ret = bq25970_set_busocp(bq, bq->busocp_ua);
++	if (ret)
++		return ret;
++
++	/*
++	 * ADC: continuous scan, averaging on, 13-bit resolution, IBUS/VBUS
++	 * enabled - matches the vendor driver's own proven-working init
++	 * sequence for this exact chip.
++	 */
++	ret = regmap_update_bits(bq->regmap, BQ25970_ADC_CTRL,
++				  BQ25970_ADC_EN | BQ25970_ADC_RATE_ONESHOT |
++				  BQ25970_ADC_AVG_EN |
++				  BQ25970_ADC_SAMPLE_MASK |
++				  BQ25970_IBUS_ADC_DIS,
++				  BQ25970_ADC_EN | BQ25970_ADC_AVG_EN |
++				  (BQ25970_ADC_SAMPLE_13BITS << 2));
++	if (ret)
++		return ret;
++
++	/*
++	 * VBUS enabled (charger-side voltage_now); VOUT/IBAT/TSBUS/TSBAT/
++	 * TDIE disabled - IBAT and thermal channels aren't exposed by this
++	 * driver at all (see the file comment for why there's no "battery"
++	 * psy here), so there's no point powering those ADC channels.
++	 */
++	return regmap_update_bits(bq->regmap, BQ25970_ADC_CH_CTRL,
++				  BQ25970_VBUS_ADC_DIS | BQ25970_VAC_ADC_DIS |
++				  BQ25970_VOUT_ADC_DIS |
++				  BQ25970_VBAT_ADC_DIS |
++				  BQ25970_IBAT_ADC_DIS |
++				  BQ25970_TSBUS_ADC_DIS |
++				  BQ25970_TSBAT_ADC_DIS |
++				  BQ25970_TDIE_ADC_DIS,
++				  BQ25970_VOUT_ADC_DIS | BQ25970_IBAT_ADC_DIS |
++				  BQ25970_TSBUS_ADC_DIS |
++				  BQ25970_TSBAT_ADC_DIS |
++				  BQ25970_TDIE_ADC_DIS);
++}
++
++static int bq25970_get_property(struct power_supply *psy,
++				 enum power_supply_property psp,
++				 union power_supply_propval *val)
++{
++	struct bq25970_device *bq = power_supply_get_drvdata(psy);
++	struct bq25970_state state;
++	int ret, ival;
++
++	ret = bq25970_get_state(bq, &state);
++	if (ret)
++		return ret;
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_MANUFACTURER:
++		val->strval = BQ25970_MANUFACTURER;
++		return 0;
++	case POWER_SUPPLY_PROP_MODEL_NAME:
++		val->strval = "bq25970";
++		return 0;
++	case POWER_SUPPLY_PROP_ONLINE:
++		val->intval = state.online;
++		return 0;
++	case POWER_SUPPLY_PROP_STATUS:
++		if (!state.online)
++			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
++		else if (state.ce)
++			val->intval = POWER_SUPPLY_STATUS_CHARGING;
++		else
++			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
++		return 0;
++	case POWER_SUPPLY_PROP_HEALTH:
++		if (state.ovp)
++			val->intval = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
++		else if (state.ocp)
++			val->intval = POWER_SUPPLY_HEALTH_OVERCURRENT;
++		else
++			val->intval = POWER_SUPPLY_HEALTH_GOOD;
++		return 0;
++	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
++		ret = bq25970_read_adc_word(bq, BQ25970_VBUS_ADC_MSB, &ival);
++		if (ret)
++			return ret;
++		val->intval = ival * 1000;
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_NOW:
++		ret = bq25970_read_adc_word(bq, BQ25970_IBUS_ADC_MSB, &ival);
++		if (ret)
++			return ret;
++		val->intval = ival * 1000;
++		return 0;
++	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
++		return bq25970_get_busovp(bq, &val->intval);
++	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++		return bq25970_get_busocp(bq, &val->intval);
++	default:
++		return -EINVAL;
++	}
++}
++
++static int bq25970_set_property(struct power_supply *psy,
++				 enum power_supply_property psp,
++				 const union power_supply_propval *val)
++{
++	struct bq25970_device *bq = power_supply_get_drvdata(psy);
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
++		return bq25970_set_busovp(bq, val->intval);
++	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++		return bq25970_set_busocp(bq, val->intval);
++	default:
++		return -EINVAL;
++	}
++}
++
++static int bq25970_property_is_writable(struct power_supply *psy,
++					 enum power_supply_property psp)
++{
++	switch (psp) {
++	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
++	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++		return 1;
++	default:
++		return 0;
++	}
++}
++
++static enum power_supply_property bq25970_props[] = {
++	POWER_SUPPLY_PROP_MANUFACTURER,
++	POWER_SUPPLY_PROP_MODEL_NAME,
++	POWER_SUPPLY_PROP_ONLINE,
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_HEALTH,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT,
++	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
++};
++
++static const struct power_supply_desc bq25970_charger_desc = {
++	.name = "bq25970-charger",
++	.type = POWER_SUPPLY_TYPE_MAINS,
++	.properties = bq25970_props,
++	.num_properties = ARRAY_SIZE(bq25970_props),
++	.get_property = bq25970_get_property,
++	.set_property = bq25970_set_property,
++	.property_is_writeable = bq25970_property_is_writable,
++};
++
++static irqreturn_t bq25970_irq_handler(int irq, void *data)
++{
++	struct bq25970_device *bq = data;
++
++	power_supply_changed(bq->charger);
++
++	return IRQ_HANDLED;
++}
++
++static int bq25970_parse_dt(struct bq25970_device *bq)
++{
++	struct device *dev = bq->dev;
++
++	if (device_property_read_u32(dev, "ti,sc-ovp-limit-microvolt",
++				      &bq->busovp_uv))
++		bq->busovp_uv = BQ25970_BUSOVP_DFLT_uV;
++
++	if (device_property_read_u32(dev, "ti,sc-ocp-limit-microamp",
++				      &bq->busocp_ua))
++		bq->busocp_ua = BQ25970_BUSOCP_DFLT_uA;
++
++	if (bq->busovp_uv < BQ25970_BUSOVP_MIN_uV ||
++	    bq->busovp_uv > BQ25970_BUSOVP_MAX_uV) {
++		dev_err(dev, "ti,sc-ovp-limit-microvolt out of range\n");
++		return -EINVAL;
++	}
++
++	if (bq->busocp_ua < BQ25970_BUSOCP_MIN_uA ||
++	    bq->busocp_ua > BQ25970_BUSOCP_MAX_uA) {
++		dev_err(dev, "ti,sc-ocp-limit-microamp out of range\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int bq25970_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct power_supply_config psy_cfg = {};
++	struct bq25970_device *bq;
++	unsigned int dev_id;
++	int ret;
++
++	bq = devm_kzalloc(dev, sizeof(*bq), GFP_KERNEL);
++	if (!bq)
++		return -ENOMEM;
++
++	bq->dev = dev;
++	i2c_set_clientdata(client, bq);
++
++	bq->regmap = devm_regmap_init_i2c(client, &bq25970_regmap_config);
++	if (IS_ERR(bq->regmap))
++		return dev_err_probe(dev, PTR_ERR(bq->regmap),
++				      "Failed to allocate register map\n");
++
++	ret = regmap_read(bq->regmap, BQ25970_DEV_ID, &dev_id);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to read device ID\n");
++	dev_dbg(dev, "device ID: 0x%x\n", (unsigned int)(dev_id & BQ25970_DEV_ID_MASK));
++
++	ret = bq25970_parse_dt(bq);
++	if (ret)
++		return ret;
++
++	ret = bq25970_hw_init(bq);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to initialize chip\n");
++
++	psy_cfg.drv_data = bq;
++	psy_cfg.fwnode = dev_fwnode(dev);
++
++	bq->charger = devm_power_supply_register(dev, &bq25970_charger_desc,
++						  &psy_cfg);
++	if (IS_ERR(bq->charger))
++		return dev_err_probe(dev, PTR_ERR(bq->charger),
++				      "Failed to register power supply\n");
++
++	if (client->irq) {
++		ret = devm_request_threaded_irq(dev, client->irq, NULL,
++						 bq25970_irq_handler,
++						 IRQF_TRIGGER_FALLING |
++						 IRQF_ONESHOT,
++						 dev_name(dev), bq);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					      "Failed to request IRQ\n");
++	}
++
++	return 0;
++}
++
++static const struct i2c_device_id bq25970_i2c_ids[] = {
++	{ "bq25970", 0 },
++	{},
++};
++MODULE_DEVICE_TABLE(i2c, bq25970_i2c_ids);
++
++static const struct of_device_id bq25970_of_match[] = {
++	{ .compatible = "ti,bq25970" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, bq25970_of_match);
++
++static struct i2c_driver bq25970_driver = {
++	.driver = {
++		.name = "bq25970-charger",
++		.of_match_table = bq25970_of_match,
++	},
++	.probe = bq25970_probe,
++	.id_table = bq25970_i2c_ids,
++};
++module_i2c_driver(bq25970_driver);
++
++MODULE_DESCRIPTION("TI BQ25970 switched-capacitor charge pump driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/power/supply/bq25970_charger.h b/drivers/power/supply/bq25970_charger.h
+new file mode 100644
+index 000000000..2b9811e31
+--- /dev/null
++++ b/drivers/power/supply/bq25970_charger.h
+@@ -0,0 +1,138 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* TI BQ25970 switched-capacitor charge pump register map.
++ *
++ * Unlike the BQ25980/BQ25975/BQ25960 family (see bq25980_charger.c), the
++ * BQ25970's register layout only matches that family for the OVP/OCP
++ * threshold block (0x00-0x09). Everything past that (control, status,
++ * ADC) is arranged differently. This header is derived from the vendor
++ * bq2597x_charger driver used by Xiaomi's sdmmagpie/surya downstream
++ * kernel (drivers/power/supply/ti/bq25970_reg.h there), which is the
++ * only available register-level documentation for this exact part.
++ */
++
++#ifndef BQ25970_CHARGER_H
++#define BQ25970_CHARGER_H
++
++#define BQ25970_MANUFACTURER		"Texas Instruments"
++
++/* OVP/OCP threshold block - same layout as bq25980/975/960 */
++#define BQ25970_BATOVP			0x00
++#define BQ25970_BATOVP_ALM		0x01
++#define BQ25970_BATOCP			0x02
++#define BQ25970_BATOCP_ALM		0x03
++#define BQ25970_BATUCP_ALM		0x04
++#define BQ25970_ACOVP			0x05
++#define BQ25970_BUSOVP			0x06
++#define BQ25970_BUSOVP_ALM		0x07
++#define BQ25970_BUSOCP			0x08
++#define BQ25970_BUSOCP_ALM		0x09
++
++#define BQ25970_BATOVP_MASK		GENMASK(5, 0)
++#define BQ25970_BATOVP_BASE_uV		3475000
++#define BQ25970_BATOVP_STEP_uV		25000
++#define BQ25970_BATOVP_MAX_uV		5050000
++#define BQ25970_BATOVP_DFLT_uV		4550000
++
++#define BQ25970_BUSOVP_MASK		GENMASK(6, 0)
++#define BQ25970_BUSOVP_BASE_uV		5950000
++#define BQ25970_BUSOVP_STEP_uV		50000
++#define BQ25970_BUSOVP_MIN_uV		5950000
++#define BQ25970_BUSOVP_MAX_uV		12300000
++#define BQ25970_BUSOVP_DFLT_uV		12000000
++
++#define BQ25970_BUSOCP_MASK		GENMASK(3, 0)
++#define BQ25970_BUSOCP_BASE_uA		1000000
++#define BQ25970_BUSOCP_STEP_uA		250000
++#define BQ25970_BUSOCP_MIN_uA		1000000
++#define BQ25970_BUSOCP_MAX_uA		4750000
++#define BQ25970_BUSOCP_DFLT_uA		3500000
++
++/* Control/status/ADC block - BQ25970-specific offsets, do not reuse
++ * bq25980_charger.h's offsets here, they refer to a different chip. */
++#define BQ25970_FAULT_STAT0		0x0A
++#define BQ25970_TSHUT_FLAG		BIT(7)
++#define BQ25970_TSHUT_STAT		BIT(6)
++#define BQ25970_VBUS_ERRORLO_STAT	BIT(5)
++#define BQ25970_VBUS_ERRORHI_STAT	BIT(4)
++#define BQ25970_SS_TIMEOUT_FLAG		BIT(3)
++#define BQ25970_CONV_SWITCHING_STAT	BIT(2)
++#define BQ25970_CONV_OCP_FLAG		BIT(1)
++
++#define BQ25970_CTRL0			0x0B
++#define BQ25970_REG_RST			BIT(7)
++#define BQ25970_WATCHDOG_DIS		BIT(2)
++#define BQ25970_WATCHDOG_MASK		GENMASK(1, 0)
++
++#define BQ25970_CTRL1			0x0C
++#define BQ25970_CHG_EN			BIT(7)
++#define BQ25970_MS_MASK			GENMASK(6, 5)
++#define BQ25970_MS_STANDALONE		0
++#define BQ25970_TSBUS_DIS		BIT(2)
++#define BQ25970_TSBAT_DIS		BIT(1)
++#define BQ25970_TDIE_DIS		BIT(0)
++
++#define BQ25970_ALARM_STAT		0x0D
++#define BQ25970_BAT_OVP_ALM_STAT	BIT(7)
++#define BQ25970_BAT_OCP_ALM_STAT	BIT(6)
++#define BQ25970_BUS_OVP_ALM_STAT	BIT(5)
++#define BQ25970_BUS_OCP_ALM_STAT	BIT(4)
++#define BQ25970_BAT_UCP_ALM_STAT	BIT(3)
++#define BQ25970_ADAPTER_INSERT_STAT	BIT(2)
++#define BQ25970_VBAT_INSERT_STAT	BIT(1)
++#define BQ25970_ADC_DONE_STAT		BIT(0)
++
++#define BQ25970_ALARM_FLAG		0x0E
++#define BQ25970_ALARM_MASK		0x0F
++
++#define BQ25970_FAULT_STAT1		0x10
++#define BQ25970_BAT_OVP_FLT_STAT	BIT(7)
++#define BQ25970_BAT_OCP_FLT_STAT	BIT(6)
++#define BQ25970_BUS_OVP_FLT_STAT	BIT(5)
++#define BQ25970_BUS_OCP_FLT_STAT	BIT(4)
++#define BQ25970_TSBUS_TSBAT_ALM_STAT	BIT(3)
++#define BQ25970_TSBAT_FLT_STAT		BIT(2)
++#define BQ25970_TSBUS_FLT_STAT		BIT(1)
++#define BQ25970_TDIE_ALM_STAT		BIT(0)
++
++#define BQ25970_FAULT_FLAG1		0x11
++#define BQ25970_FAULT_MASK1		0x12
++
++#define BQ25970_DEV_ID			0x13
++#define BQ25970_DEV_ID_MASK		GENMASK(3, 0)
++
++#define BQ25970_ADC_CTRL		0x14
++#define BQ25970_ADC_EN			BIT(7)
++#define BQ25970_ADC_RATE_ONESHOT	BIT(6)
++#define BQ25970_ADC_AVG_EN		BIT(5)
++#define BQ25970_ADC_SAMPLE_MASK		GENMASK(3, 2)
++#define BQ25970_ADC_SAMPLE_13BITS	2
++#define BQ25970_IBUS_ADC_DIS		BIT(0)
++
++#define BQ25970_ADC_CH_CTRL		0x15
++#define BQ25970_VBUS_ADC_DIS		BIT(7)
++#define BQ25970_VAC_ADC_DIS		BIT(6)
++#define BQ25970_VOUT_ADC_DIS		BIT(5)
++#define BQ25970_VBAT_ADC_DIS		BIT(4)
++#define BQ25970_IBAT_ADC_DIS		BIT(3)
++#define BQ25970_TSBUS_ADC_DIS		BIT(2)
++#define BQ25970_TSBAT_ADC_DIS		BIT(1)
++#define BQ25970_TDIE_ADC_DIS		BIT(0)
++
++/*
++ * ADC data registers: each channel is one 16-bit word (MSB reg first,
++ * i.e. reg[N] << 8 | reg[N+1]), read as a plain signed value already in
++ * the channel's native engineering unit (mV for voltage channels, mA for
++ * current channels) - confirmed against the vendor driver, which applies
++ * no further scaling beyond the byte-order swap.
++ */
++#define BQ25970_IBUS_ADC_MSB		0x16
++#define BQ25970_VBUS_ADC_MSB		0x18
++#define BQ25970_VAC_ADC_MSB		0x1A
++#define BQ25970_VOUT_ADC_MSB		0x1C
++#define BQ25970_VBAT_ADC_MSB		0x1E
++#define BQ25970_IBAT_ADC_MSB		0x20
++#define BQ25970_TSBUS_ADC_MSB		0x22
++#define BQ25970_TSBAT_ADC_MSB		0x24
++#define BQ25970_TDIE_ADC_MSB		0x26
++
++#endif /* BQ25970_CHARGER_H */
+-- 
+2.43.0
+

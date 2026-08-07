@@ -1,0 +1,397 @@
+From 1715304ff30f0c3e0139bb357ec0c2e39a34ffbe Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 13:09:01 +0200
+Subject: [PATCH 068/106] ASoC: qcom: q6dsp: puerto SLIMBUS_7 completo para el
+ audio BT
+
+q6afe/q6afe-dai/q6dsp-lpass-ports/q6routing + rutas de voz en
+q6voice-dai + hw_params de SLIMBus en sm8250.c (mapa de canales al DSP,
+como sdm845). IDs al final del array (149/150, ABI del DT) y respetando
+la paridad par=RX/impar=TX de q6slim_set_channel_map.
+---
+ .../sound/qcom,q6dsp-lpass-ports.h            | 15 +++++
+ sound/soc/qcom/common.h                       |  2 +-
+ sound/soc/qcom/qdsp6/q6afe-dai.c              |  7 +++
+ sound/soc/qcom/qdsp6/q6afe.c                  |  8 +++
+ sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c      | 32 +++++++++++
+ sound/soc/qcom/qdsp6/q6routing.c              | 12 ++++
+ sound/soc/qcom/qdsp6/q6voice-dai.c            | 20 +++++++
+ sound/soc/qcom/sm8250.c                       | 57 ++++++++++++++++++-
+ 8 files changed, 151 insertions(+), 2 deletions(-)
+
+diff --git a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+index 45850f2d4..2c92caf6e 100644
+--- a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
++++ b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+@@ -153,6 +153,21 @@
+ #define SENARY_MI2S_RX		147
+ #define SENARY_MI2S_TX		148
+ 
++/*
++ * SLIMBUS_7 is where the WCN399x Bluetooth chip's SCO ports live. It gets
++ * appended here rather than slotted in after SLIMBUS_6, because these numbers
++ * are device tree ABI and array indices: renumbering everything after it would
++ * silently repoint every existing board's ports.
++ *
++ * The values are not arbitrary. Code infers a port's direction from the parity
++ * of its id - q6slim_set_channel_map() reads a port as TX when (id & 1) - so
++ * RX has to stay even and TX odd. Numbering these 149/150 instead makes the
++ * DSP reject the channel map for the playback port with -EINVAL. 149 is left
++ * unused for that reason.
++ */
++#define SLIMBUS_7_RX		150
++#define SLIMBUS_7_TX		151
++
+ #define LPASS_CLK_ID_PRI_MI2S_IBIT	1
+ #define LPASS_CLK_ID_PRI_MI2S_EBIT	2
+ #define LPASS_CLK_ID_SEC_MI2S_IBIT	3
+diff --git a/sound/soc/qcom/common.h b/sound/soc/qcom/common.h
+index ee6662885..e34d2a87f 100644
+--- a/sound/soc/qcom/common.h
++++ b/sound/soc/qcom/common.h
+@@ -7,7 +7,7 @@
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <sound/soc.h>
+ 
+-#define LPASS_MAX_PORT			(SENARY_MI2S_TX + 1)
++#define LPASS_MAX_PORT			(SLIMBUS_7_TX + 1)
+ 
+ int qcom_snd_parse_of(struct snd_soc_card *card);
+ int qcom_snd_wcd_jack_setup(struct snd_soc_pcm_runtime *rtd,
+diff --git a/sound/soc/qcom/qdsp6/q6afe-dai.c b/sound/soc/qcom/qdsp6/q6afe-dai.c
+index b6b09c267..ce5d64f90 100644
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -406,6 +406,9 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
+ 					&dai_data->port_config[dai->id].hdmi);
+ 		break;
+ 	case SLIMBUS_0_RX ... SLIMBUS_6_TX:
++	/* Not part of the range above: these IDs are appended at the end. */
++	case SLIMBUS_7_RX:
++	case SLIMBUS_7_TX:
+ 		q6afe_slim_port_prepare(dai_data->port[dai->id],
+ 					&dai_data->port_config[dai->id].slim);
+ 		break;
+@@ -527,6 +530,7 @@ static const struct snd_soc_dapm_route q6afe_dapm_routes[] = {
+ 	{"Slimbus4 Playback", NULL, "SLIMBUS_4_RX"},
+ 	{"Slimbus5 Playback", NULL, "SLIMBUS_5_RX"},
+ 	{"Slimbus6 Playback", NULL, "SLIMBUS_6_RX"},
++	{"Slimbus7 Playback", NULL, "SLIMBUS_7_RX"},
+ 
+ 	{"SLIMBUS_0_TX", NULL, "Slimbus Capture"},
+ 	{"SLIMBUS_1_TX", NULL, "Slimbus1 Capture"},
+@@ -535,6 +539,7 @@ static const struct snd_soc_dapm_route q6afe_dapm_routes[] = {
+ 	{"SLIMBUS_4_TX", NULL, "Slimbus4 Capture"},
+ 	{"SLIMBUS_5_TX", NULL, "Slimbus5 Capture"},
+ 	{"SLIMBUS_6_TX", NULL, "Slimbus6 Capture"},
++	{"SLIMBUS_7_TX", NULL, "Slimbus7 Capture"},
+ 
+ 	{"Primary MI2S Playback", NULL, "PRI_MI2S_RX"},
+ 	{"Secondary MI2S Playback", NULL, "SEC_MI2S_RX"},
+@@ -784,6 +789,7 @@ static const struct snd_soc_dapm_widget q6afe_dai_widgets[] = {
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_4_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_5_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_6_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_IN("SLIMBUS_7_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_0_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_1_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_2_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+@@ -791,6 +797,7 @@ static const struct snd_soc_dapm_widget q6afe_dai_widgets[] = {
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_4_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_5_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_6_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_OUT("SLIMBUS_7_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SEN_MI2S_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SEN_MI2S_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("QUIN_MI2S_RX", NULL,
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index f832917d4..4e00e4c23 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -120,6 +120,8 @@
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX      0x400c
+ /* SLIMbus Tx port on channel 6. */
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX      0x400d
++#define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX      0x400e
++#define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX      0x400f
+ #define AFE_PORT_ID_PRIMARY_MI2S_RX         0x1000
+ #define AFE_PORT_ID_PRIMARY_MI2S_TX         0x1001
+ #define AFE_PORT_ID_SECONDARY_MI2S_RX       0x1002
+@@ -687,6 +689,8 @@ static struct afe_port_map port_maps[AFE_PORT_MAX] = {
+ 				SLIMBUS_5_RX, 1, 1},
+ 	[SLIMBUS_6_RX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX,
+ 				SLIMBUS_6_RX, 1, 1},
++	[SLIMBUS_7_RX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX,
++				SLIMBUS_7_RX, 1, 1},
+ 	[SLIMBUS_0_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_TX,
+ 				SLIMBUS_0_TX, 0, 1},
+ 	[SLIMBUS_1_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_TX,
+@@ -701,6 +705,8 @@ static struct afe_port_map port_maps[AFE_PORT_MAX] = {
+ 				SLIMBUS_5_TX, 0, 1},
+ 	[SLIMBUS_6_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX,
+ 				SLIMBUS_6_TX, 0, 1},
++	[SLIMBUS_7_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX,
++				SLIMBUS_7_TX, 0, 1},
+ 	[PRIMARY_MI2S_RX] = { AFE_PORT_ID_PRIMARY_MI2S_RX,
+ 				PRIMARY_MI2S_RX, 1, 1},
+ 	[PRIMARY_MI2S_TX] = { AFE_PORT_ID_PRIMARY_MI2S_TX,
+@@ -1810,6 +1816,7 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_4_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_5_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX:
++	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_RX:
+@@ -1817,6 +1824,7 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_4_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_5_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX:
++	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX:
+ 		cfg_type = AFE_PARAM_ID_SLIMBUS_CONFIG;
+ 		break;
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+index e5cd82f77..0e7948351 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+@@ -382,6 +382,35 @@ static struct snd_soc_dai_driver q6dsp_audio_fe_dais[] = {
+ 			.channels_max = 8,
+ 			.rate_min = 8000,
+ 			.rate_max = 192000,
++		},	}, {
++		.playback = {
++			.stream_name = "Slimbus7 Playback",
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
++				 SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_96000 |
++				 SNDRV_PCM_RATE_192000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE |
++				   SNDRV_PCM_FMTBIT_S24_LE,
++			.channels_min = 1,
++			.channels_max = 2,
++			.rate_min = 8000,
++			.rate_max = 192000,
++		},
++		.name = "SLIMBUS_7_RX",
++		.id = SLIMBUS_7_RX,
++	}, {
++		.name = "SLIMBUS_7_TX",
++		.id = SLIMBUS_7_TX,
++		.capture = {
++			.stream_name = "Slimbus7 Capture",
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
++				 SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_96000 |
++				 SNDRV_PCM_RATE_192000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE |
++				   SNDRV_PCM_FMTBIT_S24_LE,
++			.channels_min = 1,
++			.channels_max = 8,
++			.rate_min = 8000,
++			.rate_max = 192000,
+ 		},
+ 	}, {
+ 		.playback = {
+@@ -706,6 +735,9 @@ struct snd_soc_dai_driver *q6dsp_audio_ports_set_config(struct device *dev,
+ 			q6dsp_audio_fe_dais[i].ops = cfg->q6hdmi_ops;
+ 			break;
+ 		case SLIMBUS_0_RX ... SLIMBUS_6_TX:
++		/* Appended after the MI2S block, so outside the range above. */
++		case SLIMBUS_7_RX:
++		case SLIMBUS_7_TX:
+ 			q6dsp_audio_fe_dais[i].ops = cfg->q6slim_ops;
+ 			break;
+ 		case SENARY_MI2S_RX ... SENARY_MI2S_TX:
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 738622604..362a3d79b 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -76,6 +76,7 @@
+ 	{ mix_name, "SLIMBUS_4_TX", "SLIMBUS_4_TX" },		\
+ 	{ mix_name, "SLIMBUS_5_TX", "SLIMBUS_5_TX" },		\
+ 	{ mix_name, "SLIMBUS_6_TX", "SLIMBUS_6_TX" },		\
++	{ mix_name, "SLIMBUS_7_TX", "SLIMBUS_7_TX" },		\
+ 	{ mix_name, "PRIMARY_TDM_TX_0", "PRIMARY_TDM_TX_0"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_1", "PRIMARY_TDM_TX_1"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_2", "PRIMARY_TDM_TX_2"},	\
+@@ -166,6 +167,9 @@
+ 	SOC_SINGLE_EXT("SLIMBUS_6_TX", SLIMBUS_6_TX,			\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("SLIMBUS_7_TX", SLIMBUS_7_TX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
+ 	SOC_SINGLE_EXT("PRIMARY_TDM_TX_0", PRIMARY_TDM_TX_0,		\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
+@@ -559,6 +563,10 @@ static const struct snd_kcontrol_new slimbus_5_rx_mixer_controls[] = {
+ static const struct snd_kcontrol_new slimbus_6_rx_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(SLIMBUS_6_RX) };
+ 
++/* Bluetooth SCO: this is where a call to a headset goes out and comes back. */
++static const struct snd_kcontrol_new slimbus_7_rx_mixer_controls[] = {
++	Q6ROUTING_RX_MIXERS(SLIMBUS_7_RX) };
++
+ static const struct snd_kcontrol_new pri_tdm_rx_0_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(PRIMARY_TDM_RX_0) };
+ 
+@@ -765,6 +773,9 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
+ 	SND_SOC_DAPM_MIXER("SLIMBUS_6_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   slimbus_6_rx_mixer_controls,
+ 			   ARRAY_SIZE(slimbus_6_rx_mixer_controls)),
++	SND_SOC_DAPM_MIXER("SLIMBUS_7_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
++			   slimbus_7_rx_mixer_controls,
++			   ARRAY_SIZE(slimbus_7_rx_mixer_controls)),
+ 	SND_SOC_DAPM_MIXER("PRI_MI2S_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   primary_mi2s_rx_mixer_controls,
+ 			   ARRAY_SIZE(primary_mi2s_rx_mixer_controls)),
+@@ -967,6 +978,7 @@ static const struct snd_soc_dapm_route intercon[] = {
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_4_RX Audio Mixer", "SLIMBUS_4_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_5_RX Audio Mixer", "SLIMBUS_5_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_6_RX Audio Mixer", "SLIMBUS_6_RX"),
++	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_7_RX Audio Mixer", "SLIMBUS_7_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUAT_MI2S_RX Audio Mixer", "QUAT_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUIN_MI2S_RX Audio Mixer", "QUIN_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("TERT_MI2S_RX Audio Mixer", "TERT_MI2S_RX"),
+diff --git a/sound/soc/qcom/qdsp6/q6voice-dai.c b/sound/soc/qcom/qdsp6/q6voice-dai.c
+index ceff89a08..1dc0b9007 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -133,6 +133,14 @@ static const struct snd_kcontrol_new voice_tx_mixer_controls[] = {
+ 		       q6voice_get_mixer, q6voice_put_mixer),
+ 	SOC_SINGLE_EXT("TX_CODEC_DMA_TX_3", TX_CODEC_DMA_TX_3, 1, 1, 0,
+ 		       q6voice_get_mixer, q6voice_put_mixer),
++	/*
++	 * A Bluetooth headset's microphone. The chip's SCO ports hang off
++	 * SLIMBus, and the factory audio HAL routes a call to a headset
++	 * exactly this way: "voicemmode1-call bt-sco" wires
++	 * VoiceMMode1_Tx Mixer to SLIM_7_TX.
++	 */
++	SOC_SINGLE_EXT("SLIMBUS_7_TX", SLIMBUS_7_TX, 1, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer),
+ };
+ 
+ static const struct snd_kcontrol_new primary_mi2s_rx_mixer_controls[] = {
+@@ -160,6 +168,12 @@ static const struct snd_kcontrol_new quinary_mi2s_rx_mixer_controls[] = {
+ 		       q6voice_get_mixer, q6voice_put_mixer)
+ };
+ 
++/* Downlink to a Bluetooth headset, over the chip's SCO ports. */
++static const struct snd_kcontrol_new slimbus_7_rx_mixer_controls[] = {
++	SOC_SINGLE_EXT("CS-Voice", SLIMBUS_7_RX, 0, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer)
++};
++
+ static const struct snd_soc_dapm_widget q6voice_dapm_widgets[] = {
+ 	SND_SOC_DAPM_AIF_IN("CS-VOICE_DL1", "CS-VOICE Playback", 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("CS-VOICE_UL1", "CS-VOICE Capture", 0, SND_SOC_NOPM, 0, 0),
+@@ -181,6 +195,9 @@ static const struct snd_soc_dapm_widget q6voice_dapm_widgets[] = {
+ 	SND_SOC_DAPM_MIXER("QUIN_MI2S_RX Voice Mixer", SND_SOC_NOPM, 0, 0,
+ 			   quinary_mi2s_rx_mixer_controls,
+ 			   ARRAY_SIZE(quinary_mi2s_rx_mixer_controls)),
++	SND_SOC_DAPM_MIXER("SLIMBUS_7_RX Voice Mixer", SND_SOC_NOPM, 0, 0,
++			   slimbus_7_rx_mixer_controls,
++			   ARRAY_SIZE(slimbus_7_rx_mixer_controls)),
+ };
+ 
+ static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
+@@ -193,6 +210,7 @@ static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
+ 	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_1", "TX_CODEC_DMA_TX_1" },
+ 	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_2", "TX_CODEC_DMA_TX_2" },
+ 	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_3", "TX_CODEC_DMA_TX_3" },
++	{ "CS-Voice Capture Mixer",	"SLIMBUS_7_TX",	"SLIMBUS_7_TX" },
+ 	{ "CS-VOICE_UL1",		NULL,		"CS-Voice Capture Mixer" },
+ 
+ 	{ "PRI_MI2S_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+@@ -200,11 +218,13 @@ static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
+ 	{ "TERT_MI2S_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+ 	{ "QUAT_MI2S_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+ 	{ "QUIN_MI2S_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
++	{ "SLIMBUS_7_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+ 	{ "PRI_MI2S_RX",		NULL,		"PRI_MI2S_RX Voice Mixer" },
+ 	{ "SEC_MI2S_RX",		NULL,		"SEC_MI2S_RX Voice Mixer" },
+ 	{ "TERT_MI2S_RX",		NULL,		"TERT_MI2S_RX Voice Mixer" },
+ 	{ "QUAT_MI2S_RX",		NULL,		"QUAT_MI2S_RX Voice Mixer" },
+ 	{ "QUIN_MI2S_RX",		NULL,		"QUIN_MI2S_RX Voice Mixer" },
++	{ "SLIMBUS_7_RX",		NULL,		"SLIMBUS_7_RX Voice Mixer" },
+ };
+ 
+ static unsigned int q6voice_reg_read(struct snd_soc_component *component,
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index 1f88181b8..1ed0cfc18 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -165,6 +165,53 @@ static int sm8250_snd_hw_free(struct snd_pcm_substream *substream)
+ 	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
+ }
+ 
++/*
++ * SLIMBus backends need the bus channel numbers handed to the DSP before its
++ * port will start - without them the ADSP refuses the port outright. The
++ * codec is the one that knows which channels it listens on, so ask it and
++ * pass the answer along.
++ */
++/* Same bounds the other Qualcomm machine drivers use for these arrays. */
++#define SLIM_MAX_TX_PORTS	16
++#define SLIM_MAX_RX_PORTS	13
++
++static int sm8250_slim_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *codec_dai;
++	u32 rx_ch[SLIM_MAX_RX_PORTS], tx_ch[SLIM_MAX_TX_PORTS];
++	u32 rx_ch_cnt = 0, tx_ch_cnt = 0;
++	int ret, i;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai) {
++		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
++						  &rx_ch_cnt, rx_ch);
++		if (ret == -ENOTSUPP)
++			continue;
++		if (ret)
++			return ret;
++
++		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++			ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
++							  rx_ch_cnt, rx_ch);
++		else
++			ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt,
++							  tx_ch, 0, NULL);
++		if (ret && ret != -ENOTSUPP) {
++			dev_err(rtd->dev, "cannot set cpu chan map: %d\n", ret);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static const struct snd_soc_ops sm8250_slim_be_ops = {
++	.hw_params = sm8250_slim_hw_params,
++};
++
+ static const struct snd_soc_ops sm8250_be_ops = {
+ 	.startup = sm8250_snd_startup,
+ 	.shutdown = qcom_snd_sdw_shutdown,
+@@ -182,7 +229,15 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
+ 			link->init = sm8250_snd_init;
+ 			link->exit = sm8250_snd_exit;
+ 			link->be_hw_params_fixup = sm8250_be_hw_params_fixup;
+-			link->ops = &sm8250_be_ops;
++			/*
++			 * The SoundWire ops would try to prepare a stream that
++			 * a SLIMBus link does not have; it needs the channel
++			 * map instead.
++			 */
++			if (link->id == SLIMBUS_7_RX || link->id == SLIMBUS_7_TX)
++				link->ops = &sm8250_slim_be_ops;
++			else
++				link->ops = &sm8250_be_ops;
+ 		}
+ 	}
+ }
+-- 
+2.43.0
+

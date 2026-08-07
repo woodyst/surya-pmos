@@ -1,0 +1,136 @@
+From 18e230b7f96ad48438c7b86608dccebf5c7d85f9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 15 Jul 2026 20:28:24 +0200
+Subject: [PATCH 027/106] ASoC: tas2562: force the RX slot length too in the
+ DAC power-up re-assert
+
+TDM_CFG2 packs the channel-select mux (bits 5:4) and the RX word/slot
+length (bits 3:0), and both are written through the regmap cache from
+different paths (the DAPM mux, and set_bitwidth from hw_params). The cache
+keeps disagreeing with silicon, so the cached update_bits in set_bitwidth
+gets skipped on one of the two amps and leaves the slot length at the
+chip's 32-bit power-on default. On a 16-bit stereo I2S link that makes the
+amp wait for twice the bit clock and latch a TDM clock error, so it stays
+mute - deterministically the bottom (tas2562) amp on a Xiaomi surya, while
+the top (tas2564) happened to power up with the right bits and played.
+
+Patch 0022 already re-forces the mux bits straight to the chip (cache
+bypassed) at DAC power-up. Extend that same forced write to cover the
+word/slot-length bits: set_bitwidth now just records them and the power-up
+event writes the whole configurable field of TDM_CFG2 in one cache-
+bypassed update_bits. Fixes the right channel being silent.
+---
+ sound/soc/codecs/tas2562.c | 59 +++++++++++++++++++++++---------------
+ 1 file changed, 36 insertions(+), 23 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index f8235c3ec..113583019 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -57,6 +57,7 @@ struct tas2562_data {
+ 	bool unmuted;
+ 	bool tdm_slots_configured;
+ 	unsigned int asi1_sel;
++	unsigned int tdm_cfg2_len;	/* RXWLEN|RXLEN bits, re-forced at power-up */
+ };
+ 
+ enum tas256x_model {
+@@ -229,30 +230,22 @@ static int tas2562_set_dai_tdm_slot(struct snd_soc_dai *dai,
+ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
+ {
+ 	unsigned int rx_slot_len;
++	unsigned int rx_word_len;
+ 	int ret;
+ 	int val;
+ 	int sense_en;
+ 
+ 	switch (bitwidth) {
+ 	case SNDRV_PCM_FORMAT_S16_LE:
+-		snd_soc_component_update_bits(tas2562->component,
+-					      TAS2562_TDM_CFG2,
+-					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+-					      TAS2562_TDM_CFG2_RXWLEN_16B);
++		rx_word_len = TAS2562_TDM_CFG2_RXWLEN_16B;
+ 		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_16B;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S24_LE:
+-		snd_soc_component_update_bits(tas2562->component,
+-					      TAS2562_TDM_CFG2,
+-					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+-					      TAS2562_TDM_CFG2_RXWLEN_24B);
++		rx_word_len = TAS2562_TDM_CFG2_RXWLEN_24B;
+ 		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_24B;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+-		snd_soc_component_update_bits(tas2562->component,
+-					      TAS2562_TDM_CFG2,
+-					      TAS2562_TDM_CFG2_RXWLEN_MASK,
+-					      TAS2562_TDM_CFG2_RXWLEN_32B);
++		rx_word_len = TAS2562_TDM_CFG2_RXWLEN_32B;
+ 		rx_slot_len = TAS2562_TDM_CFG2_RXLEN_32B;
+ 		break;
+ 
+@@ -261,6 +254,19 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
+ 		return -EINVAL;
+ 	}
+ 
++	snd_soc_component_update_bits(tas2562->component, TAS2562_TDM_CFG2,
++				      TAS2562_TDM_CFG2_RXWLEN_MASK, rx_word_len);
++
++	/*
++	 * Remember the word/slot length bits of TDM_CFG2 so the DAC power-up
++	 * event can re-force them straight to the chip. The cached writes here
++	 * are unreliable: TDM_CFG2 is shared with the channel-select mux and
++	 * the cache keeps disagreeing with silicon, so on one of the two amps
++	 * these bits silently kept the chip's 32-bit power-on default, which
++	 * makes it wait for twice the bit clock and stay mute.
++	 */
++	tas2562->tdm_cfg2_len = rx_word_len | rx_slot_len;
++
+ 	/*
+ 	 * The RX slot length is only ever configured by set_dai_tdm_slot(),
+ 	 * which plain-I2S machine drivers (sm8250.c among them) never call -
+@@ -783,21 +789,28 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 				return ret;
+ 		}
+ 		/*
+-		 * Re-assert the channel select now that the part is powered and
+-		 * the stream is up - this is the only point where the write is
+-		 * reliable (see tas2562_asi1_sel_put).
++		 * Re-force the whole configurable part of TDM_CFG2 now that the
++		 * chip is powered and the stream is up - the channel-select mux
++		 * (bits 5:4) and the RX word/slot length (bits 3:0). This is the
++		 * only point where the write is reliable.
+ 		 *
+-		 * The cache must be bypassed: the DAPM mux write landed in the
+-		 * cache, hw_params then clobbered these bits on the actual chip
+-		 * without updating the cache, so a normal cached update_bits sees
+-		 * the cache already holding the right value and skips the write -
+-		 * leaving the hardware wrong. Force it straight to the part.
++		 * The cache must be bypassed. TDM_CFG2 is written by three paths
++		 * (the DAPM mux, set_bitwidth from hw_params, and this) and the
++		 * regmap cache keeps disagreeing with silicon, so a normal cached
++		 * update_bits sees the cache "already correct" and skips the real
++		 * write - which left the mux muted on one amp and the slot length
++		 * at the chip's 32-bit power-on default on another (a TDM clock
++		 * error, mute). Forcing the full field straight to the part on
++		 * every DAC power-up sidesteps the whole coherence problem.
+ 		 */
+ 		regcache_cache_bypass(tas2562->regmap, true);
+ 		ret = regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG2,
+-					 TAS2562_ASI1_SEL_MASK,
+-					 tas2562->asi1_sel <<
+-					 TAS2562_ASI1_SEL_SHIFT);
++					 TAS2562_ASI1_SEL_MASK |
++					 TAS2562_TDM_CFG2_RXWLEN_MASK |
++					 TAS2562_TDM_CFG2_RXLEN_MASK,
++					 (tas2562->asi1_sel <<
++					  TAS2562_ASI1_SEL_SHIFT) |
++					 tas2562->tdm_cfg2_len);
+ 		regcache_cache_bypass(tas2562->regmap, false);
+ 		if (ret < 0)
+ 			return ret;
+-- 
+2.43.0
+

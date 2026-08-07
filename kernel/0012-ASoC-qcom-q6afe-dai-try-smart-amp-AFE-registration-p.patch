@@ -1,0 +1,56 @@
+From f739167a3d0e62ebfc1c62db817caa9e4bc41df5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 00:32:56 +0200
+Subject: [PATCH 012/106] ASoC: qcom: q6afe-dai: try smart-amp AFE registration
+ post-start
+
+Third attempt: send the TAS256x smart-amp enable param right after
+q6afe_port_start() succeeds in q6afe_dai_prepare(), instead of from
+the machine driver's .startup (before the port's own I2S config and
+AFE_PORT_CMD_DEVICE_START have even been sent) - the previous two
+attempts broke ALSA hw_params regardless of port-refcount handling,
+pointing at command ordering. This is architecturally the closest
+mainline equivalent to when the downstream vendor HAL would issue
+the same call: after the port is already up and running, not during
+its own bring-up.
+---
+ sound/soc/qcom/qdsp6/q6afe-dai.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe-dai.c b/sound/soc/qcom/qdsp6/q6afe-dai.c
+index b6b09c267..45c19d101 100644
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -443,6 +443,28 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
+ 	}
+ 	dai_data->is_port_started[dai->id] = true;
+ 
++	/*
++	 * EXPERIMENTAL (attempt 3): register TI's TAS256x smart-amp AFE
++	 * module with the DSP, now that the port's own real config has
++	 * been sent and AFE_PORT_CMD_DEVICE_START has already succeeded -
++	 * two earlier attempts sending this during the machine driver's
++	 * .startup (before any of that) broke the pipeline (hw_params
++	 * started failing with -EINVAL), regardless of a port refcounting
++	 * fix, pointing at command ordering rather than a refcount bug.
++	 */
++	if (dai->id == TERTIARY_MI2S_RX) {
++		u32 smartamp_payload[14] = { 1, };
++		int sret;
++
++		sret = q6afe_send_generic_param(dai_data->port[dai->id],
++			0x11111112 /* AFE_SMARTAMP_MODULE_RX */,
++			0x10012D13 /* CAPI_V2_TAS_RX_ENABLE */,
++			smartamp_payload, sizeof(smartamp_payload));
++		dev_info(dai->dev,
++			"tas smartamp enable experiment (post-start): %d\n",
++			sret);
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.43.0
+

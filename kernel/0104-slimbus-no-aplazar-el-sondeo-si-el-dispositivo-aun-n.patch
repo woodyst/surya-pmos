@@ -1,0 +1,100 @@
+From e732d1392abde4ae49059c35344ed25aafefc806 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 5 Aug 2026 13:21:52 +0200
+Subject: [PATCH 104/106] slimbus: no aplazar el sondeo si el dispositivo aun
+ no tiene direccion
+
+Anadido .laddr_optional a struct slim_driver. Con la bandera puesta,
+slim_device_probe() deja el dispositivo ENLAZADO cuando
+slim_get_logical_addr() falla, en vez de devolver -EPROBE_DEFER.
+
+Por que hace falta: aplazar el sondeo deshace TODOS los recursos devm que
+probe() acaba de registrar -en un codec, el componente ASoC que su tarjeta
+de sonido esta esperando- y lo vuelve a deshacer en cada reintento. Un chip
+que tarda segundos en enumerar (el WCN3990 solo responde despues de que
+hci_uart cargue su firmware, y a veces nunca) dejaba a la tarjeta esperando
+para siempre por un codec que se construia y se derribaba sin parar. El
+driver lo rodeaba bloqueando 20 s dentro de su propio probe().
+
+Y el aplazamiento no aportaba nada: slim_device_alloc_laddr() ya llama a
+slim_device_update_status() cuando la direccion se asigna, incluido desde
+slim_device_report_present() cuando el dispositivo aparece tarde, asi que
+el driver se entera igual por su callback device_status().
+
+Es opcion POR DRIVER: ningun otro cliente SLIMbus cambia de comportamiento.
+Quien la ponga debe comprobar is_laddr_valid antes de hablar por el bus,
+como ya hace wcn-bt-slim en cada acceso.
+
+Verificado en surya, con el chip Bluetooth deliberadamente sin preparar:
+
+  wcn-bt-slim 217:220:0:0: no logical address yet, staying bound
+  wcn-bt-slim 217:220:1:0: no logical address yet, staying bound
+  wcn-bt-slim 217:220:1:0: chip never showed up on the bus
+
+y aun asi la tarjeta se registra CON su backend Bluetooth (el codec aparece
+como componente en /sys/kernel/debug/asoc/, con sus mezcladores
+SLIMBUS_7_TX), sin que haga falta el plazo del parche 0082. El insmod pasa
+de bloquear 20 s por dispositivo a 3 s en total.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/slimbus/core.c  | 17 +++++++++++++++++
+ include/linux/slimbus.h |  6 ++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/drivers/slimbus/core.c b/drivers/slimbus/core.c
+index ee6318e24..6d732b545 100644
+--- a/drivers/slimbus/core.c
++++ b/drivers/slimbus/core.c
+@@ -73,6 +73,23 @@ static int slim_device_probe(struct device *dev)
+ 	ret = slim_get_logical_addr(sbdev);
+ 	if (!ret) {
+ 		slim_device_update_status(sbdev, SLIM_DEVICE_STATUS_UP);
++	} else if (sbdrv->laddr_optional) {
++		/*
++		 * The device has not turned up on the bus yet. Deferring here
++		 * would undo everything probe() just registered - for a codec,
++		 * the ASoC component its sound card is waiting for - and undo
++		 * it again on every retry, so a chip that takes seconds to
++		 * enumerate leaves its consumers waiting forever on something
++		 * that keeps being torn down.
++		 *
++		 * Nothing is lost by staying bound: slim_device_alloc_laddr()
++		 * calls slim_device_update_status() whenever an address is
++		 * assigned, including from slim_device_report_present() when
++		 * the device finally announces itself, so the driver is still
++		 * told the moment it happens.
++		 */
++		dev_info(&sbdev->dev, "no logical address yet, staying bound\n");
++		ret = 0;
+ 	} else {
+ 		dev_err(&sbdev->dev, "Failed to get logical address\n");
+ 		ret = -EPROBE_DEFER;
+diff --git a/include/linux/slimbus.h b/include/linux/slimbus.h
+index 9e71fb549..282ec175e 100644
+--- a/include/linux/slimbus.h
++++ b/include/linux/slimbus.h
+@@ -80,6 +80,11 @@ struct slim_device {
+  * @driver: SLIMbus device drivers should initialize name and owner field of
+  *	    this structure
+  * @id_table: List of SLIMbus devices supported by this driver
++ * @laddr_optional: Stay bound when the device has no logical address yet,
++ *	instead of having the probe deferred. For devices that take their time
++ *	turning up on the bus: the driver keeps everything it registered, and
++ *	@device_status tells it when the address finally arrives. Drivers that
++ *	set this must check &slim_device.is_laddr_valid before any bus traffic.
+  */
+ 
+ struct slim_driver {
+@@ -90,6 +95,7 @@ struct slim_driver {
+ 				 enum slim_device_status s);
+ 	struct device_driver		driver;
+ 	const struct slim_device_id	*id_table;
++	bool				laddr_optional;
+ };
+ #define to_slim_driver(d) container_of_const(d, struct slim_driver, driver)
+ 
+-- 
+2.43.0
+

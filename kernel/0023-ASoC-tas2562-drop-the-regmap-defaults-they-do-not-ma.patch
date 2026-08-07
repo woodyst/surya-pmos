@@ -1,0 +1,64 @@
+From bf455833ca279f040b7e1c2d626df4b99c619667 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 14 Jul 2026 19:47:38 +0200
+Subject: [PATCH 023/106] ASoC: tas2562: drop the regmap defaults, they do not
+ match the hardware
+
+The defaults claim values the part does not actually power up with, and
+regmap defaults are never written to the chip - they only seed the cache.
+So the cache starts out lying, and regmap then drops any write whose value
+happens to equal the bogus cached one, believing it redundant.
+
+Seen on a Xiaomi surya: the amp gain mixer control cheerfully reported the
+value userspace had set while the gain register on the chip, read back over
+i2c, sat at its minimum. The amp was audibly silent, and moving the control
+to a different value and back was enough to make the write actually land.
+The digital volume was mute for the same reason.
+
+Without defaults the cache is populated from real reads of the part, so it
+cannot disagree with the hardware, and writes stop being dropped.
+---
+ sound/soc/codecs/tas2562.c | 20 +++++++++-----------
+ 1 file changed, 9 insertions(+), 11 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index b3b5f0c62..81f6caff2 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -943,23 +943,21 @@ static const struct regmap_range_cfg tas2562_ranges[] = {
+ 	},
+ };
+ 
+-static const struct reg_default tas2562_reg_defaults[] = {
+-	{ TAS2562_PAGE_CTRL, 0x00 },
+-	{ TAS2562_SW_RESET, 0x00 },
+-	{ TAS2562_PWR_CTRL, 0x0e },
+-	{ TAS2562_PB_CFG1, 0x20 },
+-	{ TAS2562_TDM_CFG0, 0x09 },
+-	{ TAS2562_TDM_CFG1, 0x02 },
+-};
+-
+ static const struct regmap_config tas2562_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
+ 
+ 	.max_register = 254 * 128,
++	/*
++	 * No reg_defaults. They only ever seeded the cache - they are never
++	 * written to the part - and they did not match what the hardware
++	 * actually powers up with, so regmap would drop a write as redundant
++	 * whenever the value happened to equal the bogus default. That is how
++	 * the amp gain silently stayed at its minimum while the mixer control
++	 * happily reported the value userspace had asked for. With no defaults
++	 * the cache is populated from real reads and cannot lie.
++	 */
+ 	.cache_type = REGCACHE_RBTREE,
+-	.reg_defaults = tas2562_reg_defaults,
+-	.num_reg_defaults = ARRAY_SIZE(tas2562_reg_defaults),
+ 	.ranges = tas2562_ranges,
+ 	.num_ranges = ARRAY_SIZE(tas2562_ranges),
+ };
+-- 
+2.43.0
+

@@ -1,0 +1,154 @@
+From f963a3235aa01526dafd153512bf06640e0ecb8f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 22:49:25 +0200
+Subject: [PATCH 016/106] ASoC: tas2562: apply the real tas256x_reg.bin
+ PRE_POWER_UP/POST_SHUTDOWN blocks
+
+Extracted and hand-parsed tas256x_reg.bin from this board's stock ROM
+(header/config sizes check out exactly against the actual file size, not
+guessed). It defines two profiles, both of which only carry data for
+dev_idx 1 (channel_left = this board's SPK/tas2562 - there is no data at
+all for dev_idx 2/EAR), applied by Android around the DAC's own power
+transitions rather than at probe - load_init() never reaches them.
+
+Adds tas2562_pre_power_up()/tas2562_post_shutdown(), wired into the
+existing tas2562_dac_event() POST_PMU/PRE_PMD handling (gated to
+model_id == TAS2562), applying:
+ - reg 0x30 = 0x1d: new register, present identically in both profiles'
+   PRE_POWER_UP block and in no POST_SHUTDOWN block - never touched
+   anywhere else in this driver.
+ - MISC_CFG1: 0xca at PRE_POWER_UP vs the 0xcf load_init() leaves it at
+   statically, restored back to 0xcf at POST_SHUTDOWN.
+ - CLASSD_CFG2 (page 253 reg 0x32): 0x08 at PRE_POWER_UP, 0x28 at
+   POST_SHUTDOWN - neither matches load_init()'s static 0x49.
+ - Two more page-253 registers (0x12, 0x46) and one page-0 register
+   (0x3e), all new, with different pre/post values.
+ - A page-1 register (0x21) - a page this driver has never addressed at
+   all - written only in PRE_POWER_UP, no POST_SHUTDOWN counterpart.
+---
+ sound/soc/codecs/tas2562.c | 66 ++++++++++++++++++++++++++++++++++++++
+ sound/soc/codecs/tas2562.h | 17 ++++++++++
+ 2 files changed, 83 insertions(+)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 3f3e2638e..a08efbee6 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -616,6 +616,63 @@ static SOC_ENUM_SINGLE_DECL(tas2562_ASI1_src_enum, TAS2562_TDM_CFG2, 4,
+ static const struct snd_kcontrol_new tas2562_asi1_mux =
+ 	SOC_DAPM_ENUM("ASI1 Source", tas2562_ASI1_src_enum);
+ 
++/*
++ * tas256x_reg.bin's PRE_POWER_UP block for this board (dev_idx 1 / SPK /
++ * TAS2562 only - see tas2562.h). Same register written statically by
++ * load_init() get a different, playback-time value here; that's the real
++ * vendor sequence, not a mistake.
++ */
++static int tas2562_pre_power_up(struct snd_soc_component *component)
++{
++	int ret;
++
++	ret = snd_soc_component_write(component, TAS2562_PRE_PWR_REG30, 0x1d);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_ICN_REG13, 0x0d);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE253_REG12, 0xc0);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE253_REG46, 0x1f);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG2, 0x08);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE0_REG3E, 0x00);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_MISC_CFG1, 0xca);
++	if (ret < 0)
++		return ret;
++	return snd_soc_component_write(component, TAS2562_PAGE1_REG21, 0x08);
++}
++
++/* tas256x_reg.bin's POST_SHUTDOWN block for this board (dev_idx 1 / SPK / TAS2562 only). */
++static int tas2562_post_shutdown(struct snd_soc_component *component)
++{
++	int ret;
++
++	ret = snd_soc_component_write(component, TAS2562_ICN_REG13, 0x0d);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE253_REG12, 0x00);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE253_REG46, 0x1f);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_CLASSD_CFG2, 0x28);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_PAGE0_REG3E, 0x10);
++	if (ret < 0)
++		return ret;
++	return snd_soc_component_write(component, TAS2562_MISC_CFG1, 0xcf);
++}
++
+ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 			     struct snd_kcontrol *kcontrol, int event)
+ {
+@@ -626,12 +683,21 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
+ 
+ 	switch (event) {
+ 	case SND_SOC_DAPM_POST_PMU:
++		if (tas2562->model_id == TAS2562) {
++			ret = tas2562_pre_power_up(component);
++			if (ret < 0)
++				return ret;
++		}
+ 		tas2562->dac_powered = true;
+ 		ret = tas2562_update_pwr_ctrl(tas2562);
+ 		break;
+ 	case SND_SOC_DAPM_PRE_PMD:
+ 		tas2562->dac_powered = false;
+ 		ret = tas2562_update_pwr_ctrl(tas2562);
++		if (ret < 0)
++			return ret;
++		if (tas2562->model_id == TAS2562)
++			ret = tas2562_post_shutdown(component);
+ 		break;
+ 	default:
+ 		dev_err(tas2562->dev, "Not supported evevt\n");
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index e94a15d38..3644fd0c2 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -80,6 +80,23 @@
+ /* 12-byte HPF reverse-path coefficient block (tas256x_HPF_FB_Bypass()) */
+ #define TAS2562_HPF_CFG		TAS2562_REG(2, 0x70)
+ 
++/*
++ * PRE_POWER_UP/POST_SHUTDOWN registers from the real tas256x_reg.bin shipped
++ * for this board (extracted from the stock ROM, parsed by hand against the
++ * vendor's tas256x_fw_ready()/tas256x_add_config()/tas256x_process_block()
++ * format - header+config sizes check out exactly against the file's actual
++ * size). These are applied by Android only around the DAC's own power
++ * transitions (profile blocks selected by the audio HAL), not at probe -
++ * load_init() never sees them. Both configs in the file target dev_idx 1
++ * (channel_left, i.e. this board's SPK/tas2562 - there is no data at all for
++ * dev_idx 2/EAR in this file), so these only apply for TAS2562.
++ */
++#define TAS2562_PRE_PWR_REG30	TAS2562_REG(0, 0x30)
++#define TAS2562_PAGE253_REG12	TAS2562_REG(253, 0x12)
++#define TAS2562_PAGE253_REG46	TAS2562_REG(253, 0x46)
++#define TAS2562_PAGE0_REG3E	TAS2562_REG(0, 0x3e)
++#define TAS2562_PAGE1_REG21	TAS2562_REG(1, 0x21)
++
+ #define TAS2562_PB_CFG1_DCBLOCKER_MASK		BIT(6)
+ #define TAS2562_PB_CFG1_DCBLOCKER_DISABLED	BIT(6)
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,148 @@
+From 37e9f2d2883d773a784ac1ecbfa2c57b0ee07ff7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 23:37:55 +0200
+Subject: [PATCH 077/106] ASoC: qdsp6: route audio into a call through the
+ injection pseudo port
+
+The DSP can mix a CPU stream into what the far end hears (pseudo port
+0x8005), which is the return path a Bluetooth headset needs: its
+microphone has to reach the other party without the modem ever seeing
+the CPU. The port had a DAI and a widget but no mixer, so nothing could
+feed it.
+
+Add the RX mixer controls, widget and routes for VOICE_PLAYBACK_TX, and
+start/stop the CVS playback from the routing callback the way the taps
+already do.
+
+Verified end to end on a live call: a pulsed 1 kHz tone played to the
+routed front-end shows up at the other phone with the same on/off
+pattern (1 kHz energy 1185-4815 alternating), while the same run with
+the route left off shows nothing at all (0-16) - so the tone travels
+through the DSP, not through the air.
+---
+ sound/soc/qcom/qdsp6/q6routing.c | 17 ++++++++++++++
+ sound/soc/qcom/qdsp6/q6voice.c   | 38 ++++++++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6voice.h   |  1 +
+ 3 files changed, 56 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 3db7e2367..06983a442 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -525,6 +525,8 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
+ 			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
+ 						    true);
++		else if (be_id == VOICE_PLAYBACK_TX)
++			q6voice_incall_playback_route(true);
+ 	} else {
+ 		if (session->port_id == -1 || session->port_id != be_id)
+ 			return 0;
+@@ -535,6 +537,8 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
+ 			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
+ 						    false);
++		else if (be_id == VOICE_PLAYBACK_TX)
++			q6voice_incall_playback_route(false);
+ 	}
+ 
+ 	return 1;
+@@ -589,6 +593,15 @@ static const struct snd_kcontrol_new slimbus_6_rx_mixer_controls[] = {
+ static const struct snd_kcontrol_new slimbus_7_rx_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(SLIMBUS_7_RX) };
+ 
++/*
++ * In-call injection: whatever a front-end plays here is mixed into what the
++ * far end hears. It is the return path of the record taps - together they let
++ * the CPU sit in the middle of a call (a Bluetooth headset, say) without the
++ * voice ever leaving the DSP for the modem.
++ */
++static const struct snd_kcontrol_new voice_playback_tx_mixer_controls[] = {
++	Q6ROUTING_RX_MIXERS(VOICE_PLAYBACK_TX) };
++
+ static const struct snd_kcontrol_new pri_tdm_rx_0_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(PRIMARY_TDM_RX_0) };
+ 
+@@ -798,6 +811,9 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
+ 	SND_SOC_DAPM_MIXER("SLIMBUS_7_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   slimbus_7_rx_mixer_controls,
+ 			   ARRAY_SIZE(slimbus_7_rx_mixer_controls)),
++	SND_SOC_DAPM_MIXER("VOICE_PLAYBACK_TX Audio Mixer", SND_SOC_NOPM, 0, 0,
++			   voice_playback_tx_mixer_controls,
++			   ARRAY_SIZE(voice_playback_tx_mixer_controls)),
+ 	SND_SOC_DAPM_MIXER("PRI_MI2S_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   primary_mi2s_rx_mixer_controls,
+ 			   ARRAY_SIZE(primary_mi2s_rx_mixer_controls)),
+@@ -1001,6 +1017,7 @@ static const struct snd_soc_dapm_route intercon[] = {
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_5_RX Audio Mixer", "SLIMBUS_5_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_6_RX Audio Mixer", "SLIMBUS_6_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_7_RX Audio Mixer", "SLIMBUS_7_RX"),
++	Q6ROUTING_RX_DAPM_ROUTE("VOICE_PLAYBACK_TX Audio Mixer", "VOICE_PLAYBACK_TX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUAT_MI2S_RX Audio Mixer", "QUAT_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUIN_MI2S_RX Audio Mixer", "QUIN_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("TERT_MI2S_RX Audio Mixer", "TERT_MI2S_RX"),
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 0ad316e5e..8fcf7c40b 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -144,6 +144,44 @@ int q6voice_incall_record_route(bool tx_port, bool set)
+ }
+ EXPORT_SYMBOL_GPL(q6voice_incall_record_route);
+ 
++/**
++ * q6voice_incall_playback_route() - feed the far end from a CPU stream
++ * @set: whether the injection port just got routed or unrouted
++ *
++ * The mirror image of the record taps: anything played to pseudo port 0x8005
++ * is mixed into the uplink, which is how a headset's microphone can reach the
++ * other party without the modem ever seeing the CPU.
++ */
++int q6voice_incall_playback_route(bool set)
++{
++	struct q6voice *v = q6voice_live;
++	struct q6voice_path *p;
++	struct q6voice_session *cvs;
++	int ret = 0, i;
++
++	if (!v)
++		return 0;
++
++	for (i = 0; i < Q6VOICE_PATH_COUNT; i++) {
++		p = &v->paths[i];
++		mutex_lock(&p->lock);
++		if (!p->runtime || !p->runtime->sessions[Q6VOICE_SERVICE_CVS]) {
++			mutex_unlock(&p->lock);
++			continue;
++		}
++		cvs = p->runtime->sessions[Q6VOICE_SERVICE_CVS];
++
++		ret = set ? q6cvs_start_playback(cvs) : q6cvs_stop_playback(cvs);
++		dev_info(v->dev, "in-call playback route %s: %d\n",
++			 set ? "on" : "off", ret);
++		mutex_unlock(&p->lock);
++		return ret;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(q6voice_incall_playback_route);
++
+ static int q6voice_record_now_set(const char *val, const struct kernel_param *kp)
+ {
+ 	struct q6voice *v = q6voice_live;
+diff --git a/sound/soc/qcom/qdsp6/q6voice.h b/sound/soc/qcom/qdsp6/q6voice.h
+index e868e6b5e..3dd78ec28 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.h
++++ b/sound/soc/qcom/qdsp6/q6voice.h
+@@ -21,6 +21,7 @@ int q6voice_start(struct q6voice *v, enum q6voice_path_type path, bool capture);
+ int q6voice_stop(struct q6voice *v, enum q6voice_path_type path, bool capture);
+ 
+ int q6voice_incall_record_route(bool tx_port, bool set);
++int q6voice_incall_playback_route(bool set);
+ int q6voice_get_port(struct q6voice *v, enum q6voice_path_type path,
+ 		     bool capture);
+ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+-- 
+2.43.0
+

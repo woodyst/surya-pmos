@@ -1,0 +1,359 @@
+From ba83fd3472dd3fa87100ebd697073b944034ac3d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 17:10:26 +0200
+Subject: [PATCH 099/106] ASoC: qdsp6: q6voice: repeat a device move once,
+ unprompted
+
+Moving the call onto the Bluetooth ports right after a routing change loses
+a race about half the time - the chip's bus ports and the SCO holder are
+still settling when the vocproc lands, and the call stays silent though
+every step reported success. Pressing the output button again always fixed
+it. This schedules that second attempt automatically: same rebuild, same
+ports, 0.8 s later. Also commits the previously uncommitted working-tree
+state: q6afe slimbus_dev_id/data_format knobs (0078), hci_qca adjustable
+SCO data path id, and the restored slim7 DAI links in the surya dtsi.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    |  29 ++++
+ drivers/bluetooth/hci_qca.c                   |  14 +-
+ sound/soc/qcom/qdsp6/q6afe.c                  |  31 ++++
+ sound/soc/qcom/qdsp6/q6voice.c                | 145 ++++++++++++++++++
+ 4 files changed, 217 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 39c109f56..fb17a951a 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -163,6 +163,35 @@ cpu {
+ 		 * estándar de Bluetooth necesitaría ese audio en PipeWire, y
+ 		 * ahí no está.
+ 		 */
++		slim7-rx-dai-link {
++			link-name = "SLIMBUS_7 Playback";
++			cpu {
++				sound-dai = <&q6afedai SLIMBUS_7_RX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&bt_audio 0>;
++			};
++		};
++
++		slim7-tx-dai-link {
++			link-name = "SLIMBUS_7 Capture";
++			cpu {
++				sound-dai = <&q6afedai SLIMBUS_7_TX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&bt_audio 1>;
++			};
++		};
+ 
+ 
+ 		/*
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index efb2172e8..3aa4c195a 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -1911,10 +1911,20 @@ static void hci_coredump_qca(struct hci_dev *hdev)
+ 		bt_dev_err(hdev, "%s: trigger crash failed (%d)", __func__, err);
+ }
+ 
++/*
++ * Which transport the controller should use for SCO audio. 1 is what the
++ * newer QCA parts document, but the WCN3990 rejects the link outright with it
++ * (`Limited Resources`, then `Security Reasons` on the HV3 attempt), so leave
++ * it writable while the right value for this part is being found. 0 is plain
++ * HCI, i.e. no offload at all.
++ */
++static int hfp_datapath = 1;
++module_param(hfp_datapath, int, 0644);
++MODULE_PARM_DESC(hfp_datapath, "data path id for offloaded SCO audio");
++
+ static int qca_get_data_path_id(struct hci_dev *hdev, __u8 *data_path_id)
+ {
+-	/* QCA uses 1 as non-HCI data path id for HFP */
+-	*data_path_id = 1;
++	*data_path_id = hfp_datapath;
+ 	return 0;
+ }
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 6f5e16ac7..daac8c9be 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1568,12 +1568,31 @@ EXPORT_SYMBOL_GPL(q6afe_port_stop);
+  * @cfg: SLIM configuration for the afe port
+  *
+  */
++/*
++ * The SLIMBus block the port belongs to, and the format the hardware should
++ * assume. Neither was ever filled in: the config went out with both fields
++ * zeroed, and the ADSP acknowledged it happily while the port never moved a
++ * single frame - no error anywhere, the port simply never ran.
++ *
++ * Block 1 is what makes it work here, and it is what the downstream driver
++ * sends for every SLIMBus port. Left writable because it is a property of the
++ * board and finding it again would otherwise cost a reboot per guess.
++ */
++static ushort slim_dev_id = 1;
++module_param(slim_dev_id, ushort, 0644);
++MODULE_PARM_DESC(slim_dev_id, "SLIMBus hardware block for SLIMBus AFE ports");
++
++static ushort slim_data_format;
++module_param(slim_data_format, ushort, 0644);
++MODULE_PARM_DESC(slim_data_format, "data format for SLIMBus AFE ports");
++
+ void q6afe_slim_port_prepare(struct q6afe_port *port,
+ 			     struct q6afe_slim_cfg *cfg)
+ {
+ 	union afe_port_config *pcfg = &port->port_cfg;
+ 
+ 	pcfg->slim_cfg.sb_cfg_minor_version = AFE_API_VERSION_SLIMBUS_CONFIG;
++	pcfg->slim_cfg.slimbus_dev_id = slim_dev_id;
+ 	pcfg->slim_cfg.sample_rate = cfg->sample_rate;
+ 	pcfg->slim_cfg.bit_width = cfg->bit_width;
+ 	pcfg->slim_cfg.num_channels = cfg->num_channels;
+@@ -1583,6 +1602,18 @@ void q6afe_slim_port_prepare(struct q6afe_port *port,
+ 	pcfg->slim_cfg.shared_ch_mapping[2] = cfg->ch_mapping[2];
+ 	pcfg->slim_cfg.shared_ch_mapping[3] = cfg->ch_mapping[3];
+ 
++	if (slim_data_format)
++		pcfg->slim_cfg.data_format = slim_data_format;
++
++	dev_info(port->afe->dev,
++		 "slim port %d cfg: dev_id %u fmt %u rate %u bits %u ch %u map %u,%u,%u,%u\n",
++		 port->id, pcfg->slim_cfg.slimbus_dev_id,
++		 pcfg->slim_cfg.data_format, pcfg->slim_cfg.sample_rate,
++		 pcfg->slim_cfg.bit_width, pcfg->slim_cfg.num_channels,
++		 pcfg->slim_cfg.shared_ch_mapping[0],
++		 pcfg->slim_cfg.shared_ch_mapping[1],
++		 pcfg->slim_cfg.shared_ch_mapping[2],
++		 pcfg->slim_cfg.shared_ch_mapping[3]);
+ }
+ EXPORT_SYMBOL_GPL(q6afe_slim_port_prepare);
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 0aa77d325..dddada656 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -8,6 +8,7 @@
+ #include <linux/mutex.h>
+ #include <linux/slab.h>
+ #include <linux/spinlock.h>
++#include <linux/workqueue.h>
+ #include "q6afe.h"
+ #include "q6cvp.h"
+ #include "q6cvs.h"
+@@ -27,6 +28,10 @@ MODULE_PARM_DESC(rx_volume_step, "CVP RX volume step for voice calls");
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
++	/* The ports the live vocproc was built with, to spot a device change. */
++	int cvp_tx_port, cvp_rx_port;
++	/* One forced repeat of the rebuild is pending (see the rekick note). */
++	bool rekick;
+ };
+ 
+ struct q6voice_path {
+@@ -37,6 +42,8 @@ struct q6voice_path {
+ 	/* Serialize access to voice path session */
+ 	struct mutex lock;
+ 	struct q6voice_path_runtime *runtime;
++	/* Rebuilds the vocproc when the call is moved to another device. */
++	struct delayed_work switch_work;
+ };
+ 
+ /*
+@@ -45,6 +52,9 @@ struct q6voice_path {
+  */
+ static struct q6voice *q6voice_live;
+ 
++/* Defined next to q6voice_set_port, which is what schedules it. */
++static void q6voice_switch_device(struct work_struct *work);
++
+ struct q6voice {
+ 	struct device *dev;
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+@@ -272,6 +282,8 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		if (IS_ERR(cvp))
+ 			return PTR_ERR(cvp);
+ 		p->runtime->sessions[Q6VOICE_SERVICE_CVP] = cvp;
++		p->runtime->cvp_tx_port = p->tx_port;
++		p->runtime->cvp_rx_port = p->rx_port;
+ 	}
+ 
+ 	ret = q6cvp_enable(cvp, true);
+@@ -420,6 +432,13 @@ static void q6voice_path_destroy(struct q6voice_path *p)
+ 	struct q6voice_path_runtime *runtime = p->runtime;
+ 	enum q6voice_service_type svc;
+ 
++	/*
++	 * Not _sync: this runs under p->lock and the work takes it too.
++	 * Clearing the runtime below is what makes a work that already
++	 * started do nothing.
++	 */
++	cancel_delayed_work(&p->switch_work);
++
+ 	for (svc = 0; svc < Q6VOICE_SERVICE_COUNT; ++svc) {
+ 		if (runtime->sessions[svc])
+ 			q6voice_session_release(runtime->sessions[svc]);
+@@ -496,6 +515,7 @@ struct q6voice *q6voice_create(struct device *dev)
+ 		p->v = v;
+ 		p->type = path;
+ 		mutex_init(&p->lock);
++		INIT_DELAYED_WORK(&p->switch_work, q6voice_switch_device);
+ 	}
+ 
+ 	ret = devm_add_action(dev, q6voice_free, v);
+@@ -520,6 +540,121 @@ int q6voice_get_port(struct q6voice *v, enum q6voice_path_type path,
+ }
+ EXPORT_SYMBOL_GPL(q6voice_get_port);
+ 
++/*
++ * Move a call that is already running to another device.
++ *
++ * The vocproc is built once, at the start of the call, with whatever ports
++ * were routed at that instant, and it was never rebuilt afterwards: routing
++ * the call elsewhere mid-call changed the mixer and powered up the new
++ * back-end, but the conversation kept flowing to the old one. That is what
++ * made moving a call to a Bluetooth headset a race - it only worked if the
++ * routing happened to be in place before the modem reported the call, and
++ * userspace has no way to guarantee that: wireplumber picks the voice-call
++ * profile *after* the session has started.
++ *
++ * So do what the vendor driver does on a device switch: pause the call, throw
++ * the vocproc away, build a new one against the new ports, and start again.
++ * The MVM and CVS sessions survive untouched, so the call itself is never
++ * torn down - the far end hears a short gap, nothing more.
++ */
++static void q6voice_switch_device(struct work_struct *work)
++{
++	struct q6voice_path *p = container_of(to_delayed_work(work),
++					      struct q6voice_path, switch_work);
++	struct device *dev = p->v->dev;
++	struct q6voice_session *mvm, *cvp;
++	bool force;
++	int ret;
++
++	mutex_lock(&p->lock);
++
++	if (!p->runtime || p->runtime->started != 3)
++		goto out;
++
++	force = p->runtime->rekick;
++	p->runtime->rekick = false;
++
++	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
++	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
++	if (!cvp || !mvm)
++		goto out;
++
++	/* Both ends have to be somewhere real, and somewhere else. */
++	if (!p->tx_port || !p->rx_port)
++		goto out;
++	if (p->tx_port == p->runtime->cvp_tx_port &&
++	    p->rx_port == p->runtime->cvp_rx_port && !force)
++		goto out;
++
++	dev_info(dev, "moving call: tx_port %d -> %d, rx_port %d -> %d\n",
++		 p->runtime->cvp_tx_port, p->tx_port,
++		 p->runtime->cvp_rx_port, p->rx_port);
++
++	ret = q6mvm_start(mvm, false);
++	if (ret)
++		dev_err(dev, "failed to pause voice for the switch: %d\n", ret);
++	ret = q6mvm_attach(mvm, cvp, false);
++	if (ret)
++		dev_err(dev, "failed to detach the old cvp: %d\n", ret);
++	ret = q6cvp_enable(cvp, false);
++	if (ret)
++		dev_err(dev, "failed to disable the old cvp: %d\n", ret);
++
++	q6voice_session_release(cvp);
++	p->runtime->sessions[Q6VOICE_SERVICE_CVP] = NULL;
++
++	cvp = q6cvp_session_create(p->type, q6afe_get_port_id(p->tx_port),
++				   q6afe_get_port_id(p->rx_port));
++	if (IS_ERR(cvp)) {
++		dev_err(dev, "failed to rebuild the cvp: %ld\n", PTR_ERR(cvp));
++		goto out;
++	}
++	p->runtime->sessions[Q6VOICE_SERVICE_CVP] = cvp;
++	p->runtime->cvp_tx_port = p->tx_port;
++	p->runtime->cvp_rx_port = p->rx_port;
++
++	ret = q6cvp_enable(cvp, true);
++	if (ret) {
++		dev_err(dev, "failed to enable the new cvp: %d\n", ret);
++		goto out;
++	}
++	ret = q6mvm_attach(mvm, cvp, true);
++	if (ret) {
++		dev_err(dev, "failed to attach the new cvp: %d\n", ret);
++		goto out;
++	}
++
++	/* Best effort, same as when the call was set up. */
++	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
++	if (ret)
++		dev_dbg(dev, "rx volume step not reapplied: %d\n", ret);
++
++	ret = q6mvm_start(mvm, true);
++	if (ret)
++		dev_err(dev, "failed to resume voice after the switch: %d\n", ret);
++
++	/*
++	 * Rekick: repeat this rebuild once, unprompted.
++	 *
++	 * Moving the call onto the Bluetooth ports right after a routing
++	 * change loses a race about half the time - the chip's bus ports and
++	 * the SCO holder are still settling when the vocproc lands, and the
++	 * call stays silent even though every step reported success. Pressing
++	 * the output button again always fixed it, because by the second
++	 * attempt everything has settled. This schedules that second attempt
++	 * automatically: same rebuild, same ports, ~0.8 s later. The far end
++	 * hears a short gap; a gap beats silence.
++	 */
++	if (!force) {
++		p->runtime->rekick = true;
++		mod_delayed_work(system_wq, &p->switch_work,
++				 msecs_to_jiffies(800));
++	}
++
++out:
++	mutex_unlock(&p->lock);
++}
++
+ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+ 		      bool capture, int index)
+ {
+@@ -529,6 +664,16 @@ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+ 		p->tx_port = index;
+ 	else
+ 		p->rx_port = index;
++
++	/*
++	 * Coalesce: moving a call touches four mixer controls (old device off,
++	 * new device on, for each direction) and there is a moment in the
++	 * middle where one end reads as nowhere. Waiting a little lets the
++	 * whole sequence land before the vocproc is rebuilt once.
++	 */
++	if (p->runtime && p->runtime->started == 3)
++		mod_delayed_work(system_wq, &p->switch_work,
++				 msecs_to_jiffies(200));
+ }
+ EXPORT_SYMBOL_GPL(q6voice_set_port);
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,84 @@
+From 1c8a026357f14846570d24da11084606e699e650 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 06:45:12 +0200
+Subject: [PATCH 046/106] media: qcom: camss: vote for refgen on sm7150
+
+The downstream CSIPHY node for sdmmagpie (the downstream name for SM7150)
+lists refgen alongside the GDSC:
+
+	regulator-names = "gdscr", "refgen";
+	refgen-supply = <&refgen>;
+
+refgen is the SoC reference generator the D-PHY receivers run off. The
+node already exists in sm7150.dtsi, but only the DSI votes for it, and
+the display does not need it: on a booted board it reads back disabled
+(BIAS_EN = 0x6, BG_CTRL & 0x6 = 0x4). Nothing turns it on for the camera.
+
+Take it as a third CSIPHY supply so camss powers it with the rest.
+sa8775p wires refgen the same way.
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi      |  2 ++
+ drivers/media/platform/qcom/camss/camss.c | 12 ++++++++----
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 1f0b4b611..50a8cbe3b 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -3844,6 +3844,8 @@ camss: camss@ace0000 {
+ 					  "jpeg_enc",
+ 					  "lrme";
+ 
++			refgen-supply = <&refgen>;
++
+ 			power-domains = <&camcc IFE_0_GDSC>,
+ 					<&camcc IFE_1_GDSC>,
+ 					<&camcc TITAN_TOP_GDSC>,
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 3691a8829..141d04169 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -1708,7 +1708,8 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
+ 	{
+ 		.regulators = {
+ 			{ .supply = "vdda-phy", .init_load_uA = 0 },
+-			{ .supply = "vdda-pll", .init_load_uA = 0 }
++			{ .supply = "vdda-pll", .init_load_uA = 0 },
++			{ .supply = "refgen", .init_load_uA = 0 }
+ 		},
+ 		.clock = { "cphy_rx_src", "csiphy0", "csiphy0_timer_src", "csiphy0_timer" },
+ 		.clock_rate = { { 0 },
+@@ -1727,7 +1728,8 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
+ 	{
+ 		.regulators = {
+ 			{ .supply = "vdda-phy", .init_load_uA = 0 },
+-			{ .supply = "vdda-pll", .init_load_uA = 0 }
++			{ .supply = "vdda-pll", .init_load_uA = 0 },
++			{ .supply = "refgen", .init_load_uA = 0 }
+ 		},
+ 		.clock = { "csiphy1", "csiphy1_timer" },
+ 		.clock_rate = { { 300000000, 384000000, 400000000 },
+@@ -1744,7 +1746,8 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
+ 	{
+ 		.regulators = {
+ 			{ .supply = "vdda-phy", .init_load_uA = 0 },
+-			{ .supply = "vdda-pll", .init_load_uA = 0 }
++			{ .supply = "vdda-pll", .init_load_uA = 0 },
++			{ .supply = "refgen", .init_load_uA = 0 }
+ 		},
+ 		.clock = { "csiphy2", "csiphy2_timer" },
+ 		.clock_rate = { { 19200000, 300000000, 384000000, 400000000 },
+@@ -1761,7 +1764,8 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
+ 	{
+ 		.regulators = {
+ 			{ .supply = "vdda-phy", .init_load_uA = 0 },
+-			{ .supply = "vdda-pll", .init_load_uA = 0 }
++			{ .supply = "vdda-pll", .init_load_uA = 0 },
++			{ .supply = "refgen", .init_load_uA = 0 }
+ 		},
+ 		.clock = { "csiphy3", "csiphy3_timer_src", "csiphy3_timer", "cphy_rx_src" },
+ 		.clock_rate = { { 0 },
+-- 
+2.43.0
+

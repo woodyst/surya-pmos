@@ -1,0 +1,78 @@
+From 1c92af83e2c324f570c7d7a79d3741265667c160 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 23:42:52 +0200
+Subject: [PATCH 103/106] slimbus: qcom-ngd-ctrl: quitar el of_node_put de mas
+
+El arreglo anterior soltaba a mano la referencia del of_node al dar de
+baja el dispositivo, pero platform_device_release() YA la suelta:
+
+  static void platform_device_release(struct device *dev)
+  {
+	  of_node_put(pa->pdev.dev.of_node);
+
+Eran dos puts por cada get. Sobre un arranque limpio, 20 ciclos de
+carga/descarga daban 16 avisos de refcount y kobject_del acababa sacando
+el nodo hijo de sysfs para el resto del arranque ("Error -2 creating
+of_node link" a partir de ahi).
+
+El of_node_get() al asignar SI hace falta -el iterador _scoped suelta la
+suya al salir del bucle-, y con el la cuenta queda: +1 del iterador / -1
+del iterador, +1 nuestro / -1 de platform_device_release. Balanceada.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/slimbus/qcom-ngd-ctrl.c | 21 +++++++++------------
+ 1 file changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/slimbus/qcom-ngd-ctrl.c b/drivers/slimbus/qcom-ngd-ctrl.c
+index 78c5a1905..a3b3e9a58 100644
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -1713,18 +1713,17 @@ static int of_qcom_slim_ngd_register(struct device *parent,
+ 		/*
+ 		 * The device outlives this loop iteration, but the _scoped
+ 		 * iterator drops its reference on the way out - so take one of
+-		 * our own, released when the device is unregistered. Without
+-		 * it the node is only borrowed, and unregistering underflows
+-		 * its refcount ("next of_node_put() on this node will result
+-		 * in ... use-after-free").
++		 * our own. platform_device_release() is what puts it again.
++		 * Without this the node is only borrowed, and unregistering
++		 * the device underflows its refcount ("next of_node_put() on
++		 * this node will result in ... use-after-free").
+ 		 */
+ 		ngd->pdev->dev.of_node = of_node_get(node);
+ 		ctrl->ngd = ngd;
+ 
+ 		ret = platform_device_add(ngd->pdev);
+ 		if (ret) {
+-			of_node_put(ngd->pdev->dev.of_node);
+-			ngd->pdev->dev.of_node = NULL;
++			/* platform_device_release() puts dev.of_node for us. */
+ 			platform_device_put(ngd->pdev);
+ 			kfree(ngd);
+ 			/*
+@@ -1918,15 +1917,13 @@ static void qcom_slim_ngd_ctrl_remove(struct platform_device *pdev)
+ 	 * have worked, and took the phone down with it.
+ 	 */
+ 	if (ctrl->ngd) {
+-		struct device_node *node = ctrl->ngd->pdev->dev.of_node;
+-
+ 		/*
+-		 * Read the node out first: unregistering may drop the last
+-		 * reference to the device and free it. The reference being
+-		 * released here is the one of_qcom_slim_ngd_register() took.
++		 * No of_node_put() here: platform_device_release() already
++		 * drops the reference that of_qcom_slim_ngd_register() took,
++		 * so releasing it again underflows the node's refcount and
++		 * kobject_del() takes it out of sysfs for the rest of the boot.
+ 		 */
+ 		platform_device_unregister(ctrl->ngd->pdev);
+-		of_node_put(node);
+ 		kfree(ctrl->ngd);
+ 		ctrl->ngd = NULL;
+ 	}
+-- 
+2.43.0
+

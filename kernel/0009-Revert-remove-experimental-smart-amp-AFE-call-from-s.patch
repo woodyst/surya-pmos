@@ -1,0 +1,58 @@
+From 14bf534681ff008280e389c4110075a1152c69f6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 23:00:12 +0200
+Subject: [PATCH 009/106] Revert: remove experimental smart-amp AFE call from
+ sm8250.c startup
+
+Caused a real regression on-device: ALSA hw_params started failing
+with -EINVAL and PipeWire looped suspended->error on every stream
+open, freezing the Settings app. Root cause suspected to be
+q6afe_send_generic_param()'s q6afe_port_get_from_id()+q6afe_port_put()
+pair racing with or destroying the q6afe-dai.c-owned port state for
+the same port id, since q6afe_port_get_from_id() can allocate a fresh
+port struct rather than just borrowing the DAI's existing one.
+
+Keeping q6afe_send_generic_param() itself in q6afe.c/h (unused, no
+effect) since the underlying AFE_PORT_CMD_SET_PARAM_V2 send mechanism
+worked fine (DSP accepted it, ret=0) - only this call site was wrong.
+Revisit with a properly scoped port handle (reuse q6afe-dai.c's own,
+don't fetch+release a second one) before trying this experiment
+again.
+---
+ sound/soc/qcom/sm8250.c | 19 -------------------
+ 1 file changed, 19 deletions(-)
+
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index 1c18be70d..abdf4302d 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -117,25 +117,6 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+ 		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+-
+-		/*
+-		 * EXPERIMENTAL: register TI's TAS256x smart-amp AFE module
+-		 * with the DSP, mirroring the downstream vendor driver's
+-		 * afe_tas_smartamp_set_calib_data() call - not known to be
+-		 * required for basic playback (see surya audio investigation
+-		 * notes), testing whether it changes anything at all.
+-		 */
+-		{
+-			u32 smartamp_payload[14] = { 1, };
+-			int ret;
+-
+-			ret = q6afe_send_generic_param(cpu_dai->dev, cpu_dai->id,
+-				0x11111112 /* AFE_SMARTAMP_MODULE_RX */,
+-				0x10012D13 /* CAPI_V2_TAS_RX_ENABLE */,
+-				smartamp_payload, sizeof(smartamp_payload));
+-			dev_info(cpu_dai->dev,
+-				"tas smartamp enable experiment: %d\n", ret);
+-		}
+ 		break;
+ 	case QUINARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+-- 
+2.43.0
+

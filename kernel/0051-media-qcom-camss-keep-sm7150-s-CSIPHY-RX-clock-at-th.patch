@@ -1,0 +1,48 @@
+From 5946b9e2a6ed86b06fd51bf9d6a73f1db42892d0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 15:33:40 +0200
+Subject: [PATCH 051/106] media: qcom: camss: keep sm7150's CSIPHY RX clock at
+ the vendor rate
+
+camcc_csiphy0_clk is a branch of camcc_cphy_rx_clk_src and carries
+CLK_SET_RATE_PARENT, so whatever rate camss asks of it lands on the RCG
+that feeds the CSIPHY's RX path - and the same RCG feeds every other
+CSIPHY and the IFEs.
+
+The rate list here starts at 300000000, and the rate picker takes the
+first entry above the link frequency over four, so a 953.6MHz link picks
+300MHz. The vendor device tree asks for 384MHz at its lowest performance
+level and 400MHz above that, and never sets csiphy0_clk itself:
+
+	clock-names = "cphy_rx_clk_src", "csiphy0_clk", ...
+	clock-rates = <384000000 0 300000000 0>, <400000000 0 300000000 0>, ...
+
+Drop the 300MHz entry so the shared RCG lands on 384MHz, as measured in
+clk_summary while streaming on a POCO X3 NFC.
+
+Note that cphy_rx_src's own list is dead data: csiphy_set_clock_rates()
+only sets clocks whose name matches csiphy%d_timer or csiphy%d, so the
+rate has to be asked for through the branch.
+---
+ drivers/media/platform/qcom/camss/camss.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index d18b0aefc..b6aadd1a8 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -1713,8 +1713,8 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
+ 		},
+ 		.clock = { "cphy_rx_src", "csiphy0", "csiphy0_timer_src", "csiphy0_timer" },
+ 		.clock_rate = { { 0 },
+-				{ 300000000, 384000000, 400000000 },
+-				{ 0 },	
++				{ 384000000, 400000000 },
++				{ 0 },
+ 				{ 300000000 } },
+ 		.reg = { "csiphy0" },
+ 		.interrupt = { "csiphy0" },
+-- 
+2.43.0
+

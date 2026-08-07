@@ -1,0 +1,37 @@
+From df72021b0a856bf8cc292a1805dc28851986bac7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 15:05:54 +0200
+Subject: [PATCH 050/106] media: qcom: camss: fix a typo in sm7150's cphy_rx
+ clock rates
+
+vfe0_cphy_rx lists 38400000 where every other rate list in this file, the
+two entries right below it included, spells the same rate 384000000.
+
+camcc-sm7150 only offers 19.2, 300, 384 and 400MHz on this clock, so the
+typo does not name a rate the hardware has, and it leaves the list out of
+order: the rate picker walks it front to back looking for the first entry
+above the minimum, so 384MHz - the rate the vendor device tree asks for
+at its lowest performance level - can never be selected.
+
+Fixes: 22240b4941e2 ("media: qcom: camss: Add sm7150 resources")
+---
+ drivers/media/platform/qcom/camss/camss.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 141d04169..d18b0aefc 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -1844,7 +1844,7 @@ static const struct camss_subdev_resources vfe_res_7150[] = {
+ 				{ /*19200000, 380000000,*/ 510000000, 637000000, 760000000 },
+ 				{ /*19200000, 380000000,*/ 510000000, 637000000, 760000000 },
+ 				{ 0 },
+-				{ 19200000, 300000000, 38400000, 400000000 },
++				{ 19200000, 300000000, 384000000, 400000000 },
+ 				{ 19200000, 75000000, 300000000, 384000000, 400000000 },
+ 				{ 19200000, 75000000, 300000000, 384000000, 400000000 },
+ 				{ 19200000, 150000000, 240000000, 320000000, 400000000, 480000000 },
+-- 
+2.43.0
+

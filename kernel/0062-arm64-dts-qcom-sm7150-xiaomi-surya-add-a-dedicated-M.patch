@@ -1,0 +1,65 @@
+From 3192c271c7deb87a0176f432b9dcb498a90df2d7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 19 Jul 2026 18:12:54 +0200
+Subject: [PATCH 062/106] arm64: dts: qcom: sm7150-xiaomi-surya: add a
+ dedicated MultiMedia3 front-end
+
+Purely additive anchor front-end for the Voice Call UCM verb's
+Speaker/Earpiece devices, so PipeWire could open/close a real PCM of
+its own instead of either sharing MultiMedia1 with HiFi or naming the
+hostless CS-Voice PCM. Confirmed the front-end enumerates correctly
+(aplay -l shows MultiMedia3 at device 2, CS-Voice shifts to device 3 -
+/etc/conf.d/q6voiced updated to match), but opening it fails at the
+kernel level with EINVAL - it likely needs additional q6routing wiring
+beyond a DT node, which this patch does not provide. Left in place
+since it is inert/harmless (nothing currently references it), pending
+further investigation.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 23 +++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 194a0e13d..6b6da2728 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -104,6 +104,25 @@ cpu {
+ 			};
+ 		};
+ 
++		/*
++		 * Dedicated anchor front-end for the Voice Call UCM verb's
++		 * Speaker/Earpiece devices. It carries no audio and is never
++		 * routed anywhere - its only job is to give PipeWire a real,
++		 * ordinary PCM it can open/close on its own, so it creates a
++		 * sink with switchable ports for those two devices instead of
++		 * either sharing MultiMedia1 with HiFi (which PipeWire's ACP
++		 * silently refuses to build a profile for, since MultiMedia1
++		 * has a single subdevice already claimed there) or naming the
++		 * hostless CS-Voice PCM (which makes PipeWire retry
++		 * snd_pcm_start() forever against its EINVAL).
++		 */
++		mm3-dai-link {
++			link-name = "MultiMedia3";
++			cpu {
++				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA3>;
++			};
++		};
++
+ 		/*
+ 		 * Hostless front-end for CS (circuit-switched) voice calls.
+ 		 * Opening this PCM (via q6voiced on call start) powers up the
+@@ -547,6 +566,10 @@ dai@1 {
+ 		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+ 		direction = <Q6ASM_DAI_TX>;
+ 	};
++
++	dai@2 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
++	};
+ };
+ 
+ &remoteproc_adsp {
+-- 
+2.43.0
+

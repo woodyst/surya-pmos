@@ -1,0 +1,68 @@
+From 1d69742bee5e0d2755916670b1c56d56852218ed Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 12:54:16 +0200
+Subject: [PATCH 080/106] media: qcom: camss: vfe: keep the interrupt disabled
+ until the block is powered
+
+The VFE requests its interrupt at probe time with the line enabled, long
+before anything powers the block up. Its handler reads VFE registers, so
+a pending interrupt arriving while the power domain and clocks are still
+off takes the interconnect down with it: the phone dies instantly during
+module load, with no oops and nothing in the logs.
+
+CSID and CSIPHY already avoid this with IRQF_NO_AUTOEN plus enable_irq()
+in their power-on paths; do the same for the VFE - enable it in vfe_get()
+once the clocks are running and the block has been reset, and disable it
+in vfe_put() before the clocks go away.
+
+Verified on a POCO X3 NFC (SM7150), where loading qcom-camss killed the
+device every single time: with this, the module loads, /dev/video* and
+the media graph come up, and the phone stays alive.
+---
+ drivers/media/platform/qcom/camss/camss-vfe.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-vfe.c b/drivers/media/platform/qcom/camss/camss-vfe.c
+index cde918fb1..dcd17df25 100644
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -1120,6 +1120,9 @@ int vfe_get(struct vfe_device *vfe)
+ 		vfe_init_outputs(vfe);
+ 
+ 		vfe->res->hw_ops->hw_version(vfe);
++
++		/* Safe now: clocks are running and the block has been reset. */
++		enable_irq(vfe->irq);
+ 	} else {
+ 		ret = vfe_check_clock_rates(vfe);
+ 		if (ret < 0)
+@@ -1161,6 +1164,7 @@ void vfe_put(struct vfe_device *vfe)
+ 			vfe->was_streaming = 0;
+ 			vfe->res->hw_ops->vfe_halt(vfe);
+ 		}
++		disable_irq(vfe->irq);
+ 		camss_disable_clocks(vfe->nclocks, vfe->clock);
+ 		pm_runtime_put_sync(vfe->camss->dev);
+ 		vfe->res->hw_ops->pm_domain_off(vfe);
+@@ -1855,8 +1859,16 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
+ 	vfe->irq = ret;
+ 	snprintf(vfe->irq_name, sizeof(vfe->irq_name), "%s_%s%d",
+ 		 dev_name(dev), MSM_VFE_NAME, id);
++	/*
++	 * Keep the line disabled until the block is actually powered: the
++	 * handler touches VFE registers, and reading those with the power
++	 * domain or the clocks off wedges the interconnect - the phone dies on
++	 * the spot, with no oops to show for it. It gets enabled in vfe_get()
++	 * once clocks are up, and disabled again in vfe_put().
++	 */
+ 	ret = devm_request_irq(dev, vfe->irq, vfe->res->hw_ops->isr,
+-			       IRQF_TRIGGER_RISING, vfe->irq_name, vfe);
++			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
++			       vfe->irq_name, vfe);
+ 	if (ret < 0) {
+ 		dev_err(dev, "request_irq failed: %d\n", ret);
+ 		return ret;
+-- 
+2.43.0
+

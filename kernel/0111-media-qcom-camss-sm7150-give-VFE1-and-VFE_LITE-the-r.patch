@@ -1,0 +1,83 @@
+From 6fae2e90fb5e9458a94ee55a4ce83a3a728c9101 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 20:34:42 +0200
+Subject: [PATCH] media: qcom: camss: sm7150: give VFE1 and VFE_LITE the
+ register bus clocks
+
+cpas_ahb and the CAMNOC AXI clocks gate the register bus of the whole camera
+complex, not just VFE0, but only VFE0 listed them. Using VFE1 on its own left
+that bus unclocked: its registers read back as zero and vfe_reset() timed out
+as if the block had no power.
+
+  qcom-camss ace0000.camss: CSIPHY 3PH HW Version = 0x00000000
+  qcom-camss ace0000.camss: VFE reset timeout
+
+which is exactly what the second camera did, while the first one worked because
+VFE0 brought those clocks up itself.
+
+With them listed on VFE1 too, the block answers:
+
+  qcom-camss ace0000.camss: VFE:1 HW Version = 1.3.0
+  qcom-camss ace0000.camss: CSID:1 HW Version = 2.0.0
+
+VFE_LITE has the same gap and gets the same treatment.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/media/platform/qcom/camss/camss.c | 29 +++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 2d95c441b..593b279f4 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -1864,10 +1864,24 @@ static const struct camss_subdev_resources vfe_res_7150[] = {
+ 	/* VFE1 */
+ 	{
+ 		.regulators = {},
+-		.clock = { "vfe1", "vfe1_src", "vfe1_axi"},
++		/*
++		 * cpas_ahb and the CAMNOC AXI clocks gate the register bus of
++		 * the whole camera complex, not just VFE0. Listing them only
++		 * on VFE0 means that using VFE1 on its own leaves that bus
++		 * unclocked: its registers read back as zero and the reset
++		 * times out as if the block had no power, which is exactly
++		 * what the second camera did.
++		 */
++		.clock = { "vfe1", "vfe1_src", "vfe1_axi",
++			   "slow_ahb_src", "cpas_ahb",
++			   "camnoc_axi_src", "camnoc_axi" },
+ 		.clock_rate = { { 19200000, 380000000, 510000000, 637000000, 760000000 },	/* ftbl_cam_cc_ife_0_clk_src */
+ 				{ 19200000, 380000000, 510000000, 637000000, 760000000 },	/* ftbl_cam_cc_ife_0_clk_src */
+-				{ 0 } },
++				{ 0 },
++				{ 19200000, 80000000 },
++				{ 0 },
++				{ 19200000, 150000000, 240000000, 320000000, 400000000, 480000000 },
++				{ 19200000, 150000000, 240000000, 320000000, 400000000, 480000000 } },
+ 		.reg = { "vfe1" },
+ 		.interrupt = { "vfe1" },
+ 		.vfe = {
+@@ -1883,9 +1897,16 @@ static const struct camss_subdev_resources vfe_res_7150[] = {
+ 	/* VFE2 (lite) */
+ 	{
+ 		.regulators = {},
+-		.clock = { "vfe_lite", "vfe_lite_src", },
++		/* Same as VFE1: the register bus needs its clocks. */
++		.clock = { "vfe_lite", "vfe_lite_src",
++			   "slow_ahb_src", "cpas_ahb",
++			   "camnoc_axi_src", "camnoc_axi" },
+ 		.clock_rate = { { 19200000, 320000000, 400000000, 480000000, 600000000 },
+-				{ 19200000, 320000000, 400000000, 480000000, 600000000 }, },
++				{ 19200000, 320000000, 400000000, 480000000, 600000000 },
++				{ 19200000, 80000000 },
++				{ 0 },
++				{ 19200000, 150000000, 240000000, 320000000, 400000000, 480000000 },
++				{ 19200000, 150000000, 240000000, 320000000, 400000000, 480000000 } },
+ 		.reg = { "vfe_lite" },
+ 		.interrupt = { "vfe_lite" },
+ 		.vfe = {
+-- 
+2.43.0
+

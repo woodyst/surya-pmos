@@ -1,0 +1,103 @@
+{
+  "name": "$device",
+  "parent-name": "default",
+  "profiles": [
+    {
+      "name": "full",
+      "feedbacks": [
+        {
+          "event-name": "notification-new-generic",
+          "type": "Sound",
+          "effect": "message-new-instant"
+        }
+      ]
+    },
+    {
+      "name": "quiet",
+      "feedbacks": [
+        {
+          "event-name": "notification-new-generic",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0,
+            0.0,
+            1.0
+          ],
+          "durations": [
+            250,
+            120,
+            250
+          ]
+        },
+        {
+          "event-name": "message-new-instant",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0,
+            0.0,
+            1.0
+          ],
+          "durations": [
+            250,
+            120,
+            250
+          ]
+        },
+        {
+          "event-name": "message-new-email",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0,
+            0.0,
+            1.0
+          ],
+          "durations": [
+            250,
+            120,
+            250
+          ]
+        },
+        {
+          "event-name": "key-pressed",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0
+          ],
+          "durations": [
+            40
+          ]
+        },
+        {
+          "event-name": "key-released",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0
+          ],
+          "durations": [
+            40
+          ]
+        },
+        {
+          "event-name": "button-pressed",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0
+          ],
+          "durations": [
+            40
+          ]
+        },
+        {
+          "event-name": "button-released",
+          "type": "VibraPattern",
+          "magnitudes": [
+            1.0
+          ],
+          "durations": [
+            40
+          ]
+        }
+      ]
+    }
+  ]
+}

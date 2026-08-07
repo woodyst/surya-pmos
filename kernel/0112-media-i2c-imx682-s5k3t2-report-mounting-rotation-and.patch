@@ -1,0 +1,161 @@
+From 9d94f3bca4a2ecb267814c25255ebb7cd4c6df4f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 21:06:00 +0200
+Subject: [PATCH 112/113] media: i2c: imx682, s5k3t2: report mounting rotation
+ and orientation
+
+libcamera warns 'Rotation control not available, default to 0 degrees' and
+'Failed to retrieve the camera location' for both sensors, so the preview
+comes out a quarter turn off and applications cannot tell the rear camera
+from the front one.
+
+Both are properties of how the modules are soldered onto this board, so they
+belong in the device tree. The factory device tree states them as
+sensor-position-roll/yaw: 90/180 for the rear IMX682 and 270/0 for the front
+S5K3T2. Its roll is measured the other way round from the binding's rotation,
+though: on the device, 90 leaves the rear preview upside down and 270 upright.
+Use 360 - roll for both, and register the standard fwnode property controls.
+
+The front sensor's value is inferred rather than measured, since it has no
+working link yet.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 23 +++++++++++++++++
+ drivers/media/i2c/imx682.c                    | 25 ++++++++++++++++++-
+ drivers/media/i2c/s5k3t2.c                    | 21 +++++++++++++++-
+ 3 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 3ed05526e..777349e06 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -409,6 +409,19 @@ camera@1a {
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&cam_rear_default>;
+ 
++		/*
++		 * Mounted a quarter turn from the display's natural (portrait)
++		 * orientation, facing away from the user. Without this the
++		 * preview comes out sideways, since userspace has no other way
++		 * to know how the module is soldered on.
++		 *
++		 * The factory device tree says sensor-position-roll = 90, but
++		 * that is measured the other way round: 90 was verified on the
++		 * device to leave the preview upside down, and 270 upright.
++		 */
++		rotation = <270>;
++		orientation = <1>;	/* back */
++
+ 		clocks = <&camcc CAMCC_MCLK1_CLK>;
+ 		assigned-clocks = <&camcc CAMCC_MCLK1_CLK>;
+ 		assigned-clock-rates = <19200000>;
+@@ -456,6 +469,16 @@ camera@10 {
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&cam_front_default>;
+ 
++		/*
++		 * Factory says sensor-position-roll = 270, yaw = 0 (front).
++		 * Applying the same correction the rear sensor needed
++		 * (360 - roll) gives 90. NOT verified: this sensor has no
++		 * working link yet, so nobody has seen its preview. Check it
++		 * once it streams.
++		 */
++		rotation = <90>;
++		orientation = <0>;	/* front */
++
+ 		clocks = <&camcc CAMCC_MCLK0_CLK>;
+ 		assigned-clocks = <&camcc CAMCC_MCLK0_CLK>;
+ 		assigned-clock-rates = <19200000>;
+diff --git a/drivers/media/i2c/imx682.c b/drivers/media/i2c/imx682.c
+index 6639c8088..1e67bff8a 100644
+--- a/drivers/media/i2c/imx682.c
++++ b/drivers/media/i2c/imx682.c
+@@ -1668,10 +1668,11 @@ static int imx682_init_controls(struct imx682 *imx682)
+ {
+ 	struct v4l2_ctrl_handler *ctrl_hdlr = &imx682->ctrl_handler;
+ 	const struct imx682_mode *mode = imx682->cur_mode;
++	struct v4l2_fwnode_device_properties props;
+ 	u32 lpfr;
+ 	int ret;
+ 
+-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 6);
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 8);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1731,6 +1732,28 @@ static int imx682_init_controls(struct imx682 *imx682)
+ 	if (imx682->hblank_ctrl)
+ 		imx682->hblank_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 
++	/*
++	 * Orientation and mounting rotation, taken from the DT. libcamera needs
++	 * both: without them it cannot tell the rear sensor from the front one
++	 * and assumes 0 degrees, so the preview comes out sideways.
++	 */
++	ret = v4l2_fwnode_device_parse(imx682->dev, &props);
++	if (ret) {
++		dev_err(imx682->dev, "failed to parse device properties: %d",
++			ret);
++		v4l2_ctrl_handler_free(ctrl_hdlr);
++		return ret;
++	}
++
++	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &imx682_ctrl_ops,
++					      &props);
++	if (ret) {
++		dev_err(imx682->dev, "failed to add device property controls: %d",
++			ret);
++		v4l2_ctrl_handler_free(ctrl_hdlr);
++		return ret;
++	}
++
+ 	if (ctrl_hdlr->error) {
+ 		dev_err(imx682->dev, "control init failed: %d",
+ 			ctrl_hdlr->error);
+diff --git a/drivers/media/i2c/s5k3t2.c b/drivers/media/i2c/s5k3t2.c
+index 4eeadc645..feee4dcdb 100644
+--- a/drivers/media/i2c/s5k3t2.c
++++ b/drivers/media/i2c/s5k3t2.c
+@@ -1272,10 +1272,11 @@ static int s5k3t2_init_controls(struct s5k3t2 *s5k3t2)
+ {
+ 	struct v4l2_ctrl_handler *ctrl_hdlr = &s5k3t2->ctrl_handler;
+ 	const struct s5k3t2_mode *mode = s5k3t2->cur_mode;
++	struct v4l2_fwnode_device_properties props;
+ 	u32 lpfr;
+ 	int ret;
+ 
+-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 6);
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 8);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1335,6 +1336,24 @@ static int s5k3t2_init_controls(struct s5k3t2 *s5k3t2)
+ 	if (s5k3t2->hblank_ctrl)
+ 		s5k3t2->hblank_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 
++	/* Orientation and mounting rotation, taken from the DT (see imx682). */
++	ret = v4l2_fwnode_device_parse(s5k3t2->dev, &props);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to parse device properties: %d",
++			ret);
++		v4l2_ctrl_handler_free(ctrl_hdlr);
++		return ret;
++	}
++
++	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &s5k3t2_ctrl_ops,
++					      &props);
++	if (ret) {
++		dev_err(s5k3t2->dev, "failed to add device property controls: %d",
++			ret);
++		v4l2_ctrl_handler_free(ctrl_hdlr);
++		return ret;
++	}
++
+ 	if (ctrl_hdlr->error) {
+ 		dev_err(s5k3t2->dev, "control init failed: %d",
+ 			ctrl_hdlr->error);
+-- 
+2.43.0
+

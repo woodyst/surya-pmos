@@ -1,0 +1,95 @@
+From a2b32c3fb3c4e4961954969bb05d2934f6559f84 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 14:56:57 +0200
+Subject: [PATCH 005/106] ASoC: qcom: sm8250: call set_fmt() on every codec DAI
+ in a BE link
+
+sm8250_snd_startup() only called snd_soc_dai_set_fmt() on the first
+codec DAI (index 0) of each MI2S back-end link. This is invisible on
+boards with a single codec per link, but Xiaomi surya wires two TAS2562
+family amplifiers (tas2562 + tas2564) onto the same TERTIARY_MI2S_RX
+link for its stereo/bridged speaker setup - the second codec never got
+its DAI format configured at all, left running on whatever its
+power-on-reset state happened to be instead of the negotiated I2S
+format. This produced inconsistent, sometimes-silent, sometimes-partial
+audio output depending on that codec's uninitialized state.
+
+Use for_each_rtd_codec_dais() to configure every codec DAI on the link,
+matching what the CPU DAI side already receives.
+---
+ sound/soc/qcom/sm8250.c | 24 +++++++++++++++++++-----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index f193d0ba6..abdf4302d 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -71,13 +71,27 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 	return 0;
+ }
+ 
++/*
++ * A BE link can have more than one codec DAI (e.g. two amplifiers sharing
++ * one MI2S bus for a stereo pair, each with its own DAI) - set_fmt() must be
++ * called on every one of them, not just the first, or codecs past index 0
++ * are left running with whatever DAI format they reset-defaulted to.
++ */
++static void mi2s_set_codec_dai_fmt(struct snd_soc_pcm_runtime *rtd, unsigned int codec_dai_fmt)
++{
++	struct snd_soc_dai *codec_dai;
++	int i;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai)
++		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++}
++
+ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ {
+ 	unsigned int fmt = SND_SOC_DAIFMT_BP_FP;
+ 	unsigned int codec_dai_fmt = SND_SOC_DAIFMT_BC_FC;
+ 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+ 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+ 
+ 	switch (cpu_dai->id) {
+ 	case PRIMARY_MI2S_RX:
+@@ -86,7 +100,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_PRI_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case SECONDARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -94,7 +108,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_SEC_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case TERTIARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -102,7 +116,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case QUINARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -110,7 +124,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	default:
+ 		break;
+-- 
+2.43.0
+

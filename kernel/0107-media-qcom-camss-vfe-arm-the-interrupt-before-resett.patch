@@ -1,0 +1,86 @@
+From 5594a23e464c27b24aa5fbfd91520c14458f134a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 18:30:09 +0200
+Subject: [PATCH] media: qcom: camss: vfe: arm the interrupt before resetting,
+ not after
+
+Patch 'keep the interrupt disabled until the block is powered' fixed the
+crash at module load, but put enable_irq() *after* vfe_reset(). vfe_reset()
+waits for a reset-done interrupt, so with the line still disabled it could
+only ever time out: every VIDIOC_STREAMON failed with -EIO and
+
+  qcom-camss ace0000.camss: VFE reset timeout
+  qcom-camss ace0000.camss: Failed to power up pipeline: -5
+
+The module load was verified back then, but not a capture, so this went
+unnoticed.
+
+Move enable_irq() before the reset. That still keeps what the disabled line
+was protecting - the power domain is on, pm_runtime is resumed and the
+clocks are running, so the handler can safely touch VFE registers - and it
+matches the vendor driver, which subscribes the reset interrupt right
+before issuing the reset and unsubscribes it afterwards (cam_vfe_reset(),
+cam_vfe_core.c).
+
+Also disable the line again on the error path, so a failed reset does not
+leave it enabled while the clocks go away.
+
+Verified on a POCO X3 NFC (SM7150): the pipeline powers up, CSID reports
+its version (2.0.0), link validation passes and 'vfe irq handled!' appears.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/media/platform/qcom/camss/camss-vfe.c | 22 ++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-vfe.c b/drivers/media/platform/qcom/camss/camss-vfe.c
+index dcd17df25..f9def765f 100644
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -1111,6 +1111,23 @@ int vfe_get(struct vfe_device *vfe)
+ 		if (ret < 0)
+ 			goto error_pm_runtime_get;
+ 
++		/*
++		 * Arm the interrupt BEFORE resetting. vfe_reset() waits for a
++		 * reset-done interrupt, so with the line still disabled it can
++		 * only ever time out - which is exactly what happened: every
++		 * VIDIOC_STREAMON failed with -EIO and "VFE reset timeout".
++		 *
++		 * Doing it here is still safe, and keeps what the disabled line
++		 * was protecting: the power domain is on, pm_runtime is resumed
++		 * and the clocks are running, so the handler can touch VFE
++		 * registers.
++		 *
++		 * This is also what the vendor driver does: it subscribes the
++		 * reset interrupt right before issuing the reset and
++		 * unsubscribes it afterwards (cam_vfe_reset(), cam_vfe_core.c).
++		 */
++		enable_irq(vfe->irq);
++
+ 		ret = vfe_reset(vfe);
+ 		if (ret < 0)
+ 			goto error_reset;
+@@ -1120,9 +1137,6 @@ int vfe_get(struct vfe_device *vfe)
+ 		vfe_init_outputs(vfe);
+ 
+ 		vfe->res->hw_ops->hw_version(vfe);
+-
+-		/* Safe now: clocks are running and the block has been reset. */
+-		enable_irq(vfe->irq);
+ 	} else {
+ 		ret = vfe_check_clock_rates(vfe);
+ 		if (ret < 0)
+@@ -1135,6 +1149,8 @@ int vfe_get(struct vfe_device *vfe)
+ 	return 0;
+ 
+ error_reset:
++	/* Undo the enable_irq() above before the clocks go away. */
++	disable_irq(vfe->irq);
+ 	camss_disable_clocks(vfe->nclocks, vfe->clock);
+ 
+ error_pm_runtime_get:
+-- 
+2.43.0
+

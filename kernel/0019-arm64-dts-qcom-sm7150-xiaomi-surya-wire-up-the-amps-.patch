@@ -1,0 +1,130 @@
+From 707552c61eca64ea7711fd953d44949f7fa1ac9c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 14 Jul 2026 01:28:20 +0200
+Subject: [PATCH 019/106] arm64: dts: qcom: sm7150-xiaomi-surya: wire up the
+ amps' I/V sense capture
+
+The TAS2562/TAS2564 pair continuously reports the real voltage (VMON)
+and current (IMON) at the speaker terminals back to the SoC over SD1 of
+the same tertiary MI2S bus - Android consumes this for its smart-amp
+algorithm. The board already routes it (Android's DT enables both
+ter_mi2s_sd0 and sd1, with rx-lines=1/tx-lines=2, i.e. SD0 out, SD1
+back), and the codec driver already exposes an ASI1 Capture stream with
+ISENSE/VSENSE switches; only the AFE TX port and its DAI link were
+missing.
+
+Beyond being the right thing to have, this is currently the only way to
+observe from the SoC whether the amps are driving the speaker at all,
+which is exactly the question blocking the ongoing 'no sound on surya'
+debugging: VMON non-zero with IMON zero means the amp drives an open
+load (dead/disconnected speaker), while VMON zero means it is receiving
+no audio to begin with.
+
+Adds TERTIARY_MI2S_TX (SD1) to q6afedai, an I2S Capture DAI link, a
+MultiMedia2 TX frontend, and the matching TERTIARY_MI2S_TX case in
+sm8250.c's startup so the bus clock and DAI format get configured for
+the capture direction too.
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 39 +++++++++++++++++++
+ sound/soc/qcom/sm8250.c                       | 14 +++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 88f1aec71..6953113e4 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -87,6 +87,13 @@ cpu {
+ 			};
+ 		};
+ 
++		mm2-dai-link {
++			link-name = "MultiMedia2";
++			cpu {
++				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
++			};
++		};
++
+ 		i2s-dai-link {
+ 			link-name = "I2S Playback";
+ 			cpu {
+@@ -101,6 +108,28 @@ codec {
+ 				sound-dai = <&tas2562 0>, <&tas2564 0>;
+ 			};
+ 		};
++
++		/*
++		 * The amps' I/V sense feedback: they continuously report the
++		 * real voltage and current at the speaker terminals back over
++		 * SD1. Android uses this for its smart-amp algorithm; here it
++		 * doubles as the only way to observe, from the SoC, whether
++		 * the amps are actually driving the speaker at all.
++		 */
++		i2s-capture-dai-link {
++			link-name = "I2S Capture";
++			cpu {
++				sound-dai = <&q6afedai TERTIARY_MI2S_TX>;
++			};
++
++			platform {
++				sound-dai = <&q6routing>;
++			};
++
++			codec {
++				sound-dai = <&tas2562 0>, <&tas2564 0>;
++			};
++		};
+ 	};
+ };
+ 
+@@ -300,12 +329,22 @@ qi2s@20 {
+ 		reg = <TERTIARY_MI2S_RX>;
+ 		qcom,sd-lines = <0>;
+ 	};
++
++	qi2s@21 {
++		reg = <TERTIARY_MI2S_TX>;
++		qcom,sd-lines = <1>;
++	};
+ };
+ 
+ &q6asmdai {
+ 	dai@0 {
+ 		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+ 	};
++
++	dai@1 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
++		direction = <Q6ASM_DAI_TX>;
++	};
+ };
+ 
+ &remoteproc_adsp {
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index abdf4302d..1f88181b8 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -126,6 +126,20 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+ 		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
++	case TERTIARY_MI2S_TX:
++		/*
++		 * The capture direction of the same physical bus (the amps'
++		 * I/V sense feedback on SD1). It shares the tertiary MI2S bit
++		 * clock with the RX port, and the SoC still provides it - the
++		 * amps are clock consumers in both directions.
++		 */
++		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
++		snd_soc_dai_set_sysclk(cpu_dai,
++			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
++			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_CAPTURE);
++		snd_soc_dai_set_fmt(cpu_dai, fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
++		break;
+ 	default:
+ 		break;
+ 	}
+-- 
+2.43.0
+

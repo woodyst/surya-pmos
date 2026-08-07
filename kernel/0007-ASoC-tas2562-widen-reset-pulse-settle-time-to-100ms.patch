@@ -1,0 +1,46 @@
+From 2054d313b2bc54da36b203e0d95efc057f70d2da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 12 Jul 2026 21:45:11 +0200
+Subject: [PATCH 007/106] ASoC: tas2562: widen reset pulse settle time to 100ms
+
+20ms/20ms (the vendor driver's own timing) caused the amp to fail
+to probe at all when tested on-device - both codecs came up as
+'dummy output' with no ALSA card at all. Manually re-triggering the
+same probe path later (system fully booted, all rails/buses settled)
+succeeded every time, pointing at an early-boot timing race rather
+than a logic bug. Widen the settle time as a safe, conservative fix
+since this early in boot the amp's supply rail may not have been
+stable as long as it is by the time Android's userspace-triggered
+HAL init runs.
+---
+ sound/soc/codecs/tas2562.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 4f4d15392..e8c668fa5 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -740,13 +740,16 @@ static int tas2562_probe(struct i2c_client *client)
+ 	 * (bootloader, a previous kernel boot, or a previous session) in
+ 	 * which case the amp would never actually go through power-on
+ 	 * reset and would keep whatever register state it already had.
+-	 * Timing matches the vendor driver's own reset sequence.
++	 * This early in boot the amp's own supply rail may not have been
++	 * stable for long yet, so use a more generous settle time than
++	 * the vendor driver's own (userspace-triggered, well after boot)
++	 * 20ms/20ms sequence.
+ 	 */
+ 	if (data->sdz_gpio) {
+ 		gpiod_set_value_cansleep(data->sdz_gpio, 0);
+-		msleep(20);
++		msleep(100);
+ 		gpiod_set_value_cansleep(data->sdz_gpio, 1);
+-		msleep(20);
++		msleep(100);
+ 	}
+ 
+ 	data->regmap = devm_regmap_init_i2c(client, &tas2562_regmap_config);
+-- 
+2.43.0
+

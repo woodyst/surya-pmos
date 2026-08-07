@@ -1,0 +1,229 @@
+From 2b09eb705bd6ab0a720f0e0ae445335db1b9345a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 23:36:10 +0200
+Subject: [PATCH 102/106] slimbus: qcom-ngd-ctrl: arreglar la descarga del
+ modulo (4 fallos)
+
+Rebotar el bus (rmmod/insmod, lo que hace el guion de arranque cuando el
+chip Bluetooth no consigue enumerar) tumbaba el movil. Cuatro fallos
+distintos, encadenados:
+
+1. ngd_up_work NUNCA SE CANCELA AL DESCARGAR. Corre en la cola del
+   sistema (schedule_work()), no en ctrl->mwq, asi que el
+   destroy_workqueue() del remove no lo espera. Uno encolado -o dormido
+   en su espera de un segundo a qmi_up- conserva un puntero a funcion
+   dentro del modulo:
+
+     Workqueue: events 0xffffc72d2fcd7d10
+     Unable to handle kernel paging request at ffffc72d2fcd7d0c
+     pc : process_scheduled_works+0x1a0/0x598
+     Modules linked in: ... [last unloaded: slim_qcom_ngd_ctrl]
+
+2. EL DISPOSITIVO NGD NUNCA SE DA DE BAJA. of_qcom_slim_ngd_register()
+   lo crea con platform_device_add() y el remove solo hacia kfree() del
+   envoltorio, dejandolo registrado en sysfs. La siguiente carga moria:
+
+     kobject_add_internal failed for qcom,slim-ngd.1 with -EEXIST
+     probe with driver qcom,slim-ngd-ctrl failed with error -17
+
+   Se da de baja en el remove del CONTROLADOR, que es quien lo creo: no
+   puede hacerse desde el remove del propio dispositivo.
+
+3. ctrl->ngd QUEDABA COLGANDO. Se publica antes de platform_device_add()
+   y el camino de error hacia kfree() sin ponerlo a NULL.
+
+4. dev.of_node SE ASIGNABA SIN TOMAR REFERENCIA. El iterador _scoped la
+   suelta al salir del bucle, pero el dispositivo sobrevive. Invisible
+   mientras nadie daba de baja el dispositivo; al arreglar (2) salta el
+   underflow y kobject_del borra el nodo de sysfs para todo el arranque
+   ("Error -2 creating of_node link" a partir de ahi).
+
+Ademas, los dos INIT_WORK pasan al probe del controlador, ANTES de
+registrar el notificador SSR y el PDR: los dos llaman a
+schedule_work(&ctrl->ngd_up_work) y se inicializaba en el probe del hijo,
+que corre despues y puede no correr nunca -> ->func a NULL.
+
+Verificado en surya: 20 ciclos rapidos de carga/descarga, 20 registros
+correctos del controlador, cero Oops, cero -EEXIST, cero avisos de
+refcount. Antes fallaba ya el segundo ciclo.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ drivers/slimbus/qcom-ngd-ctrl.c | 120 +++++++++++++++++++++++++++++---
+ 1 file changed, 112 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/slimbus/qcom-ngd-ctrl.c b/drivers/slimbus/qcom-ngd-ctrl.c
+index a2f31c16b..78c5a1905 100644
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -1710,13 +1710,31 @@ static int of_qcom_slim_ngd_register(struct device *parent,
+ 			kfree(ngd);
+ 			return ret;
+ 		}
+-		ngd->pdev->dev.of_node = node;
++		/*
++		 * The device outlives this loop iteration, but the _scoped
++		 * iterator drops its reference on the way out - so take one of
++		 * our own, released when the device is unregistered. Without
++		 * it the node is only borrowed, and unregistering underflows
++		 * its refcount ("next of_node_put() on this node will result
++		 * in ... use-after-free").
++		 */
++		ngd->pdev->dev.of_node = of_node_get(node);
+ 		ctrl->ngd = ngd;
+ 
+ 		ret = platform_device_add(ngd->pdev);
+ 		if (ret) {
++			of_node_put(ngd->pdev->dev.of_node);
++			ngd->pdev->dev.of_node = NULL;
+ 			platform_device_put(ngd->pdev);
+ 			kfree(ngd);
++			/*
++			 * ctrl->ngd was published above and everything that
++			 * looks at it - qcom_slim_ngd_runtime_resume() among
++			 * others - only checks it for NULL. Leaving it pointing
++			 * at the block just freed turns a failed register into
++			 * a use-after-free later on.
++			 */
++			ctrl->ngd = NULL;
+ 			return ret;
+ 		}
+ 		ngd->base = ctrl->base + ngd->id * data->offset +
+@@ -1748,8 +1766,9 @@ static int qcom_slim_ngd_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
+-	INIT_WORK(&ctrl->m_work, qcom_slim_ngd_master_worker);
+-	INIT_WORK(&ctrl->ngd_up_work, qcom_slim_ngd_up_worker);
++	/* Both work items are initialised in the controller probe, before
++	 * anything can queue them - see the comment there.
++	 */
+ 	ctrl->mwq = create_singlethread_workqueue("ngd_master");
+ 	if (!ctrl->mwq) {
+ 		dev_err(&pdev->dev, "Failed to start master worker\n");
+@@ -1798,6 +1817,19 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
+ 	else
+ 		ctrl->hw_instance = hw_instance;
+ 
++	/*
++	 * Initialise both workers before registering anything that can queue
++	 * them. The SSR notifier just below, and the PDR handle further down,
++	 * both call qcom_slim_ngd_ssr_pdr_notify(), which does
++	 * schedule_work(&ctrl->ngd_up_work) - but ngd_up_work used to be
++	 * initialised only in qcom_slim_ngd_probe(), the NGD child's probe,
++	 * which runs later and may never run at all. A notification landing in
++	 * that window queues a work item whose ->func is still the zero from
++	 * devm_kzalloc(), and the worker thread then calls NULL.
++	 */
++	INIT_WORK(&ctrl->m_work, qcom_slim_ngd_master_worker);
++	INIT_WORK(&ctrl->ngd_up_work, qcom_slim_ngd_up_worker);
++
+ 	ctrl->nb.notifier_call = qcom_slim_ngd_ssr_notify;
+ 	ctrl->notifier = qcom_register_ssr_notifier("lpass", &ctrl->nb);
+ 	if (IS_ERR(ctrl->notifier))
+@@ -1850,7 +1882,54 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
+ 
+ static void qcom_slim_ngd_ctrl_remove(struct platform_device *pdev)
+ {
++	struct qcom_slim_ngd_ctrl *ctrl = platform_get_drvdata(pdev);
++
++	/*
++	 * Silence both sources that can queue ngd_up_work BEFORE tearing the
++	 * NGD down, so the cancel in qcom_slim_ngd_remove() cannot be raced by
++	 * a notification arriving just after it. They are registered here, in
++	 * this probe, so this is also where they belong on the way out; doing
++	 * it in the NGD child's remove() left them live whenever that child
++	 * never probed.
++	 */
++	pdr_handle_release(ctrl->pdr);
++	qcom_unregister_ssr_notifier(ctrl->notifier, &ctrl->nb);
++
+ 	platform_driver_unregister(&qcom_slim_ngd_driver);
++
++	/*
++	 * The NGD child may never have bound, in which case its remove() never
++	 * ran and a queued ngd_up_work would outlive this module.
++	 */
++	cancel_work_sync(&ctrl->ngd_up_work);
++
++	/*
++	 * of_qcom_slim_ngd_register() created this device from THIS probe, so
++	 * this is where it has to be destroyed - it cannot be done from the
++	 * NGD's own remove(), which is that device's callback. Freeing the
++	 * wrapper without unregistering the platform_device left it in sysfs
++	 * under its old name, and the next insmod died on it:
++	 *
++	 *   kobject_add_internal failed for qcom,slim-ngd.1 with -EEXIST
++	 *   probe with driver qcom,slim-ngd-ctrl failed with error -17
++	 *
++	 * which is exactly what the bus-bounce retry (rmmod/insmod when the
++	 * Bluetooth chip fails to enumerate) does - so that retry could never
++	 * have worked, and took the phone down with it.
++	 */
++	if (ctrl->ngd) {
++		struct device_node *node = ctrl->ngd->pdev->dev.of_node;
++
++		/*
++		 * Read the node out first: unregistering may drop the last
++		 * reference to the device and free it. The reference being
++		 * released here is the one of_qcom_slim_ngd_register() took.
++		 */
++		platform_device_unregister(ctrl->ngd->pdev);
++		of_node_put(node);
++		kfree(ctrl->ngd);
++		ctrl->ngd = NULL;
++	}
+ }
+ 
+ static void qcom_slim_ngd_remove(struct platform_device *pdev)
+@@ -1858,16 +1937,41 @@ static void qcom_slim_ngd_remove(struct platform_device *pdev)
+ 	struct qcom_slim_ngd_ctrl *ctrl = platform_get_drvdata(pdev);
+ 
+ 	pm_runtime_disable(&pdev->dev);
+-	pdr_handle_release(ctrl->pdr);
+-	qcom_unregister_ssr_notifier(ctrl->notifier, &ctrl->nb);
++
++	/*
++	 * ngd_up_work runs on the system workqueue (schedule_work()), not on
++	 * ctrl->mwq, so the destroy_workqueue() below does NOT wait for it.
++	 * Nothing can queue it again by now - the controller remove() released
++	 * the PDR handle and unregistered the SSR notifier before getting here
++	 * - but one already queued, or still sleeping on its one-second wait
++	 * for qmi_up, holds a function pointer into this module. Unload while
++	 * it is pending and the workqueue jumps into freed module text:
++	 *
++	 *   Workqueue: events 0xffffc72d2fcd7d10
++	 *   Unable to handle kernel paging request at ffffc72d2fcd7d0c
++	 *   pc : process_scheduled_works+0x1a0/0x598
++	 *   Modules linked in: ... [last unloaded: slim_qcom_ngd_ctrl]
++	 *
++	 * Reproduced on surya by bouncing the bus (rmmod/insmod of this module
++	 * and the codec) when the Bluetooth chip fails to enumerate - the
++	 * retry loop unloads the module while the worker is still waiting.
++	 */
++	cancel_work_sync(&ctrl->ngd_up_work);
++
+ 	qcom_slim_ngd_enable(ctrl, false);
+ 	qcom_slim_ngd_exit_dma(ctrl);
+ 	qcom_slim_ngd_qmi_svc_event_deinit(&ctrl->qmi);
+-	if (ctrl->mwq)
++	if (ctrl->mwq) {
+ 		destroy_workqueue(ctrl->mwq);
++		ctrl->mwq = NULL;
++	}
+ 
+-	kfree(ctrl->ngd);
+-	ctrl->ngd = NULL;
++	/*
++	 * ctrl->ngd is NOT freed here: this is the remove() of the very device
++	 * it holds, and the controller probe that created it is the one that
++	 * has to unregister it. Freeing it here also left ctrl->ngd dangling
++	 * for the controller remove() that runs right after.
++	 */
+ }
+ 
+ static int __maybe_unused qcom_slim_ngd_runtime_idle(struct device *dev)
+-- 
+2.43.0
+

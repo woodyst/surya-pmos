@@ -1,0 +1,103 @@
+From 2f04c6c2dc22953acf01d8be9d66677cec6912e5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 13 Jul 2026 14:10:28 +0200
+Subject: [PATCH 013/106] ASoC: tas2562: write vendor test-page registers at
+ probe
+
+The downstream driver's tas256x_icn_config() unconditionally writes
+two registers on the vendor 'test'/trim page (page 253) during every
+real init, for every model and profile - mainline never addressed
+page 253 at all (regmap range was capped at page 4). Real meaning is
+undocumented (manufacturer-internal test page, no public datasheet
+covers it), but this is a genuine, unconditional part of the real
+init sequence Android always performs, found by reading the actual
+vendor tas256x.c source, not guessed.
+
+Widened the regmap range/max_register to cover page 253 and added
+the two writes (reg 13 = 0x0d, reg 25 = 0x80) to tas2562_codec_probe(),
+matching tas256x_load_init()'s unconditional call to icn_config() at
+probe/resume in the vendor driver.
+---
+ sound/soc/codecs/tas2562.c | 23 +++++++++++++++++++++--
+ sound/soc/codecs/tas2562.h | 10 ++++++++++
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index e8c668fa5..fa7b9601f 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -382,12 +382,25 @@ static int tas2562_mute(struct snd_soc_dai *dai, int mute, int direction)
+ static int tas2562_codec_probe(struct snd_soc_component *component)
+ {
+ 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
++	int ret;
+ 
+ 	tas2562->component = component;
+ 
+ 	if (tas2562->sdz_gpio)
+ 		gpiod_set_value_cansleep(tas2562->sdz_gpio, 1);
+ 
++	/*
++	 * Vendor driver writes these unconditionally, for every model,
++	 * every profile, on every init (tas256x_icn_config()) - mainline
++	 * never touched page 253 (the test/trim page) at all before this.
++	 */
++	ret = snd_soc_component_write(component, TAS2562_ICN_REG13, 0x0d);
++	if (ret < 0)
++		return ret;
++	ret = snd_soc_component_write(component, TAS2562_ICN_REG25, 0x80);
++	if (ret < 0)
++		return ret;
++
+ 	return 0;
+ }
+ 
+@@ -621,7 +634,13 @@ static struct snd_soc_dai_driver tas2562_dai[] = {
+ static const struct regmap_range_cfg tas2562_ranges[] = {
+ 	{
+ 		.range_min = 0,
+-		.range_max = 5 * 128,
++		/*
++		 * Widened to cover page 253 (the vendor "test"/trim page) -
++		 * the vendor driver's tas256x_icn_config() unconditionally
++		 * writes two registers there on every init, which mainline
++		 * never replicated.
++		 */
++		.range_max = 254 * 128,
+ 		.selector_reg = TAS2562_PAGE_CTRL,
+ 		.selector_mask = 0xff,
+ 		.selector_shift = 0,
+@@ -647,7 +666,7 @@ static const struct regmap_config tas2562_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
+ 
+-	.max_register = 5 * 128,
++	.max_register = 254 * 128,
+ 	.cache_type = REGCACHE_RBTREE,
+ 	.reg_defaults = tas2562_reg_defaults,
+ 	.num_reg_defaults = ARRAY_SIZE(tas2562_reg_defaults),
+diff --git a/sound/soc/codecs/tas2562.h b/sound/soc/codecs/tas2562.h
+index 55b2a1f52..623b52906 100644
+--- a/sound/soc/codecs/tas2562.h
++++ b/sound/soc/codecs/tas2562.h
+@@ -34,6 +34,16 @@
+ #define TAS2562_TDM_DET		TAS2562_REG(0, 0x11)
+ #define TAS2562_REV_ID		TAS2562_REG(0, 0x7d)
+ 
++/*
++ * Vendor "test"/trim page (page 253) registers unconditionally written
++ * by the downstream driver's tas256x_icn_config() on every init, for
++ * every model, regardless of profile - real meaning undocumented
++ * (manufacturer-internal test page), but confirmed via the real vendor
++ * source that Android always sets these to these exact values.
++ */
++#define TAS2562_ICN_REG13	TAS2562_REG(253, 13)
++#define TAS2562_ICN_REG25	TAS2562_REG(253, 25)
++
+ #define TAS2562_RX_OFF_MASK	GENMASK(5, 1)
+ #define TAS2562_TX_OFF_MASK	GENMASK(3, 1)
+ #define TAS2562_RIGHT_SLOT_SHIFT 4
+-- 
+2.43.0
+

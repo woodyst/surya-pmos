@@ -1,0 +1,122 @@
+From 47d931e91fbac87c2b836f88c8e7aa03413403f7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 23:52:23 +0200
+Subject: [PATCH 056/106] ASoC: qcom: q6voice: pair CVD sessions using the
+ voicemmode1 name
+
+The passive MVM/CVS sessions were created as "default modem voice", the
+legacy CS session name inherited from msm8916. CVD pairs the AP's passive
+sessions with the modem's own session BY NAME, and modern targets don't
+use the legacy names: surya's vendor audio HAL only ever uses the
+voicemmode1/2 usecases, whose downstream session name is the VSID in hex,
+"11C05000" (VOICEMMODE1_VSID_STR). A mismatched name is accepted without
+any error - the DSP simply hosts an orphaned session that never bridges
+the modem's vocoder, i.e. a perfectly ACKed but completely silent call in
+both directions. This was the root cause of every silent-call debugging
+session so far.
+
+Make the name a runtime-writable module parameter of q6voice_common
+(default "11C05000") so other targets/call types can be tried between
+calls without rebuilding, and log the name used at session create.
+
+Verified on a real VoLTE call on sm7150 (surya): downlink audio became
+audible for the first time the moment the name matched.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ sound/soc/qcom/qdsp6/q6cvs.c          |  2 +-
+ sound/soc/qcom/qdsp6/q6mvm.c          |  4 +++-
+ sound/soc/qcom/qdsp6/q6voice-common.c | 24 ++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6voice-common.h |  7 +++++++
+ 4 files changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvs.c b/sound/soc/qcom/qdsp6/q6cvs.c
+index 3d4060f9c..4b08f8b52 100644
+--- a/sound/soc/qcom/qdsp6/q6cvs.c
++++ b/sound/soc/qcom/qdsp6/q6cvs.c
+@@ -21,7 +21,7 @@ static inline const char *q6cvs_session_name(enum q6voice_path_type path)
+ {
+ 	switch (path) {
+ 	case Q6VOICE_PATH_VOICE:
+-		return "default modem voice";
++		return q6voice_get_session_name();
+ 	default:
+ 		return NULL;
+ 	}
+diff --git a/sound/soc/qcom/qdsp6/q6mvm.c b/sound/soc/qcom/qdsp6/q6mvm.c
+index 76276caba..c9c91b230 100644
+--- a/sound/soc/qcom/qdsp6/q6mvm.c
++++ b/sound/soc/qcom/qdsp6/q6mvm.c
+@@ -52,7 +52,7 @@ static inline const char *q6mvm_session_name(enum q6voice_path_type path)
+ {
+ 	switch (path) {
+ 	case Q6VOICE_PATH_VOICE:
+-		return "default modem voice";
++		return q6voice_get_session_name();
+ 	default:
+ 		return NULL;
+ 	}
+@@ -88,6 +88,8 @@ struct q6voice_session *q6mvm_session_create(enum q6voice_path_type path)
+ 	if (IS_ERR(mvm))
+ 		return mvm;
+ 
++	dev_info(mvm->dev, "MVM passive session \"%s\"\n", cmd.name);
++
+ 	ret = q6mvm_set_dual_control(mvm);
+ 	if (ret) {
+ 		dev_err(mvm->dev, "failed to set dual control: %d\n", ret);
+diff --git a/sound/soc/qcom/qdsp6/q6voice-common.c b/sound/soc/qcom/qdsp6/q6voice-common.c
+index 0dd138f82..f7e7d65f1 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-common.c
++++ b/sound/soc/qcom/qdsp6/q6voice-common.c
+@@ -24,6 +24,30 @@ struct q6voice_service {
+ static DEFINE_SPINLOCK(q6voice_services_lock);
+ static struct q6voice_service *q6voice_services[Q6VOICE_SERVICE_COUNT] = {0};
+ 
++/*
++ * CVD pairs the AP's passive MVM/CVS sessions with the modem's own session
++ * BY NAME, so this has to match whatever the modem-side stack uses for the
++ * call type in flight. "default modem voice" is the legacy CS name (msm8916
++ * era); surya's vendor audio HAL only ever uses the voicemmode1/2 usecases,
++ * whose downstream session name is the VSID in hex: "11C05000"
++ * (VOICEMMODE1_VSID_STR). A mismatched name is accepted without any error -
++ * the DSP just hosts an orphaned session that never bridges the modem's
++ * vocoder, i.e. a perfectly ACKed but completely silent call. Writable so
++ * different names can be tried between calls without reloading:
++ * /sys/module/q6voice_common/parameters/session_name
++ */
++static char q6voice_session_name[20] = "11C05000";
++module_param_string(session_name, q6voice_session_name,
++		    sizeof(q6voice_session_name), 0644);
++MODULE_PARM_DESC(session_name,
++		 "CVD session name used to pair with the modem's voice session");
++
++const char *q6voice_get_session_name(void)
++{
++	return q6voice_session_name;
++}
++EXPORT_SYMBOL_GPL(q6voice_get_session_name);
++
+ int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type)
+ {
+ 	struct device *dev = &adev->dev;
+diff --git a/sound/soc/qcom/qdsp6/q6voice-common.h b/sound/soc/qcom/qdsp6/q6voice-common.h
+index 297d69358..2317fde0d 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-common.h
++++ b/sound/soc/qcom/qdsp6/q6voice-common.h
+@@ -53,4 +53,11 @@ struct q6voice_session *q6voice_session_create(enum q6voice_service_type type,
+ 					       struct apr_hdr *hdr);
+ void q6voice_session_release(struct q6voice_session *s);
+ 
++/*
++ * Name used for the passive MVM/CVS sessions - CVD pairs them with the
++ * modem's session by this name. Runtime-writable module parameter of
++ * q6voice_common (see the definition for the full story).
++ */
++const char *q6voice_get_session_name(void);
++
+ #endif /*_Q6_VOICE_COMMON_H */
+-- 
+2.43.0
+

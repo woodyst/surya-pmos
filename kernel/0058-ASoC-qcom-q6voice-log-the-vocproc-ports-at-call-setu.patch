@@ -1,0 +1,34 @@
+From 551c881431cc517955f219db1375774d2024d377 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 23:52:45 +0200
+Subject: [PATCH 058/106] ASoC: qcom: q6voice: log the vocproc ports at call
+ setup
+
+One dev_info line showing the Tx/Rx mixer indices and resolved AFE port
+ids when the vocproc is created - invaluable while chasing routing
+problems (confirmed tx_port=120 -> AFE 45111 = TX_CODEC_DMA_TX_3 during
+the uplink debugging that led to the topology fix).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 211b1df4f..f035fb861 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -177,6 +177,9 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 
+ 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	if (!cvp) {
++		dev_info(dev, "creating cvp: tx_port=%d (afe %d) rx_port=%d (afe %d)\n",
++			 p->tx_port, q6afe_get_port_id(p->tx_port),
++			 p->rx_port, q6afe_get_port_id(p->rx_port));
+ 		cvp = q6cvp_session_create(p->type,
+ 					   q6afe_get_port_id(p->tx_port),
+ 					   q6afe_get_port_id(p->rx_port));
+-- 
+2.43.0
+

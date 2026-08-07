@@ -1,0 +1,615 @@
+From dedbc55637cc43a859c45bbdf03c0507655f6d12 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 20:44:50 +0200
+Subject: [PATCH 055/106] WIP: load captured RX volume calibration into the DSP
+ (still silent)
+
+Adds a q6mvm/q6cvp driver path that maps the captured 4316-byte vocvol
+table (calibrations/vocvol_handset_rx7_tx4_fs0.bin) into DSP-visible
+memory via VSS_IMEMORY_CMD_MAP_PHYSICAL and registers it with
+VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA, so
+VSS_IVOLUME_CMD_SET_STEP has a table to resolve against.
+
+Real-hardware findings baked into this version, each cost a boot cycle:
+- mvm's apr_device never goes through of_dma_configure() and rejects
+  dma_set_mask_and_coherent() outright (-EIO) on this platform; made
+  non-fatal in q6mvm_probe(), and the actual DMA allocations now use
+  q6voice's own platform device instead.
+- is_cached=1 (copied from the downstream ion-backed allocation) is
+  wrong for our dma_alloc_coherent() buffer and caused a real ADSP
+  firmware crash (remoteproc fatal error, full system hang, hard
+  reboot required) - fixed to is_cached=0.
+- VSS_IMEMORY_CMD_MAP_PHYSICAL then failed cleanly with error 2 (bad
+  param, no crash) until both DMA allocations were rounded up to a
+  full page - the table/mapped-address alignment requirement in the
+  downstream header isn't guaranteed by dma_alloc_coherent() for
+  sub-page requests.
+
+With all of the above fixed, the whole call sequence (session create/
+enable/attach, vol cal register, volume step, mute, start) completes
+with zero errors for the first time - but the call is still completely
+silent. Two follow-up hypotheses were checked and ruled out with
+evidence, not just reasoning:
+- Missing CVP_VOCPROC_STATIC_CAL_TYPE / CVS_VOCSTRM_STATIC_CAL_TYPE
+  registration: exhaustive harness captures across every acdb_loader
+  entry point show cal_type 2/4/5/6/7 are never sent by this device's
+  vendor library at all, and downstream's own call sites don't check
+  these commands' return values either - not required for the
+  built-in topologies in use here.
+- VSID mismatch with the modem: downstream's VSID constants
+  (VOICE_SESSION_VSID etc.) are fixed per call-type values, not
+  per-call negotiated with the modem - our session-name-based pairing
+  is already the equivalent mechanism.
+
+Root cause of the remaining silence is still unknown. Not yet verified
+working - do not generate a numbered patch/APKBUILD entry for this
+until it actually produces audio.
+---
+ sound/soc/qcom/qdsp6/q6cvp.c          |  42 ++++++++
+ sound/soc/qcom/qdsp6/q6cvp.h          |   3 +
+ sound/soc/qcom/qdsp6/q6mvm.c          | 143 ++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6mvm.h          |   6 ++
+ sound/soc/qcom/qdsp6/q6voice-common.c |  60 +++++++++++
+ sound/soc/qcom/qdsp6/q6voice-common.h |  14 ++-
+ sound/soc/qcom/qdsp6/q6voice.c        | 116 ++++++++++++++++++++-
+ 7 files changed, 380 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index fd0b5256e..63f77b56d 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -5,6 +5,7 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/soc/qcom/apr.h>
++#include <linux/string.h>
+ #include "q6cvp.h"
+ #include "q6voice-common.h"
+ 
+@@ -167,6 +168,47 @@ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step)
+ }
+ EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
+ 
++#define VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA	0x00011374
++#define MAX_COL_INFO_SIZE				324
++
++struct vss_ivocproc_cmd_register_volume_cal_data_t {
++	u32 cal_mem_handle;
++	u32 cal_mem_address_lsw;
++	u32 cal_mem_address_msw;
++	u32 cal_mem_size;
++	/*
++	 * Per-column overrides for the calibration table (regional/carrier
++	 * variants). We only have the plain captured table, no distinct
++	 * column data for it, so this is sent zeroed (num_columns = 0) -
++	 * confirmed against the downstream struct layout, not yet confirmed
++	 * that the DSP accepts an empty column list here.
++	 */
++	u8 column_info[MAX_COL_INFO_SIZE];
++} __packed;
++
++struct cvp_register_vol_cal_data_cmd {
++	struct apr_hdr hdr;
++	struct vss_ivocproc_cmd_register_volume_cal_data_t cvp_vol_cal_data;
++} __packed;
++
++int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
++			   dma_addr_t phys, size_t size)
++{
++	struct cvp_register_vol_cal_data_cmd cmd;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA;
++
++	cmd.cvp_vol_cal_data.cal_mem_handle = mem_handle;
++	cmd.cvp_vol_cal_data.cal_mem_address_lsw = lower_32_bits(phys);
++	cmd.cvp_vol_cal_data.cal_mem_address_msw = upper_32_bits(phys);
++	cmd.cvp_vol_cal_data.cal_mem_size = size;
++
++	return q6voice_common_send(cvp, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvp_register_vol_cal);
++
+ static int q6cvp_probe(struct apr_device *adev)
+ {
+ 	return q6voice_common_probe(adev, Q6VOICE_SERVICE_CVP);
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.h b/sound/soc/qcom/qdsp6/q6cvp.h
+index 487f42414..95780a2de 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.h
++++ b/sound/soc/qcom/qdsp6/q6cvp.h
+@@ -2,6 +2,7 @@
+ #ifndef _Q6_CVP_H
+ #define _Q6_CVP_H
+ 
++#include <linux/dma-mapping.h>
+ #include "q6voice.h"
+ 
+ struct q6voice_session;
+@@ -10,5 +11,7 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 					     u16 tx_port, u16 rx_port);
+ int q6cvp_enable(struct q6voice_session *cvp, bool enable);
+ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step);
++int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
++			   dma_addr_t phys, size_t size);
+ 
+ #endif /*_Q6_CVP_H */
+diff --git a/sound/soc/qcom/qdsp6/q6mvm.c b/sound/soc/qcom/qdsp6/q6mvm.c
+index f1f8d520b..76276caba 100644
+--- a/sound/soc/qcom/qdsp6/q6mvm.c
++++ b/sound/soc/qcom/qdsp6/q6mvm.c
+@@ -2,9 +2,11 @@
+ // Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+ // Copyright (c) 2020, Stephan Gerhold
+ 
++#include <linux/dma-mapping.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/of_platform.h>
++#include <linux/slab.h>
+ #include <linux/soc/qcom/apr.h>
+ #include "q6mvm.h"
+ #include "q6voice-common.h"
+@@ -122,6 +124,128 @@ int q6mvm_start(struct q6voice_session *mvm, bool state)
+ }
+ EXPORT_SYMBOL_GPL(q6mvm_start);
+ 
++#define VSS_IMEMORY_CMD_MAP_PHYSICAL	0x00011334
++#define VSS_IMEMORY_RSP_MAP		0x00011336
++#define VSS_IMEMORY_CMD_UNMAP		0x00011337
++
++/*
++ * A single memory block descriptor table, matching struct
++ * vss_imemory_table_t from the downstream driver: a "next table" pointer
++ * (unused here, always the single block) followed by one block descriptor.
++ * The DSP reads this table by physical address, not the memory it points
++ * at, so it needs its own tiny DMA allocation separate from the actual
++ * calibration buffer.
++ */
++struct q6mvm_memory_table {
++	__le32 next_table_lsw;
++	__le32 next_table_msw;
++	__le32 next_table_size;
++	__le32 block_addr_lsw;
++	__le32 block_addr_msw;
++	__le32 block_size;
++} __packed;
++
++struct vss_imemory_cmd_map_physical_t {
++	struct apr_hdr hdr;
++	u32 table_addr_lsw;
++	u32 table_addr_msw;
++	u32 table_size;
++	u8 is_cached;
++	u16 cache_line_size;
++	u32 access_mask;
++	u32 page_align;
++	u8 min_data_width;
++	u8 max_data_width;
++} __packed;
++
++struct vss_imemory_cmd_unmap_t {
++	struct apr_hdr hdr;
++	u32 mem_handle;
++} __packed;
++
++int q6mvm_map_memory(struct q6voice_session *mvm, struct device *table_dev,
++		     dma_addr_t phys, size_t size, u32 *mem_handle)
++{
++	struct vss_imemory_cmd_map_physical_t cmd;
++	struct q6mvm_memory_table *table;
++	dma_addr_t table_phys;
++	u32 resp[4];
++	int ret;
++
++	/*
++	 * table_dev, not mvm->dev: mvm->dev is a raw apr_device that never
++	 * goes through of_dma_configure() and rejects a dma_mask outright on
++	 * this platform (see q6mvm_probe()). table_dev is expected to be a
++	 * normal OF platform device (q6voice's own) that already has one.
++	 *
++	 * Allocating a full page rather than just sizeof(*table): the
++	 * downstream comment on vss_imemory_table_descriptor_t requires the
++	 * table address be aligned to LCM(cache_line_size, page_align,
++	 * max_data_width) = 4096 here, which dma_alloc_coherent() only
++	 * guarantees for page-sized-or-larger requests, not for a 24-byte
++	 * one. VSS_IMEMORY_CMD_MAP_PHYSICAL failing with error 2 (bad
++	 * param, no crash) after fixing is_cached is consistent with this.
++	 */
++	table = dma_alloc_coherent(table_dev, PAGE_SIZE, &table_phys, GFP_KERNEL);
++	if (!table)
++		return -ENOMEM;
++
++	table->next_table_lsw = 0;
++	table->next_table_msw = 0;
++	table->next_table_size = 0;
++	table->block_addr_lsw = cpu_to_le32(lower_32_bits(phys));
++	table->block_addr_msw = cpu_to_le32(upper_32_bits(phys));
++	table->block_size = cpu_to_le32(size);
++
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IMEMORY_CMD_MAP_PHYSICAL;
++
++	cmd.table_addr_lsw = lower_32_bits(table_phys);
++	cmd.table_addr_msw = upper_32_bits(table_phys);
++	cmd.table_size = sizeof(*table);
++	/*
++	 * The downstream driver hardcodes is_cached=1 to match its ion
++	 * allocation, which is genuinely CPU-cached and relies on explicit
++	 * cache maintenance around access. dma_alloc_coherent() gives us
++	 * memory that's coherent/non-cached from the CPU's side instead -
++	 * claiming is_cached=1 here would tell the DSP to apply its own
++	 * cache-line coherency handling to a region that was never mapped
++	 * that way, a plausible cause of the hard ADSP crash seen when this
++	 * was first tried with is_cached=1.
++	 */
++	cmd.is_cached = 0;
++	cmd.cache_line_size = 128;
++	cmd.access_mask = 3; /* readable | writable */
++	cmd.page_align = 4096;
++	cmd.min_data_width = 8;
++	cmd.max_data_width = 64;
++
++	ret = q6voice_common_send_resp(mvm, &cmd.hdr, VSS_IMEMORY_RSP_MAP,
++					resp, ARRAY_SIZE(resp));
++	dma_free_coherent(table_dev, PAGE_SIZE, table, table_phys);
++	if (ret)
++		return ret;
++
++	if (!resp[0])
++		return -EIO;
++
++	*mem_handle = resp[0];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(q6mvm_map_memory);
++
++int q6mvm_unmap_memory(struct q6voice_session *mvm, u32 mem_handle)
++{
++	struct vss_imemory_cmd_unmap_t cmd;
++
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IMEMORY_CMD_UNMAP;
++	cmd.mem_handle = mem_handle;
++
++	return q6voice_common_send(mvm, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6mvm_unmap_memory);
++
+ static int q6mvm_probe(struct apr_device *adev)
+ {
+ 	int ret;
+@@ -130,6 +254,25 @@ static int q6mvm_probe(struct apr_device *adev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * apr_device instances aren't created through the normal OF platform
++	 * bus (of_platform_populate() below is for the MVM's own children,
++	 * not this device itself), so nothing has called of_dma_configure()
++	 * on it and dev->dma_mask is NULL. q6mvm_map_memory() needs to
++	 * dma_alloc_coherent() a small calibration buffer through this
++	 * device - without this it hits dma_alloc_attrs()'s "device has no
++	 * dma_mask" WARN and silently gets back an unusable allocation.
++	 *
++	 * This must not be fatal to probe: dma_set_mask_and_coherent()
++	 * failing here (seen returning -EIO on this device) previously took
++	 * the whole q6mvm driver down with it, which cascades into q6voice
++	 * failing to bind and the entire sound card disappearing - a much
++	 * worse regression than the DMA warning this was meant to silence.
++	 */
++	ret = dma_set_mask_and_coherent(&adev->dev, DMA_BIT_MASK(32));
++	if (ret)
++		dev_warn(&adev->dev, "failed to set dma mask: %d (vol cal loading will not work)\n", ret);
++
+ 	return of_platform_populate(adev->dev.of_node, NULL, NULL, &adev->dev);
+ }
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6mvm.h b/sound/soc/qcom/qdsp6/q6mvm.h
+index 51279eddb..bd72358a4 100644
+--- a/sound/soc/qcom/qdsp6/q6mvm.h
++++ b/sound/soc/qcom/qdsp6/q6mvm.h
+@@ -2,6 +2,8 @@
+ #ifndef _Q6_MVM_H
+ #define _Q6_MVM_H
+ 
++#include <linux/dma-mapping.h>
++#include <linux/types.h>
+ #include "q6voice.h"
+ 
+ struct q6voice_session;
+@@ -12,4 +14,8 @@ int q6mvm_attach(struct q6voice_session *mvm, struct q6voice_session *cvp,
+ 		 bool state);
+ int q6mvm_start(struct q6voice_session *mvm, bool state);
+ 
++int q6mvm_map_memory(struct q6voice_session *mvm, struct device *table_dev,
++		     dma_addr_t phys, size_t size, u32 *mem_handle);
++int q6mvm_unmap_memory(struct q6voice_session *mvm, u32 mem_handle);
++
+ #endif /*_Q6_MVM_H */
+diff --git a/sound/soc/qcom/qdsp6/q6voice-common.c b/sound/soc/qcom/qdsp6/q6voice-common.c
+index e0a5e4eea..0dd138f82 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-common.c
++++ b/sound/soc/qcom/qdsp6/q6voice-common.c
+@@ -167,6 +167,19 @@ static void q6voice_session_callback(struct q6voice_session *s,
+ 	struct aprv2_ibasic_rsp_result_t *result = data->payload;
+ 	unsigned long flags;
+ 
++	spin_lock_irqsave(&s->lock, flags);
++	if (s->resp_opcode && data->hdr.opcode == s->resp_opcode) {
++		size_t n = min_t(size_t, data->payload_size, sizeof(s->resp_data));
++
++		memcpy(s->resp_data, data->payload, n);
++		s->resp_opcode = 0;
++		s->expected_opcode = 0;
++		spin_unlock_irqrestore(&s->lock, flags);
++		wake_up(&s->wait);
++		return;
++	}
++	spin_unlock_irqrestore(&s->lock, flags);
++
+ 	if (data->hdr.opcode != APR_BASIC_RSP_RESULT)
+ 		return; /* Not handled here */
+ 
+@@ -267,6 +280,53 @@ int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr)
+ }
+ EXPORT_SYMBOL_GPL(q6voice_common_send);
+ 
++int q6voice_common_send_resp(struct q6voice_session *s, struct apr_hdr *hdr,
++			      u32 resp_opcode, u32 *resp_data, size_t resp_words)
++{
++	unsigned long flags;
++	int ret;
++
++	hdr->hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++				       APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
++	hdr->src_port = s->port;
++	hdr->dest_port = s->handle;
++	hdr->token = 0;
++
++	spin_lock_irqsave(&s->lock, flags);
++	s->expected_opcode = hdr->opcode;
++	s->resp_opcode = resp_opcode;
++	s->result = 0;
++	spin_unlock_irqrestore(&s->lock, flags);
++
++	ret = apr_send_pkt(s->svc->adev, (struct apr_pkt *)hdr);
++	if (ret < 0) {
++		s->resp_opcode = 0;
++		return ret;
++	}
++
++	ret = wait_event_timeout(s->wait, (s->expected_opcode == 0),
++				 msecs_to_jiffies(TIMEOUT_MS));
++	if (!ret) {
++		s->expected_opcode = 0;
++		s->resp_opcode = 0;
++		return -ETIMEDOUT;
++	}
++
++	if (s->result > 0) {
++		dev_err(s->dev, "command %#x failed with error %d\n",
++			hdr->opcode, s->result);
++		return -EIO;
++	}
++
++	spin_lock_irqsave(&s->lock, flags);
++	memcpy(resp_data, s->resp_data,
++	       min_t(size_t, resp_words * sizeof(*resp_data), sizeof(s->resp_data)));
++	spin_unlock_irqrestore(&s->lock, flags);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(q6voice_common_send_resp);
++
+ MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
+ MODULE_DESCRIPTION("Q6Voice common session management");
+ MODULE_LICENSE("GPL v2");
+diff --git a/sound/soc/qcom/qdsp6/q6voice-common.h b/sound/soc/qcom/qdsp6/q6voice-common.h
+index 48735a935..297d69358 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-common.h
++++ b/sound/soc/qcom/qdsp6/q6voice-common.h
+@@ -24,10 +24,20 @@ struct q6voice_session {
+ 
+ 	wait_queue_head_t wait;
+ 
+-	/* Protect expected_opcode and result */
++	/* Protect expected_opcode, resp_opcode, resp_data and result */
+ 	spinlock_t lock;
+ 	u32 expected_opcode;
+ 	u32 result;
++
++	/*
++	 * Some commands (e.g. VSS_IMEMORY_CMD_MAP_PHYSICAL) don't get acked
++	 * with the generic APR_BASIC_RSP_RESULT payload: the DSP replies with
++	 * a distinct opcode carrying actual data (e.g. a memory handle).
++	 * q6voice_common_send_resp() waits for resp_opcode specifically and
++	 * hands the raw payload back in resp_data instead of just a status.
++	 */
++	u32 resp_opcode;
++	u32 resp_data[4];
+ };
+ 
+ int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
+@@ -35,6 +45,8 @@ void q6voice_common_remove(struct apr_device *adev);
+ 
+ int q6voice_common_callback(struct apr_device *adev, const struct apr_resp_pkt *data);
+ int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr);
++int q6voice_common_send_resp(struct q6voice_session *s, struct apr_hdr *hdr,
++			      u32 resp_opcode, u32 *resp_data, size_t resp_words);
+ 
+ struct q6voice_session *q6voice_session_create(enum q6voice_service_type type,
+ 					       enum q6voice_path_type path,
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 12828d0a8..211b1df4f 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -3,6 +3,8 @@
+ // Copyright (c) 2020, Stephan Gerhold
+ 
+ #include <linux/device.h>
++#include <linux/dma-mapping.h>
++#include <linux/firmware.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/mutex.h>
+@@ -14,6 +16,16 @@
+ #include "q6mvm.h"
+ #include "q6voice-common.h"
+ 
++/*
++ * Real RX volume calibration table for a handset voice call (acdb_rx=7,
++ * acdb_tx=4, feature_set=0/DEFAULT), captured verbatim from the vendor's
++ * own libacdbloader64.so by running it natively on a PC under the real
++ * Android bionic linker and recording exactly what it hands the kernel for
++ * AUDIO_SET_CALIBRATION. Sent through unmodified - the DSP already knows
++ * how to parse its own calibration format, nothing here interprets it.
++ */
++#define VOL_CAL_FIRMWARE "qcom/sm7150/xiaomi/surya/cvp-vol-cal-handset.bin"
++
+ /*
+  * The RX volume step is looked up in an ACDB calibration table that nothing
+  * in this driver loads, so there is no way to know from source alone which
+@@ -27,6 +39,12 @@ MODULE_PARM_DESC(rx_volume_step, "CVP RX volume step for voice calls");
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
++
++	/* RX volume calibration, loaded once per path and torn down with it */
++	void *vol_cal_cpu;
++	dma_addr_t vol_cal_dma;
++	size_t vol_cal_size;
++	u32 vol_cal_mem_handle;
+ };
+ 
+ struct q6voice_path {
+@@ -44,6 +62,87 @@ struct q6voice {
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+ };
+ 
++/*
++ * Loads the captured RX volume calibration table and registers it with the
++ * DSP for this path's vocproc, so VSS_IVOLUME_CMD_SET_STEP (q6cvp_set_rx_
++ * volume) has a table to resolve a step against instead of failing with
++ * ADSP_EFAILED on every uncalibrated profile. Best-effort like the volume/
++ * mute calls right after it: a missing or rejected firmware file just means
++ * the volume step keeps failing exactly like before, it doesn't block the
++ * call from continuing silently-uncalibrated as it already did.
++ */
++static int q6voice_load_vol_cal(struct q6voice_path *p, struct q6voice_session *mvm,
++				 struct q6voice_session *cvp)
++{
++	struct q6voice_path_runtime *rt = p->runtime;
++	struct device *dev = p->v->dev;
++	const struct firmware *fw;
++	int ret;
++
++	ret = request_firmware(&fw, VOL_CAL_FIRMWARE, dev);
++	if (ret)
++		return ret;
++
++	/*
++	 * dev (the q6voice-dais platform device) rather than mvm->dev: the
++	 * latter is a raw apr_device that never goes through of_dma_configure()
++	 * and, on this platform, outright rejects dma_set_mask_and_coherent()
++	 * (-EIO) - confirmed on real hardware, see q6mvm_probe(). dev is a
++	 * normal OF platform device and should have a working dma_mask by
++	 * the usual driver-core default.
++	 */
++	/*
++	 * Round the allocation up to a whole page: VSS_IMEMORY_CMD_MAP_PHYSICAL
++	 * requires the mapped address be aligned to page_align (4096 here),
++	 * which dma_alloc_coherent() only guarantees for page-sized-or-larger
++	 * requests. vol_cal_size stays the firmware's real size - that's what
++	 * gets reported to the DSP - only the allocation itself is padded.
++	 */
++	rt->vol_cal_size = fw->size;
++	rt->vol_cal_cpu = dma_alloc_coherent(dev, PAGE_ALIGN(fw->size), &rt->vol_cal_dma,
++					     GFP_KERNEL);
++	if (!rt->vol_cal_cpu) {
++		release_firmware(fw);
++		return -ENOMEM;
++	}
++	memcpy(rt->vol_cal_cpu, fw->data, fw->size);
++	release_firmware(fw);
++
++	ret = q6mvm_map_memory(mvm, dev, rt->vol_cal_dma, rt->vol_cal_size,
++			       &rt->vol_cal_mem_handle);
++	if (ret)
++		goto free_dma;
++
++	ret = q6cvp_register_vol_cal(cvp, rt->vol_cal_mem_handle,
++				     rt->vol_cal_dma, rt->vol_cal_size);
++	if (ret)
++		goto unmap;
++
++	return 0;
++
++unmap:
++	q6mvm_unmap_memory(mvm, rt->vol_cal_mem_handle);
++	rt->vol_cal_mem_handle = 0;
++free_dma:
++	dma_free_coherent(dev, PAGE_ALIGN(rt->vol_cal_size), rt->vol_cal_cpu, rt->vol_cal_dma);
++	rt->vol_cal_cpu = NULL;
++	return ret;
++}
++
++static void q6voice_unload_vol_cal(struct q6voice_path *p, struct q6voice_path_runtime *rt,
++				   struct q6voice_session *mvm)
++{
++	if (rt->vol_cal_mem_handle) {
++		q6mvm_unmap_memory(mvm, rt->vol_cal_mem_handle);
++		rt->vol_cal_mem_handle = 0;
++	}
++	if (rt->vol_cal_cpu) {
++		dma_free_coherent(p->v->dev, PAGE_ALIGN(rt->vol_cal_size), rt->vol_cal_cpu,
++				  rt->vol_cal_dma);
++		rt->vol_cal_cpu = NULL;
++	}
++}
++
+ static int q6voice_path_start(struct q6voice_path *p)
+ {
+ 	struct device *dev = p->v->dev;
+@@ -98,14 +197,21 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		goto attach_err;
+ 	}
+ 
++	if (!p->runtime->vol_cal_mem_handle) {
++		ret = q6voice_load_vol_cal(p, mvm, cvp);
++		if (ret)
++			dev_dbg(dev, "vol cal not loaded: %d\n", ret);
++	}
++
+ 	/*
+ 	 * Mirrors the downstream's voice_send_vol_step_cmd() /
+ 	 * voice_send_stream_mute_cmd() between vocproc attach and MVM start.
+ 	 * Both are best-effort like downstream: it logs and carries on if
+ 	 * either fails, it does not abort the call. The volume step needs an
+-	 * ACDB calibration table to resolve against, which nothing here
+-	 * loads, so on an uncalibrated profile it is expected to fail; the
+-	 * unmute does not depend on calibration and is expected to succeed.
++	 * ACDB calibration table to resolve against - q6voice_load_vol_cal()
++	 * just above tries to provide one, but is itself unverified so this
++	 * may still fail exactly like it did before that existed; the unmute
++	 * does not depend on calibration and is expected to succeed either way.
+ 	 */
+ 	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+ 	if (ret)
+@@ -195,8 +301,12 @@ static void q6voice_path_stop(struct q6voice_path *p)
+ static void q6voice_path_destroy(struct q6voice_path *p)
+ {
+ 	struct q6voice_path_runtime *runtime = p->runtime;
++	struct q6voice_session *mvm = runtime->sessions[Q6VOICE_SERVICE_MVM];
+ 	enum q6voice_service_type svc;
+ 
++	if (mvm)
++		q6voice_unload_vol_cal(p, runtime, mvm);
++
+ 	for (svc = 0; svc < Q6VOICE_SERVICE_COUNT; ++svc) {
+ 		if (runtime->sessions[svc])
+ 			q6voice_session_release(runtime->sessions[svc]);
+-- 
+2.43.0
+

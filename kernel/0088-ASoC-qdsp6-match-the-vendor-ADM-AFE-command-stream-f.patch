@@ -1,0 +1,304 @@
+From acdddfb0a6ee53bb33206b5e29bf0340319579ee Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 01:46:35 +0200
+Subject: [PATCH 088/106] ASoC: qdsp6: match the vendor ADM/AFE command stream
+ for in-call injection
+
+Captured the APR traffic of a working in-call injection on a device
+running the factory stack (kprobe on apr_send_pkt) and compared it with
+ours command by command. Four differences, all fixed here:
+
+  - the ADM second endpoint was left at zero; zero is a valid port id and
+    the way to say 'none' is 0xffff, which the vendor always sends
+  - the injection COPP was opened in stereo because that is what the
+    backend defaults to; the call is mono and so is the vendor's COPP
+  - the vendor opens every COPP with ADM_CMD_DEVICE_OPEN_V8, which moves
+    the topology ahead of the endpoints and adds a third one; mainline
+    only had v5
+  - the vendor sends AFE_PARAM_ID_DEVICE_HW_DELAY to the injection port
+    (474 us there, zero on the record ports) and we sent nothing
+
+With these, our ADM_CMD_DEVICE_OPEN for the injection port is byte for
+byte the vendor's, and the AFE gets the same three parameters. The
+injected stream still does not reach the uplink, so something else in
+the chain is still different; everything is behind module parameters so
+each piece can be taken back without a rebuild.
+---
+ sound/soc/qcom/qdsp6/q6adm.c     | 98 +++++++++++++++++++++++++++-----
+ sound/soc/qcom/qdsp6/q6afe.c     | 48 +++++++++++++++-
+ sound/soc/qcom/qdsp6/q6routing.c | 17 +++++-
+ 3 files changed, 146 insertions(+), 17 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6adm.c b/sound/soc/qcom/qdsp6/q6adm.c
+index db0ae71f2..6eddc2fb3 100644
+--- a/sound/soc/qcom/qdsp6/q6adm.c
++++ b/sound/soc/qcom/qdsp6/q6adm.c
+@@ -25,6 +25,11 @@
+ #define ADM_CMDRSP_DEVICE_OPEN_V5	0x00010329
+ #define ADM_CMD_DEVICE_CLOSE_V5		0x00010327
+ #define ADM_CMD_MATRIX_MAP_ROUTINGS_V5	0x00010325
++/* The vendor stack opens every COPP with v8; v5 is what mainline has used. */
++#define ADM_CMD_DEVICE_OPEN_V8		0x0001036A
++#define ADM_CMDRSP_DEVICE_OPEN_V8	0x0001036B
++/* No second (or third) endpoint: zero is a valid port id, 0xffff is "none". */
++#define ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE	0xffff
+ 
+ #define TIMEOUT_MS 1000
+ #define RESET_COPP_ID 99
+@@ -77,6 +82,26 @@ struct q6adm_cmd_device_open_v5 {
+ 	u8 dev_channel_mapping[8];
+ } __packed;
+ 
++/*
++ * Same fields as v5 with the topology moved ahead of the endpoints and a third
++ * endpoint added. The factory stack opens every COPP with this one, including
++ * the in-call pseudo ports, and it is the last difference left between the two
++ * command streams once the payload fields are made to match.
++ */
++struct q6adm_cmd_device_open_v8 {
++	u16 flags;
++	u16 mode_of_operation;
++	u32 topology_id;
++	u16 endpoint_id_1;
++	u16 endpoint_id_2;
++	u16 endpoint_id_3;
++	u16 reserved;
++	u16 dev_num_channel;
++	u16 bit_width;
++	u32 sample_rate;
++	u8 dev_channel_mapping[8];
++} __packed;
++
+ struct q6adm_cmd_matrix_map_routings_v5 {
+ 	u32 matrix_id;
+ 	u32 num_sessions;
+@@ -218,6 +243,7 @@ static int q6adm_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		switch (result->opcode) {
+ 		case ADM_CMD_DEVICE_OPEN_V5:
++		case ADM_CMD_DEVICE_OPEN_V8:
+ 		case ADM_CMD_DEVICE_CLOSE_V5:
+ 			list_for_each_entry(copp, &adm->copps_list, node) {
+ 				if ((port_idx == copp->afe_port) && (copp_idx == copp->copp_idx)) {
+@@ -239,6 +265,8 @@ static int q6adm_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		return 0;
+ 	}
++	/* v8 answers with its own opcode and the very same payload. */
++	case ADM_CMDRSP_DEVICE_OPEN_V8:
+ 	case ADM_CMDRSP_DEVICE_OPEN_V5: {
+ 		struct adm_cmd_rsp_device_open_v5 {
+ 			u32 status;
+@@ -323,21 +351,42 @@ static struct q6copp *q6adm_find_matching_copp(struct q6adm *adm,
+ 	return ret;
+ }
+ 
++/*
++ * There is no second endpoint on any of the paths we open, and the way to say
++ * so is 0xffff - zero is a perfectly valid port id. The vendor stack always
++ * sends the ignore value; mainline was leaving the field at zero. Under a
++ * parameter so the change can be taken back without a rebuild.
++ */
++
++static bool endpoint2_ignore = true;
++module_param(endpoint2_ignore, bool, 0644);
++MODULE_PARM_DESC(endpoint2_ignore,
++		 "send 0xffff as the ADM second endpoint instead of zero");
++
++static bool device_open_v8 = true;
++module_param(device_open_v8, bool, 0644);
++MODULE_PARM_DESC(device_open_v8,
++		 "open COPPs with ADM_CMD_DEVICE_OPEN_V8 like the vendor stack");
++
+ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
+ 			     int port_id, int path, int topology,
+ 			     int channel_mode, int bit_width, int rate)
+ {
++	struct q6adm_cmd_device_open_v8 *open8;
+ 	struct q6adm_cmd_device_open_v5 *open;
+ 	int afe_port = q6afe_get_port_id(port_id);
++	u8 *channel_mapping;
+ 	struct apr_pkt *pkt;
+-	int ret, pkt_size = APR_HDR_SIZE + sizeof(*open);
++	int ret, pkt_size;
++
++	pkt_size = APR_HDR_SIZE + (device_open_v8 ? sizeof(*open8)
++						  : sizeof(*open));
+ 
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	open = p + APR_HDR_SIZE;
+ 	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+ 					   APR_HDR_LEN(APR_HDR_SIZE),
+ 					   APR_PKT_VER);
+@@ -345,21 +394,42 @@ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
+ 	pkt->hdr.src_port = afe_port;
+ 	pkt->hdr.dest_port = afe_port;
+ 	pkt->hdr.token = port_id << 16 | copp->copp_idx;
+-	pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V5;
+-	open->flags = ADM_LEGACY_DEVICE_SESSION;
+-	open->mode_of_operation = path;
+-	open->endpoint_id_1 = afe_port;
+-	open->topology_id = topology;
+-	open->dev_num_channel = channel_mode & 0x00FF;
+-	open->bit_width = bit_width;
+-	open->sample_rate = rate;
+-
+-	ret = q6dsp_map_channels(&open->dev_channel_mapping[0],
+-				 channel_mode);
++
++	if (device_open_v8) {
++		open8 = p + APR_HDR_SIZE;
++		pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V8;
++		open8->flags = ADM_LEGACY_DEVICE_SESSION;
++		open8->mode_of_operation = path;
++		open8->topology_id = topology;
++		open8->endpoint_id_1 = afe_port;
++		open8->endpoint_id_2 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open8->endpoint_id_3 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open8->dev_num_channel = channel_mode & 0x00FF;
++		open8->bit_width = bit_width;
++		open8->sample_rate = rate;
++		channel_mapping = &open8->dev_channel_mapping[0];
++	} else {
++		open = p + APR_HDR_SIZE;
++		pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V5;
++		open->flags = ADM_LEGACY_DEVICE_SESSION;
++		open->mode_of_operation = path;
++		open->endpoint_id_1 = afe_port;
++		if (endpoint2_ignore)
++			open->endpoint_id_2 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open->topology_id = topology;
++		open->dev_num_channel = channel_mode & 0x00FF;
++		open->bit_width = bit_width;
++		open->sample_rate = rate;
++		channel_mapping = &open->dev_channel_mapping[0];
++	}
++
++	ret = q6dsp_map_channels(channel_mapping, channel_mode);
+ 	if (ret)
+ 		return ret;
+ 
+-	return q6adm_apr_send_copp_pkt(adm, copp, pkt, ADM_CMDRSP_DEVICE_OPEN_V5);
++	return q6adm_apr_send_copp_pkt(adm, copp, pkt,
++				       device_open_v8 ? ADM_CMDRSP_DEVICE_OPEN_V8
++						      : ADM_CMDRSP_DEVICE_OPEN_V5);
+ }
+ 
+ /**
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 5973e5847..900d1ffe0 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1409,6 +1409,44 @@ static int q6afe_pseudo_port_set_topology(struct q6afe_port *port)
+ 				       sizeof(topology));
+ }
+ 
++/*
++ * The hardware delay of the in-call injection port.
++ *
++ * The factory stack sends this for every port and the injection one gets a
++ * real value out of ACDB (474 us on the reference device, while the record
++ * ports get zero). It is how the DSP lines the injected stream up with the
++ * vocoder, and it was the only parameter of the three it sends that we were
++ * not sending at all.
++ */
++#define AFE_PARAM_ID_DEVICE_HW_DELAY		0x00010243
++#define AFE_API_VERSION_DEVICE_HW_DELAY		0x1
++
++struct afe_param_id_device_hw_delay_cfg {
++	u32 minor_version;
++	u32 delay_in_us;
++} __packed;
++
++static uint playback_hw_delay_us = 474;
++module_param(playback_hw_delay_us, uint, 0644);
++MODULE_PARM_DESC(playback_hw_delay_us,
++		 "hardware delay of the in-call injection port, in us (0 = send none)");
++
++static int q6afe_pseudo_port_set_hw_delay(struct q6afe_port *port)
++{
++	struct afe_param_id_device_hw_delay_cfg delay;
++
++	if (port->id != AFE_PORT_ID_VOICE_PLAYBACK_TX || !playback_hw_delay_us)
++		return 0;
++
++	delay.minor_version = AFE_API_VERSION_DEVICE_HW_DELAY;
++	delay.delay_in_us = playback_hw_delay_us;
++
++	return q6afe_port_set_param_v2(port, &delay,
++				       AFE_PARAM_ID_DEVICE_HW_DELAY,
++				       AFE_MODULE_AUDIO_DEV_INTERFACE,
++				       sizeof(delay));
++}
++
+ int q6afe_port_stop(struct q6afe_port *port)
+ {
+ 	struct afe_port_cmd_device_stop *stop;
+@@ -1843,12 +1881,20 @@ int q6afe_port_start(struct q6afe_port *port)
+ 		return ret;
+ 	}
+ 
+-	/* Between the config and the start, which is where the vendor does it. */
++	/*
++	 * Between the config and the start, which is where the vendor does it,
++	 * and in its order: topology first, then the hardware delay.
++	 */
+ 	ret = q6afe_pseudo_port_set_topology(port);
+ 	if (ret)
+ 		dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
+ 			port_id, ret);
+ 
++	ret = q6afe_pseudo_port_set_hw_delay(port);
++	if (ret)
++		dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
++			port_id, ret);
++
+ 	if (port->scfg) {
+ 		ret  = q6afe_port_set_param_v2(port, port->scfg,
+ 					AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG,
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 1e48ddf97..46bf120ec 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -382,6 +382,17 @@ static uint playback_acdb_id;
+ module_param(playback_acdb_id, uint, 0644);
+ MODULE_PARM_DESC(playback_acdb_id, "ACDB device id for the in-call injection port");
+ 
++/*
++ * The call is mono, and so is the pseudo port the DSP reads the injected
++ * stream from: the factory stack opens its COPP with one channel and a centre
++ * channel map, while we were opening it in stereo because that is what the
++ * backend defaults to. 0 keeps whatever the backend says.
++ */
++static uint playback_channels = 1;
++module_param(playback_channels, uint, 0644);
++MODULE_PARM_DESC(playback_channels,
++		 "channels for the in-call injection COPP (0 = as the backend)");
++
+ /**
+  * q6routing_stream_open() - Register a new stream for route setup
+  *
+@@ -439,11 +450,13 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	if (session->port_id == VOICE_PLAYBACK_TX) {
+ 		if (playback_copp_topology)
+ 			topology = playback_copp_topology;
++		if (playback_channels)
++			session->channels = playback_channels;
+ 		app_type = playback_app_type;
+ 		acdb_id = playback_acdb_id;
+ 		dev_info(routing_data->dev,
+-			 "injection copp: topology %#x app_type %u acdb %u\n",
+-			 topology, app_type, acdb_id);
++			 "injection copp: topology %#x ch %d app_type %u acdb %u\n",
++			 topology, session->channels, app_type, acdb_id);
+ 	}
+ 
+ 	copp = q6adm_open(routing_data->dev, session->port_id,
+-- 
+2.43.0
+

@@ -1,0 +1,302 @@
+From 036aff6ae21874bc9466df79da4f8e2adce070ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 4 Aug 2026 22:22:54 +0200
+Subject: [PATCH 100/106] ASoC: qcom: sm8250: register the card without
+ Bluetooth if its codec never shows up
+
+qcom_snd_parse_of() resolves every sound-dai phandle against ASoC's live
+component list and returns -EPROBE_DEFER the moment one isn't there yet -
+fine for an ordinary codec, but wcn-bt-slim is inserted by hand, late, and
+has a documented failure mode where it stops enumerating for good. When
+that happens nothing ever binds bt_audio's device, no deferred-probe retry
+is ever triggered again, and the whole card stays deferred forever - no
+audio of any kind, speakers and ordinary calls included, none of which have
+anything to do with Bluetooth.
+
+Past a bounded deadline (module param bt_deadline_ms, default 90s), disable
+the two SLIMBUS_7 dai_link DT nodes in the live tree and register the card
+without them - the same verdict qcom_snd_parse_of() would reach on its own,
+just no longer allowed to block everything else indefinitely.
+
+Race-safety notes (this took three real bugs to get right, caught by
+tracing the actual driver-core/devres code rather than guessing):
+- of_update_property() is not EXPORT_SYMBOL'd, only usable by code built
+  into vmlinux - confirmed at link time. Neither node carries a status
+  property in the DTS, so of_add_property() alone is enough; it already
+  refuses a duplicate name instead of corrupting the property list.
+- returning -EPROBE_DEFER from probe() runs devres_release_all() on the
+  device immediately, same as a hard failure - a devm-managed cleanup
+  action registered on that same call would be undone before the function
+  even returned, before the timer it was guarding could ever fire. The
+  work item is plain static state instead (this module is never unloaded
+  during normal operation).
+- device_reprobe() can call straight back into this driver's own probe()
+  synchronously, on the same thread, before returning - calling it while
+  still holding the same mutex probe() takes would self-deadlock.
+- one more plain qcom_snd_parse_of() attempt right at the deadline, before
+  disabling anything: if whatever was actually missing (Bluetooth or some
+  unrelated slow codec) has turned up right around then, use it rather
+  than disabling Bluetooth on the strength of a defer that turned out to
+  be about something else.
+
+Guarded by sm8250_has_bt_links() so every other board sharing this file
+(fairphone fp4/fp5, qrb2210, ...) is completely unaffected - none of them
+carry slim7-rx-dai-link.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ sound/soc/qcom/sm8250.c | 216 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 215 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index 2a51ee20c..33fce3997 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -3,7 +3,9 @@
+ 
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/workqueue.h>
+ #include <sound/soc.h>
+ #include <sound/soc-dapm.h>
+ #include <sound/pcm.h>
+@@ -265,6 +267,205 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
+ 	}
+ }
+ 
++/*
++ * How long to wait for the Bluetooth codec (SLIMBUS_7's bt_audio, on surya)
++ * before giving up and registering the card without it.
++ *
++ * qcom_snd_parse_of() resolves every "sound-dai" phandle against ASoC's own
++ * live component list and returns -EPROBE_DEFER the moment any one of them
++ * isn't registered yet - ordinarily fine, the driver core retries once that
++ * component's driver binds. But wcn-bt-slim is inserted by hand, late, after
++ * userspace decides the SLIMBus chain is up, and the chip has a documented
++ * failure mode where it stops enumerating for good (sometimes surviving a
++ * reboot). When that happens nothing ever binds bt_audio's device, no
++ * deferred-probe retry is ever triggered for us again, and "sound" stays
++ * deferred forever - no card, no audio of ANY kind, including speakers and
++ * ordinary calls, which have nothing to do with Bluetooth.
++ *
++ * bt_deadline_ms bounds that wait. Past it, the SLIMBUS_7 dai_link DT nodes
++ * are disabled in the live tree and the card is registered without them -
++ * exactly the verdict qcom_snd_parse_of() would have reached on its own, just
++ * no longer allowed to block everything else indefinitely. Getting Bluetooth
++ * call audio back after that needs a reboot; every other path is unaffected.
++ */
++static uint bt_deadline_ms = 90000;
++module_param(bt_deadline_ms, uint, 0644);
++MODULE_PARM_DESC(bt_deadline_ms,
++		 "give up waiting for the Bluetooth codec after this long in ms (0 = wait forever, as before)");
++
++static DEFINE_MUTEX(bt_deadline_lock);
++static unsigned long bt_deadline_start;	/* jiffies of the first defer; 0 = not armed */
++static bool bt_probe_settled;			/* the card has registered; the timer must not touch it again */
++static struct device *bt_reprobe_dev;
++
++static void sm8250_bt_deadline_expired(struct work_struct *work);
++/*
++ * Statically initialized on purpose, not via INIT_DELAYED_WORK() inside
++ * probe(): probe() only reaches that branch when Bluetooth is actually
++ * deferred, but the unconditional cancel_delayed_work_sync() on the
++ * ordinary success path (below) has to be safe to call every single time,
++ * including the common case where this work item was never armed at all.
++ * Cancelling a work item that was declared like this but never scheduled is
++ * a defined no-op; cancelling one that was merely zero-initialized is not.
++ */
++static DECLARE_DELAYED_WORK(bt_deadline_work, sm8250_bt_deadline_expired);
++
++/*
++ * status="disabled" makes qcom_snd_parse_of()'s own
++ * for_each_available_child_of_node() skip the node on its next call - no
++ * other code needs to know these two links ever existed.
++ *
++ * of_add_property(), not of_update_property(): the latter is not exported
++ * (only usable by code built into vmlinux, not by a loadable module like
++ * this one - confirmed the hard way, at link time). Not a real limitation
++ * here: neither slim7-rx-dai-link nor slim7-tx-dai-link carries a status
++ * property in the DTS to begin with, so there is nothing to update, only to
++ * add. of_add_property() itself already refuses a duplicate name
++ * (-EEXIST) rather than corrupting the property list, so the one case this
++ * cannot handle - some future DTS edit that adds an explicit status of its
++ * own - fails safely: a warning, and the node is left enabled.
++ */
++static void sm8250_disable_dai_link_node(struct device_node *parent, const char *name)
++{
++	struct device_node *np = of_get_child_by_name(parent, name);
++	struct property *prop;
++	int ret;
++
++	if (!np)
++		return;
++
++	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
++	if (!prop)
++		goto out;
++	prop->name = kstrdup("status", GFP_KERNEL);
++	prop->value = kstrdup("disabled", GFP_KERNEL);
++	if (!prop->name || !prop->value) {
++		kfree(prop->name);
++		kfree(prop->value);
++		kfree(prop);
++		goto out;
++	}
++	prop->length = strlen(prop->value) + 1;
++
++	ret = of_add_property(np, prop);
++	if (ret) {
++		pr_warn("sm8250: could not disable %s: %d\n", name, ret);
++		kfree(prop->name);
++		kfree(prop->value);
++		kfree(prop);
++	}
++out:
++	of_node_put(np);
++}
++
++/*
++ * The one forced kick past the deadline, so giving up does not depend on
++ * some unrelated driver happening to bind and trigger a normal retry.
++ *
++ * device_reprobe() is the targeted, single-device counterpart of what a
++ * fresh deferred-probe retry would do - unlike the driver core's own
++ * (unexported) global retry trigger, it only touches this one device.
++ *
++ * Guarded by bt_probe_settled: if the card already registered through an
++ * ordinary retry before this fires (Bluetooth turned up in time after all),
++ * calling device_reprobe() here would tear down a working card just to
++ * probe it again. bt_deadline_work is also cancelled synchronously the
++ * moment probe succeeds (see below), so reaching this function at all
++ * without the flag set should not happen in practice; the check is a second
++ * line of defence, not the only one.
++ */
++static void sm8250_bt_deadline_expired(struct work_struct *work)
++{
++	struct device *dev;
++	bool settled;
++
++	/*
++	 * device_reprobe() can call straight back into
++	 * sm8250_platform_probe() on THIS thread before returning - probe()
++	 * takes bt_deadline_lock itself, and a plain mutex is not reentrant,
++	 * so it must not still be held when device_reprobe() is called.
++	 * Reading the guarded state first and calling device_reprobe()
++	 * afterwards, unlocked, avoids that self-deadlock. It leaves a small
++	 * window where the card could finish registering right after this
++	 * reads settled=false; the worst that does is force one harmless
++	 * extra reprobe of an already-working card, not a hang or a crash.
++	 */
++	mutex_lock(&bt_deadline_lock);
++	settled = bt_probe_settled;
++	dev = bt_reprobe_dev;
++	mutex_unlock(&bt_deadline_lock);
++
++	if (!settled && dev) {
++		int ret = device_reprobe(dev);
++
++		if (ret)
++			dev_dbg(dev, "forced reprobe after the Bluetooth deadline: %d\n", ret);
++	}
++}
++
++/* Whether this board's DT carries the Bluetooth SLIMBUS_7 links at all. */
++static bool sm8250_has_bt_links(struct device_node *of_node)
++{
++	struct device_node *np = of_get_child_by_name(of_node, "slim7-rx-dai-link");
++	bool has = !!np;
++
++	of_node_put(np);
++	return has;
++}
++
++/*
++ * Runs only while ret == -EPROBE_DEFER on a board that has the Bluetooth
++ * links (sm8250_has_bt_links() checked by the caller) - everywhere else this
++ * whole path is skipped and behaviour is exactly what it was before this was
++ * added.
++ */
++static int sm8250_bt_deadline_check(struct device *dev, struct snd_soc_card *card, int ret)
++{
++	mutex_lock(&bt_deadline_lock);
++
++	if (!bt_deadline_start) {
++		/*
++		 * Not devm-managed: returning -EPROBE_DEFER from probe() runs
++		 * devres_release_all() on this device immediately, same as a
++		 * hard failure - a devm action registered right here would be
++		 * undone before this function even returns, cancelling the
++		 * timer before it could ever fire. This module is never
++		 * unloaded during normal operation (only a fresh boot reloads
++		 * it), so the one-shot timer is left to run its course;
++		 * sm8250_bt_deadline_expired() is a no-op if the card has
++		 * since registered.
++		 */
++		bt_deadline_start = jiffies;
++		bt_reprobe_dev = dev;
++		schedule_delayed_work(&bt_deadline_work,
++				msecs_to_jiffies(bt_deadline_ms) + HZ * 2);
++	}
++
++	if (!time_after(jiffies, bt_deadline_start + msecs_to_jiffies(bt_deadline_ms)))
++		goto out;
++
++	/*
++	 * Past the deadline. One more plain attempt first: if whatever was
++	 * actually missing (Bluetooth or not) has turned up right around
++	 * now, use it - do not disable Bluetooth on the strength of a defer
++	 * that turns out, on this fresh check, to have been about something
++	 * else.
++	 */
++	ret = qcom_snd_parse_of(card);
++	if (ret != -EPROBE_DEFER)
++		goto out;
++
++	dev_warn(dev,
++		"Bluetooth codec still absent after %u ms, continuing without it (reboot to retry)\n",
++		bt_deadline_ms);
++	sm8250_disable_dai_link_node(dev->of_node, "slim7-rx-dai-link");
++	sm8250_disable_dai_link_node(dev->of_node, "slim7-tx-dai-link");
++	ret = qcom_snd_parse_of(card);
++out:
++	mutex_unlock(&bt_deadline_lock);
++	return ret;
++}
++
+ static int sm8250_platform_probe(struct platform_device *pdev)
+ {
+ 	struct snd_soc_card *card;
+@@ -285,13 +486,26 @@ static int sm8250_platform_probe(struct platform_device *pdev)
+ 	card->dev = dev;
+ 	dev_set_drvdata(dev, card);
+ 	snd_soc_card_set_drvdata(card, data);
++
+ 	ret = qcom_snd_parse_of(card);
++	if (ret == -EPROBE_DEFER && bt_deadline_ms && sm8250_has_bt_links(dev->of_node))
++		ret = sm8250_bt_deadline_check(dev, card, ret);
+ 	if (ret)
+ 		return ret;
+ 
+ 	card->driver_name = of_device_get_match_data(dev);
+ 	sm8250_add_be_ops(card);
+-	return devm_snd_soc_register_card(dev, card);
++
++	ret = devm_snd_soc_register_card(dev, card);
++	if (ret)
++		return ret;
++
++	mutex_lock(&bt_deadline_lock);
++	bt_probe_settled = true;
++	mutex_unlock(&bt_deadline_lock);
++	cancel_delayed_work_sync(&bt_deadline_work);
++
++	return 0;
+ }
+ 
+ static const struct of_device_id snd_sm8250_dt_match[] = {
+-- 
+2.43.0
+

@@ -1,0 +1,95 @@
+From d8d15d27e409f5476df1ba02176093088143ed5a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 01:03:19 +0200
+Subject: [PATCH 087/106] ASoC: qdsp6: q6routing: knobs for the in-call
+ injection COPP
+
+The factory stack picks the COPP topology out of ACDB from the front
+end's app_type and acdb_id, and was seen opening the in-call injection
+session with app_type 69937 (the record one gets 69936). There is no
+ACDB here, so expose the three values as module parameters to be swept
+against a device running the factory stack.
+
+Swept: app_type and acdb_id are inert on this side (mainline never sends
+them to the DSP, they only pick a COPP to reuse), and the topology they
+select in the vendor - the default 0x10314 - is accepted by the ADM but
+does not get the injected stream into the uplink either.
+---
+ sound/soc/qcom/qdsp6/q6routing.c | 43 +++++++++++++++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 75a016469..1e48ddf97 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -361,6 +361,27 @@ struct msm_routing_data {
+ 
+ static struct msm_routing_data *routing_data;
+ 
++/*
++ * What the factory stack feeds the ADM for the in-call injection session.
++ *
++ * It picks the COPP topology out of ACDB from the front-end's app_type and
++ * acdb_id, and was caught opening the injection session with app_type 69937
++ * (the record one gets 69936). We have no ACDB, so these are knobs to sweep
++ * against the reference device; 0 keeps mainline's behaviour.
++ */
++static uint playback_copp_topology;
++module_param(playback_copp_topology, uint, 0644);
++MODULE_PARM_DESC(playback_copp_topology,
++		 "COPP topology for the in-call injection port (0 = NULL topology)");
++
++static uint playback_app_type;
++module_param(playback_app_type, uint, 0644);
++MODULE_PARM_DESC(playback_app_type, "app type for the in-call injection port");
++
++static uint playback_acdb_id;
++module_param(playback_acdb_id, uint, 0644);
++MODULE_PARM_DESC(playback_acdb_id, "ACDB device id for the in-call injection port");
++
+ /**
+  * q6routing_stream_open() - Register a new stream for route setup
+  *
+@@ -378,6 +399,7 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	struct route_payload payload;
+ 	struct q6copp *copp;
+ 	int copp_idx;
++	int app_type, acdb_id;
+ 	struct session_data *session, *pdata;
+ 
+ 	if (!routing_data) {
+@@ -405,10 +427,29 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 
+ 	payload.num_copps = 0; /* only RX needs to use payload */
+ 	topology = NULL_COPP_TOPOLOGY;
++	app_type = 0;
++	acdb_id = 0;
++	/*
++	 * The factory stack picks the COPP topology out of ACDB using the
++	 * front-end's app_type/acdb_id, and was seen opening the in-call
++	 * injection session with app_type 69937 (the record one gets 69936).
++	 * There is no ACDB here, so the three values are module parameters to
++	 * be swept by hand against the reference device.
++	 */
++	if (session->port_id == VOICE_PLAYBACK_TX) {
++		if (playback_copp_topology)
++			topology = playback_copp_topology;
++		app_type = playback_app_type;
++		acdb_id = playback_acdb_id;
++		dev_info(routing_data->dev,
++			 "injection copp: topology %#x app_type %u acdb %u\n",
++			 topology, app_type, acdb_id);
++	}
++
+ 	copp = q6adm_open(routing_data->dev, session->port_id,
+ 			      session->path_type, session->sample_rate,
+ 			      session->channels, topology, perf_mode,
+-			      session->bits_per_sample, 0, 0);
++			      session->bits_per_sample, app_type, acdb_id);
+ 
+ 	if (IS_ERR_OR_NULL(copp)) {
+ 		mutex_unlock(&routing_data->lock);
+-- 
+2.43.0
+

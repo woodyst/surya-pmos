@@ -1,0 +1,60 @@
+From 22d1e017d89908d6680b72293188436eca2b1969 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 11 Jul 2026 16:35:01 +0200
+Subject: [PATCH 001/106] arm64: dts: qcom: sm7150-xiaomi-common: fix USB-C to
+ allow real charging
+
+The typec connector was configured power-role=source only, so the port
+never negotiated as a sink and charging silently failed (it would even
+back-feed a connected powerbank instead). Switch to power-role=dual and
+add the required sink-pdos/op-sink-microwatt.
+
+Deliberately capped to a 5V-only sink-pdos: this board's SMB5 charger
+only has a native 5V input path, and the earlier attempt at also
+advertising a PDO_VAR up to 12V made TCPM negotiate 12V, which SMB5
+then rejected as an overvoltage (USBIN read 0V/0A) instead of falling
+back to 5V.
+
+Verified on real hardware (POCO X3 NFC / surya): port now shows
+power_role "source [sink]", port_type "[dual] source sink", and
+pm8150b-charger reports real charging current.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index 3209faf98..ee13797fc 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -601,13 +601,24 @@ &pm6150_typec {
+ 	connector {
+ 		compatible = "usb-c-connector";
+ 
+-		power-role = "source";
++		op-sink-microwatt = <10000000>;
++		power-role = "dual";
+ 		data-role = "dual";
+ 		self-powered;
+ 
+ 		source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+ 			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+ 
++		/*
++		 * No BQ2597x charge-pump driver/DT node exists yet, so this
++		 * board can only actually charge through the SMB5 5V path.
++		 * Advertising higher PPS/AVS voltages (e.g. 12V) makes TCPM
++		 * negotiate them, which SMB5 then rejects as an overvoltage
++		 * (USBIN reads 0V/0A) instead of falling back to 5V.
++		 */
++		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
++			     PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
++
+ 		ports {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-- 
+2.43.0
+

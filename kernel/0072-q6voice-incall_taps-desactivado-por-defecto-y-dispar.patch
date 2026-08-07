@@ -1,0 +1,110 @@
+From b5723e1dade3e31ba548894c60403ee13b45da29 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 1 Aug 2026 20:21:55 +0200
+Subject: [PATCH 072/106] q6voice: incall_taps desactivado por defecto y
+ disparador manual record_now
+
+Armar las tomas en una llamada viva quita la subida al modem (el otro
+extremo deja de oir), asi que no puede quedar activo por defecto. El
+disparador manual permite seguir experimentando sin recompilar.
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 58 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 57 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 2dc0e1bc2..8b92208ff 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -39,6 +39,12 @@ struct q6voice_path {
+ 	struct q6voice_path_runtime *runtime;
+ };
+ 
++/*
++ * The one live instance, so the record trigger below can reach the session.
++ * Only ever set from probe/remove.
++ */
++static struct q6voice *q6voice_live;
++
+ struct q6voice {
+ 	struct device *dev;
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+@@ -49,10 +55,55 @@ struct q6voice {
+  * costs nothing when nobody reads them, and it is what lets userspace record
+  * a call or bridge it to a Bluetooth headset.
+  */
+-static bool incall_taps = true;
++/*
++ * Off by default: arming the taps during a live call was seen to take the
++ * uplink away from the modem - the far end stopped hearing anything the
++ * moment the command went in - so this must not be on until the mechanism
++ * is understood.
++ */
++static bool incall_taps;
+ module_param(incall_taps, bool, 0644);
+ MODULE_PARM_DESC(incall_taps, "copy call audio to the record/playback pseudo ports");
+ 
++/*
++ * Trigger the record taps by hand, to test WHEN they have to be issued.
++ * The vendor stack does not arm them while setting the call up: its routing
++ * driver calls the equivalent when the capture front-end starts, which is a
++ * different moment entirely. Writing 1 here reproduces that order without
++ * wiring the whole path first.
++ */
++static int q6voice_record_now_set(const char *val, const struct kernel_param *kp)
++{
++	struct q6voice *v = q6voice_live;
++	struct q6voice_path *p;
++	int ret, i;
++
++	if (!v)
++		return -ENODEV;
++
++	for (i = 0; i < Q6VOICE_PATH_COUNT; i++) {
++		p = &v->paths[i];
++		mutex_lock(&p->lock);
++		if (p->runtime && p->runtime->sessions[Q6VOICE_SERVICE_CVS]) {
++			ret = q6cvs_start_record(p->runtime->sessions[Q6VOICE_SERVICE_CVS],
++						 true, true);
++			dev_info(v->dev, "record taps started by hand: %d\n", ret);
++			mutex_unlock(&p->lock);
++			return 0;
++		}
++		mutex_unlock(&p->lock);
++	}
++
++	dev_info(v->dev, "no active voice session to record\n");
++	return -ENODEV;
++}
++
++static const struct kernel_param_ops q6voice_record_now_ops = {
++	.set = q6voice_record_now_set,
++};
++module_param_cb(record_now, &q6voice_record_now_ops, NULL, 0200);
++MODULE_PARM_DESC(record_now, "write 1 while a call is up to arm the record taps");
++
+ static int q6voice_path_start(struct q6voice_path *p)
+ {
+ 	struct device *dev = p->v->dev;
+@@ -267,6 +318,9 @@ static void q6voice_free(void *data)
+ 	struct q6voice *v = data;
+ 	enum q6voice_path_type path;
+ 
++	if (q6voice_live == v)
++		q6voice_live = NULL;
++
+ 	for (path = 0; path < Q6VOICE_PATH_COUNT; ++path) {
+ 		struct q6voice_path *p = &v->paths[path];
+ 
+@@ -309,6 +363,8 @@ struct q6voice *q6voice_create(struct device *dev)
+ 	if (ret)
+ 		return ERR_PTR(ret);
+ 
++	q6voice_live = v;
++
+ 	return v;
+ }
+ EXPORT_SYMBOL_GPL(q6voice_create);
+-- 
+2.43.0
+

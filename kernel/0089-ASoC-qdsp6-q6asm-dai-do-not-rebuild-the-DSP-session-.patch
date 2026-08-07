@@ -1,0 +1,106 @@
+From fde85f39716282cbce1dce1d5e10f93109bf1d49 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 10:46:23 +0200
+Subject: [PATCH 089/106] ASoC: qdsp6: q6asm-dai: do not rebuild the DSP
+ session on every prepare
+
+ALSA prepares a stream more than once - when it is set up and again
+before it is started - and we closed the DSP session and opened it again
+every single time. The vendor stack opens it once, as its APR trace
+shows.
+
+Besides the waste, it matters for in-call injection: the playback the
+DSP was told about stays bound to the session that existed when it was
+started, so a needless reopen would leave the DSP reading a session
+nobody writes to. Keep the session when nothing the DSP was told has
+changed.
+
+Verified in the trace: the injection stream is now opened once, in the
+same order as the vendor. It does not by itself get the injected audio
+into the uplink.
+---
+ sound/soc/qcom/qdsp6/q6asm-dai.c | 44 ++++++++++++++++++++++++++++++--
+ 1 file changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6asm-dai.c b/sound/soc/qcom/qdsp6/q6asm-dai.c
+index bab1913bb..0b30e8152 100644
+--- a/sound/soc/qcom/qdsp6/q6asm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6asm-dai.c
+@@ -78,6 +78,11 @@ struct q6asm_dai_rtd {
+ 	uint32_t stream_id;
+ 	uint16_t session_id;
+ 	enum stream_state state;
++	/* What the DSP was last told, to know whether a prepare changes it. */
++	unsigned int prepared_rate;
++	unsigned int prepared_channels;
++	unsigned int prepared_pcm_count;
++	uint16_t prepared_bits;
+ 	uint32_t initial_samples_drop;
+ 	uint32_t trailing_samples_drop;
+ 	bool notify_on_drain;
+@@ -210,6 +215,16 @@ static void event_handler(uint32_t opcode, uint32_t token,
+ 	}
+ }
+ 
++/*
++ * Whether a second prepare() with nothing changed keeps the DSP session
++ * instead of tearing it down and opening it again. On by default; the vendor
++ * stack opens the session once.
++ */
++static bool reprepare_reopens = true;
++module_param(reprepare_reopens, bool, 0644);
++MODULE_PARM_DESC(reprepare_reopens,
++		 "keep the DSP session when prepare() changes nothing");
++
+ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 			     struct snd_pcm_substream *substream)
+ {
+@@ -231,6 +246,26 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 	}
+ 
+ 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
++
++	/*
++	 * ALSA prepares a stream more than once - when it is set up and again
++	 * before it is started - and we tore the DSP session down and built it
++	 * again every single time, while the vendor stack opens it once.
++	 *
++	 * That is not just waste: the in-call playback the DSP was told about
++	 * stays bound to the session that existed when it was started, so a
++	 * needless reopen leaves the DSP reading a session nobody writes to.
++	 * Only redo the session when something the DSP was told has changed.
++	 */
++	if (reprepare_reopens && prtd->state == Q6ASM_STREAM_RUNNING &&
++	    prtd->prepared_rate == runtime->rate &&
++	    prtd->prepared_channels == runtime->channels &&
++	    prtd->prepared_bits == prtd->bits_per_sample &&
++	    prtd->prepared_pcm_count == prtd->pcm_count) {
++		dev_dbg(dev, "prepare with nothing changed, keeping the session\n");
++		return 0;
++	}
++
+ 	/* rate and channels are sent to audio driver */
+ 	if (prtd->state == Q6ASM_STREAM_RUNNING ||
+ 	    prtd->state == Q6ASM_STREAM_OPENED) {
+@@ -302,10 +337,15 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 			q6asm_read(prtd->audio_client, prtd->stream_id);
+ 
+ 	}
+-	if (ret < 0)
++	if (ret < 0) {
+ 		dev_info(dev, "%s: CMD Format block failed\n", __func__);
+-	else
++	} else {
+ 		prtd->state = Q6ASM_STREAM_RUNNING;
++		prtd->prepared_rate = runtime->rate;
++		prtd->prepared_channels = runtime->channels;
++		prtd->prepared_bits = prtd->bits_per_sample;
++		prtd->prepared_pcm_count = prtd->pcm_count;
++	}
+ 
+ 	return ret;
+ 
+-- 
+2.43.0
+

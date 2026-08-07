@@ -1,0 +1,124 @@
+From a381e39fe5e8b646fb99b8c22dea32ae0d3914f0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 17:00:56 +0200
+Subject: [PATCH 097/106] ASoC: qcom: sm8250: the Bluetooth SCO link is not 48
+ kHz stereo
+
+sm8250_be_hw_params_fixup() forced every backend to 48 kHz, two
+channels. The SLIMBus link that carries Bluetooth call audio is not like
+the others: it runs one channel at the rate of its air codec, 8 kHz for
+CVSD and 16 kHz for the wideband one.
+
+Feeding it 48 kHz stereo hands the chip six times the samples it reads,
+and the headset gets audio that drifts in and out of sense - it sounds
+good for a moment, then turns to noise, over and over, which is the beat
+between the two rates.
+
+The rate is a module parameter because nothing tells the machine driver
+which codec the link negotiated.
+---
+ drivers/bluetooth/hci_qca.c | 31 +++++++++++++++++++++++--------
+ sound/soc/qcom/sm8250.c     | 23 +++++++++++++++++++++++
+ 2 files changed, 46 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index 63e8f8dc5..efb2172e8 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -245,6 +245,15 @@ struct qca_serdev {
+  * Left as a parameter because the next controller may be honest.
+  */
+ static bool sco_flowctl;
++
++/*
++ * Carry SCO audio over the chip's own audio bus instead of over HCI, the way
++ * the vendor stack does. Needs the SLIMBus side up first (slim_qcom_ngd_ctrl
++ * and the WCN3990 audio device), or the controller has no audio source.
++ */
++static bool hfp_offload;
++module_param(hfp_offload, bool, 0644);
++MODULE_PARM_DESC(hfp_offload, "carry SCO audio over SLIMBus instead of over HCI");
+ module_param(sco_flowctl, bool, 0644);
+ MODULE_PARM_DESC(sco_flowctl, "use SCO flow control when the controller offers it");
+ 
+@@ -2176,13 +2185,18 @@ static const struct qca_device_data qca_soc_data_wcn3990 __maybe_unused = {
+ 	},
+ 	.num_vregs = 4,
+ 	/*
+-	 * Deliberately no QCA_CAP_HFP_HW_OFFLOAD here. Advertising it makes the
+-	 * core hand data path id 1 to the controller, i.e. "the SCO audio comes
+-	 * over SLIMBus, not over HCI". That is what the vendor stack does, but
+-	 * it needs the chip's SLIMBus audio ports up: with them asleep the
+-	 * controller has no audio source, transmits nothing, and dies outright
+-	 * once both directions are open (firmware gone, phone reboots). Only
+-	 * set it together with the SLIMBus offload path.
++	 * QCA_CAP_HFP_HW_OFFLOAD is not set here but through the hfp_offload
++	 * parameter, because it only works with the chip's SLIMBus audio ports
++	 * up. Advertising it hands data path id 1 to the controller - "the SCO
++	 * audio comes over SLIMBus, not over HCI" - and with the ports asleep
++	 * the controller has no audio source, transmits nothing and dies
++	 * outright once both directions are open.
++	 *
++	 * The vendor stack does exactly this: captured with the same headset on
++	 * a call, it negotiates the same eSCO link and then sends not one SCO
++	 * packet over HCI. Carrying the audio over HCI instead works on paper -
++	 * right size, rate and format, all measured - and still arrives chopped
++	 * and takes the firmware down with it.
+ 	 */
+ };
+ 
+@@ -2600,7 +2614,8 @@ static int qca_serdev_probe(struct serdev_device *serdev)
+ 		if (!(data->capabilities & QCA_CAP_VALID_LE_STATES))
+ 			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_STATES);
+ 
+-		if (data->capabilities & QCA_CAP_HFP_HW_OFFLOAD)
++		if ((data->capabilities & QCA_CAP_HFP_HW_OFFLOAD) ||
++		    (hfp_offload && data->soc_type == QCA_WCN3990))
+ 			qcadev->support_hfp_hw_offload = true;
+ 	}
+ 
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index 1ed0cfc18..2a51ee20c 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -55,6 +55,14 @@ static void sm8250_snd_exit(struct snd_soc_pcm_runtime *rtd)
+ 
+ }
+ 
++/*
++ * Rate of the Bluetooth SCO link: 8000 for CVSD, 16000 for mSBC. A parameter
++ * because nothing tells the machine driver which codec the link negotiated.
++ */
++static uint bt_sco_rate = 8000;
++module_param(bt_sco_rate, uint, 0644);
++MODULE_PARM_DESC(bt_sco_rate, "sample rate of the Bluetooth SCO link (8000 CVSD, 16000 mSBC)");
++
+ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 				     struct snd_pcm_hw_params *params)
+ {
+@@ -64,6 +72,21 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 					SNDRV_PCM_HW_PARAM_CHANNELS);
+ 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+ 
++	/*
++	 * The Bluetooth SCO link is not 48 kHz stereo like everything else:
++	 * it carries one channel at the rate of its air codec - 8 kHz for
++	 * CVSD, 16 kHz for the wideband one. Forcing the usual figures here
++	 * feeds the chip six times the samples it reads, and the headset gets
++	 * an audio that drifts in and out of sense.
++	 */
++	if (rtd->dai_link->id == SLIMBUS_7_RX ||
++	    rtd->dai_link->id == SLIMBUS_7_TX) {
++		rate->min = rate->max = bt_sco_rate;
++		channels->min = channels->max = 1;
++		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
++		return 0;
++	}
++
+ 	rate->min = rate->max = 48000;
+ 	channels->min = channels->max = 2;
+ 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+-- 
+2.43.0
+

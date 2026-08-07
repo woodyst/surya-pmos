@@ -1,0 +1,133 @@
+From 75bd1e7d3602b12020e59b8a8bd775fc2ea69ca6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 3 Aug 2026 11:06:25 +0200
+Subject: [PATCH 090/106] ASoC: qdsp6: q6asm: open PCM streams with media
+ format v5
+
+The vendor stack opens its streams with v5 of the multichannel PCM
+format and sends a 48 byte format block; mainline has always used v2 and
+a 20 byte one. Same fields up front, then the sample word size, the
+endianness, a mode, and room for 32 channels instead of 8.
+
+With this our ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2 is byte for byte the
+vendor's. Ordinary playback keeps working, so the DSP is happy with
+either, and the injected stream still does not reach the uplink.
+---
+ sound/soc/qcom/qdsp6/q6asm.c | 71 ++++++++++++++++++++++++++++++------
+ 1 file changed, 60 insertions(+), 11 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6asm.c b/sound/soc/qcom/qdsp6/q6asm.c
+index de0bd8fd0..8fd2af585 100644
+--- a/sound/soc/qcom/qdsp6/q6asm.c
++++ b/sound/soc/qcom/qdsp6/q6asm.c
+@@ -99,6 +99,37 @@ struct asm_multi_channel_pcm_fmt_blk_v2 {
+ 	u8 channel_mapping[PCM_MAX_NUM_CHANNEL];
+ } __packed;
+ 
++/*
++ * The vendor stack opens its streams with v5 of the PCM format and sends a
++ * 48 byte format block; mainline has always used v2 and a 20 byte one. Same
++ * fields up front, then the word size, the endianness, a mode, and room for
++ * 32 channels instead of 8.
++ */
++#define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V5	0x00013222
++#define PCM_MAX_NUM_CHANNEL_V5			32
++
++/*
++ * Whether PCM streams are opened with v5 of the format, like the vendor stack,
++ * instead of the v2 mainline has always used. It changes the size of the
++ * format block the DSP is given (48 bytes against 20), so a DSP that only
++ * expects v5 on a path would be reading our block wrong.
++ */
++static bool pcm_fmt_v5 = true;
++module_param(pcm_fmt_v5, bool, 0644);
++MODULE_PARM_DESC(pcm_fmt_v5, "open PCM streams with media format v5 (vendor) instead of v2");
++
++struct asm_multi_channel_pcm_fmt_blk_v5 {
++	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
++	u16 num_channels;
++	u16 bits_per_sample;
++	u32 sample_rate;
++	u16 is_signed;
++	u16 sample_word_size;
++	u16 endianness;
++	u16 mode;
++	u8 channel_mapping[PCM_MAX_NUM_CHANNEL_V5];
++} __packed;
++
+ struct asm_flac_fmt_blk_v2 {
+ 	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
+ 	u16 is_stream_info_present;
+@@ -953,7 +984,8 @@ int q6asm_open_write(struct audio_client *ac, uint32_t stream_id,
+ 		open->dec_fmt_id = ASM_MEDIA_FMT_MP3;
+ 		break;
+ 	case FORMAT_LINEAR_PCM:
+-		open->dec_fmt_id = ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2;
++		open->dec_fmt_id = pcm_fmt_v5 ? ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V5
++					      : ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2;
+ 		break;
+ 	case SND_AUDIOCODEC_FLAC:
+ 		open->dec_fmt_id = ASM_MEDIA_FMT_FLAC;
+@@ -1085,31 +1117,48 @@ int q6asm_media_format_block_multi_ch_pcm(struct audio_client *ac,
+ 					  u8 channel_map[PCM_MAX_NUM_CHANNEL],
+ 					  uint16_t bits_per_sample)
+ {
++	struct asm_multi_channel_pcm_fmt_blk_v5 *fmt5;
+ 	struct asm_multi_channel_pcm_fmt_blk_v2 *fmt;
+ 	struct apr_pkt *pkt;
+ 	u8 *channel_mapping;
+-	int pkt_size = APR_HDR_SIZE + sizeof(*fmt);
++	int map_size, pkt_size;
++
++	pkt_size = APR_HDR_SIZE + (pcm_fmt_v5 ? sizeof(*fmt5) : sizeof(*fmt));
+ 
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	fmt = p + APR_HDR_SIZE;
+ 
+ 	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
+-
+ 	pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
+-	fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
+-	fmt->num_channels = channels;
+-	fmt->bits_per_sample = bits_per_sample;
+-	fmt->sample_rate = rate;
+-	fmt->is_signed = 1;
+ 
+-	channel_mapping = fmt->channel_mapping;
++	if (pcm_fmt_v5) {
++		fmt5 = p + APR_HDR_SIZE;
++		fmt5->fmt_blk.fmt_blk_size = sizeof(*fmt5) - sizeof(fmt5->fmt_blk);
++		fmt5->num_channels = channels;
++		fmt5->bits_per_sample = bits_per_sample;
++		fmt5->sample_rate = rate;
++		fmt5->is_signed = 1;
++		/* The vendor sends the sample width again here, and 0 for the rest. */
++		fmt5->sample_word_size = bits_per_sample;
++		channel_mapping = fmt5->channel_mapping;
++		map_size = PCM_MAX_NUM_CHANNEL_V5;
++	} else {
++		fmt = p + APR_HDR_SIZE;
++		fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
++		fmt->num_channels = channels;
++		fmt->bits_per_sample = bits_per_sample;
++		fmt->sample_rate = rate;
++		fmt->is_signed = 1;
++		channel_mapping = fmt->channel_mapping;
++		map_size = PCM_MAX_NUM_CHANNEL;
++	}
+ 
+ 	if (channel_map) {
+-		memcpy(channel_mapping, channel_map, PCM_MAX_NUM_CHANNEL);
++		memcpy(channel_mapping, channel_map,
++		       min(map_size, PCM_MAX_NUM_CHANNEL));
+ 	} else {
+ 		if (q6dsp_map_channels(channel_mapping, channels)) {
+ 			dev_err(ac->dev, " map channels failed %d\n", channels);
+-- 
+2.43.0
+

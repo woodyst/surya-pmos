@@ -1,0 +1,60 @@
+From 92f084a3bcff6c769e60cbfe3a83513b01bdef15 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 2 Aug 2026 15:41:47 +0200
+Subject: [PATCH 082/106] ASoC: qdsp6: q6voice: arm the call taps the way the
+ vendor does
+
+When the taps are armed as part of starting a call, do it in the vendor
+order - in-call playback first, then recording - and only tap the
+directions record_dirs asks for. Tapping the uplink hands the microphone
+to the record port instead of copying it, so the far end hears nothing
+at all; the default is now the downlink alone.
+
+Arming both directions unconditionally is what made incall_taps unusable
+before.
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 24 +++++++++++++++++++-----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 8fcf7c40b..0aa77d325 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -319,14 +319,28 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 	 * call that is otherwise working.
+ 	 */
+ 	if (incall_taps) {
+-		ret = q6cvs_start_record(p->runtime->sessions[Q6VOICE_SERVICE_CVS],
+-					 true, true);
++		struct q6voice_session *cvs =
++			p->runtime->sessions[Q6VOICE_SERVICE_CVS];
++
++		/*
++		 * Playback before recording, the order the vendor driver uses
++		 * when it brings these up as part of starting a call.
++		 */
++		ret = q6cvs_start_playback(cvs);
+ 		if (ret)
+-			dev_dbg(dev, "in-call record taps not started: %d\n", ret);
++			dev_dbg(dev, "in-call playback not started: %d\n", ret);
+ 
+-		ret = q6cvs_start_playback(p->runtime->sessions[Q6VOICE_SERVICE_CVS]);
++		/*
++		 * Which directions to tap comes from record_dirs (1 = the far
++		 * end, 2 = the microphone, 3 = both). Tapping the microphone
++		 * takes it away from the modem instead of copying it, so the
++		 * default is the far end alone.
++		 */
++		if (record_dirs)
++			ret = q6cvs_start_record(cvs, record_dirs & 1,
++						 record_dirs & 2);
+ 		if (ret)
+-			dev_dbg(dev, "in-call playback not started: %d\n", ret);
++			dev_dbg(dev, "in-call record taps not started: %d\n", ret);
+ 		ret = 0;
+ 	}
+ 
+-- 
+2.43.0
+

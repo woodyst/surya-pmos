@@ -1,0 +1,79 @@
+From 62838570c247dd1a3c0329f98e8867a91ee94e33 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 03:11:19 +0200
+Subject: [PATCH 042/106] arm64: dts: qcom: sm7150-xiaomi-surya: add WL2866D
+ camera PMIC
+
+The camera sensors on this board are not supplied by the SoC PMICs:
+their DVDD and AVDD rails come from a WL2866D on i2c9, which until now
+was only noted as a comment.
+
+Describe it, with the rails constrained to the voltages the downstream
+kernel programs for this board: 1.110V for the two digital rails, 2.800V
+for the analog rail shared by the front, macro, depth and ultrawide
+sensors, and 2.900V for the main IMX682's analog rail.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-surya.dtsi    | 44 ++++++++++++++++++-
+ 1 file changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 61522e859..d49ee7e2c 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -287,7 +287,49 @@ &i2c9 {
+ 	clock-frequency = <100000>;
+ 	status = "okay";
+ 
+-	/* ovti,wl2866d (cam regulator) @ 28 */
++	/*
++	 * Camera PMIC. The camera sensors are not supplied by the SoC PMICs:
++	 * their DVDD/AVDD rails come from this chip. The voltages below are
++	 * the ones the downstream kernel programs for this board.
++	 */
++	pmic@28 {
++		compatible = "willsemi,wl2866d";
++		reg = <0x28>;
++
++		vin1-supply = <&vreg_s8c_1p35>;
++		vin2-supply = <&vreg_bob>;
++		enable-gpios = <&pm6150l_gpios 1 GPIO_ACTIVE_HIGH>;
++
++		regulators {
++			/* DVDD of the Hi-1337 ultrawide */
++			vreg_cam_dvdd1: dvdd1 {
++				regulator-name = "cam_dvdd1";
++				regulator-min-microvolt = <1110000>;
++				regulator-max-microvolt = <1110000>;
++			};
++
++			/* DVDD of the IMX682 main sensor */
++			vreg_cam_dvdd2: dvdd2 {
++				regulator-name = "cam_dvdd2";
++				regulator-min-microvolt = <1110000>;
++				regulator-max-microvolt = <1110000>;
++			};
++
++			/* AVDD shared by the front, macro, depth and ultrawide */
++			vreg_cam_avdd1: avdd1 {
++				regulator-name = "cam_avdd1";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++			};
++
++			/* AVDD of the IMX682 main sensor */
++			vreg_cam_avdd2: avdd2 {
++				regulator-name = "cam_avdd2";
++				regulator-min-microvolt = <2900000>;
++				regulator-max-microvolt = <2900000>;
++			};
++		};
++	};
+ 
+ 	tas2562: codec@4c { /* SPK */
+ 		compatible = "ti,tas2562";
+-- 
+2.43.0
+

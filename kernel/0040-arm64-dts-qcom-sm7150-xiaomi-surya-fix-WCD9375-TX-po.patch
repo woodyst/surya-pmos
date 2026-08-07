@@ -1,0 +1,57 @@
+From 199b18c9674e1c0be0fb555b97f08d3c9ff9708e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 01:58:37 +0200
+Subject: [PATCH 040/106] arm64: dts: qcom: sm7150-xiaomi-surya: fix WCD9375 TX
+ port mapping
+
+The TX port map was off by one: it mapped the codec's ADC1 device port
+onto SoundWire port 1, ADC2/3 onto port 1, and the DMIC groups onto
+ports 2 and 3.
+
+SoundWire port 1 on this link is PCM_OUT1 and carries no capture data,
+so the TX macro read a port the codec never streamed on. Everything
+looked healthy - the codec probed, the whole DAPM capture chain powered
+up (MIC BIAS1, AMIC1, ADC1, TX SWR_ADC0, TX DEC0 MUX and TX_AIF1 CAP all
+On), the PCM opened and the DMA ran - but capture returned digital
+silence: exactly 0 after the ADC's DC settling transient, with no noise
+floor at all, which is not something a live analogue ADC can produce.
+
+The binding documents the correct mapping for this codec:
+
+  WCD9370 TX Port 1 (ADC1)               <=> SWR2 Port 2
+  WCD9370 TX Port 2 (ADC2, 3)            <=> SWR2 Port 2
+  WCD9370 TX Port 3 (DMIC0,1,2,3 & MBHC) <=> SWR2 Port 3
+  WCD9370 TX Port 4 (DMIC4,5,6,7)        <=> SWR2 Port 4
+
+which is <2 2 3 4>, and matches the downstream sm6150/sdmmagpie port map
+for this board (sdmmagpie is SM7150 downstream): <2 ADC1 0x1>,
+<2 ADC2 0x2>, <3 ADC3 0x1>, <4 DMIC0..3>, <5 DMIC4..7>, with port 1
+reserved for PCM_OUT1.
+
+With this the microphone captures: a sustained noise floor across the
+whole recording (~92% non-zero samples instead of zeros), and the ADC1
+gain control scales it monotonically (RMS 3.1 -> 6.0 -> 41.3 for gain
+0 -> 10 -> 20), confirming the analogue path is live.
+
+Signed-off-by: Edi <woodyst@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+index 6410fe3b5..61522e859 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-surya.dtsi
+@@ -225,7 +225,7 @@ &swr2 {			/* TX */
+ 	wcd9375_tx: codec@0,3 {
+ 		compatible = "sdw20217010a00";
+ 		reg = <0 3>;
+-		qcom,tx-port-mapping = <1 1 2 3>;
++		qcom,tx-port-mapping = <2 2 3 4>;
+ 		qcom,tx-channel-mapping = /bits/ 8 <1 2 1 1 2 3 3 4 1 2 3 4>;
+ 	};
+ };
+-- 
+2.43.0
+

@@ -1,0 +1,155 @@
+From 7b83d38b5afcfa29ce0c96a93080d4595503bf91 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 6 Aug 2026 11:38:27 +0200
+Subject: [PATCH 106/106] Revert "ASoC: qdsp6: q6voice: fotografiar los puertos
+ antes de rehacer el vocproc"
+
+This reverts commit e903c1a2e571f9e5b07a0832080041e3f004164e.
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 77 ++++++----------------------------
+ 1 file changed, 12 insertions(+), 65 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 86442693a..dddada656 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -55,7 +55,6 @@ static struct q6voice *q6voice_live;
+ /* Defined next to q6voice_set_port, which is what schedules it. */
+ static void q6voice_switch_device(struct work_struct *work);
+ 
+-
+ struct q6voice {
+ 	struct device *dev;
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+@@ -558,39 +557,6 @@ EXPORT_SYMBOL_GPL(q6voice_get_port);
+  * The MVM and CVS sessions survive untouched, so the call itself is never
+  * torn down - the far end hears a short gap, nothing more.
+  */
+-/*
+- * Manual trigger for the vocproc rebuild: `echo 1 > /sys/module/q6voice/
+- * parameters/rekick`. Userspace needs it because the chip only re-binds its
+- * bus ports to the SCO link when the link is fresh: on re-entering the
+- * Bluetooth device mid-call the session service bounces the SCO and then
+- * pulls this to land a rebuild with the fresh link up. The automatic rekick
+- * fires 0.8 s after the move, which can be before the bounce finishes.
+- */
+-static int q6voice_rekick_set(const char *val, const struct kernel_param *kp)
+-{
+-	struct q6voice *v = q6voice_live;
+-	struct q6voice_path *p;
+-
+-	if (!v)
+-		return -ENODEV;
+-
+-	p = &v->paths[Q6VOICE_PATH_VOICE];
+-	mutex_lock(&p->lock);
+-	if (p->runtime && p->runtime->started == 3) {
+-		p->runtime->rekick = true;
+-		mod_delayed_work(system_wq, &p->switch_work,
+-				 msecs_to_jiffies(50));
+-	}
+-	mutex_unlock(&p->lock);
+-	return 0;
+-}
+-
+-static const struct kernel_param_ops q6voice_rekick_ops = {
+-	.set = q6voice_rekick_set,
+-};
+-module_param_cb(rekick, &q6voice_rekick_ops, NULL, 0200);
+-MODULE_PARM_DESC(rekick, "rebuild the live vocproc once (write 1)");
+-
+ static void q6voice_switch_device(struct work_struct *work)
+ {
+ 	struct q6voice_path *p = container_of(to_delayed_work(work),
+@@ -598,31 +564,13 @@ static void q6voice_switch_device(struct work_struct *work)
+ 	struct device *dev = p->v->dev;
+ 	struct q6voice_session *mvm, *cvp;
+ 	bool force;
+-	int ret, tx, rx;
++	int ret;
+ 
+ 	mutex_lock(&p->lock);
+ 
+ 	if (!p->runtime || p->runtime->started != 3)
+ 		goto out;
+ 
+-	/*
+-	 * Snapshot the ports and use only the copies below.
+-	 *
+-	 * q6voice_set_port() writes p->tx_port/p->rx_port WITHOUT this lock,
+-	 * and a rebuild takes ~250 ms - long enough for one of the four mixer
+-	 * writes of a device change to land in the middle. Re-reading the
+-	 * fields as we go could then build the vocproc for one port and
+-	 * record it as another, or pick up the transient 0 that exists while
+-	 * the old device is off and the new one is not on yet. Seen in a real
+-	 * call as "moving call: tx_port 120 -> 151, rx_port 0 -> 150" and the
+-	 * headset staying silent, about one switch in five.
+-	 *
+-	 * If the ports do change while we work, nothing is lost: set_port()
+-	 * has already scheduled another run, which will move it again.
+-	 */
+-	tx = READ_ONCE(p->tx_port);
+-	rx = READ_ONCE(p->rx_port);
+-
+ 	force = p->runtime->rekick;
+ 	p->runtime->rekick = false;
+ 
+@@ -632,15 +580,15 @@ static void q6voice_switch_device(struct work_struct *work)
+ 		goto out;
+ 
+ 	/* Both ends have to be somewhere real, and somewhere else. */
+-	if (!tx || !rx)
++	if (!p->tx_port || !p->rx_port)
+ 		goto out;
+-	if (tx == p->runtime->cvp_tx_port &&
+-	    rx == p->runtime->cvp_rx_port && !force)
++	if (p->tx_port == p->runtime->cvp_tx_port &&
++	    p->rx_port == p->runtime->cvp_rx_port && !force)
+ 		goto out;
+ 
+ 	dev_info(dev, "moving call: tx_port %d -> %d, rx_port %d -> %d\n",
+-		 p->runtime->cvp_tx_port, tx,
+-		 p->runtime->cvp_rx_port, rx);
++		 p->runtime->cvp_tx_port, p->tx_port,
++		 p->runtime->cvp_rx_port, p->rx_port);
+ 
+ 	ret = q6mvm_start(mvm, false);
+ 	if (ret)
+@@ -655,15 +603,15 @@ static void q6voice_switch_device(struct work_struct *work)
+ 	q6voice_session_release(cvp);
+ 	p->runtime->sessions[Q6VOICE_SERVICE_CVP] = NULL;
+ 
+-	cvp = q6cvp_session_create(p->type, q6afe_get_port_id(tx),
+-				   q6afe_get_port_id(rx));
++	cvp = q6cvp_session_create(p->type, q6afe_get_port_id(p->tx_port),
++				   q6afe_get_port_id(p->rx_port));
+ 	if (IS_ERR(cvp)) {
+ 		dev_err(dev, "failed to rebuild the cvp: %ld\n", PTR_ERR(cvp));
+ 		goto out;
+ 	}
+ 	p->runtime->sessions[Q6VOICE_SERVICE_CVP] = cvp;
+-	p->runtime->cvp_tx_port = tx;
+-	p->runtime->cvp_rx_port = rx;
++	p->runtime->cvp_tx_port = p->tx_port;
++	p->runtime->cvp_rx_port = p->rx_port;
+ 
+ 	ret = q6cvp_enable(cvp, true);
+ 	if (ret) {
+@@ -712,11 +660,10 @@ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+ {
+ 	struct q6voice_path *p = &v->paths[path];
+ 
+-	/* Paired with the READ_ONCE() snapshot in q6voice_switch_device(). */
+ 	if (capture)
+-		WRITE_ONCE(p->tx_port, index);
++		p->tx_port = index;
+ 	else
+-		WRITE_ONCE(p->rx_port, index);
++		p->rx_port = index;
+ 
+ 	/*
+ 	 * Coalesce: moving a call touches four mixer controls (old device off,
+-- 
+2.43.0
+

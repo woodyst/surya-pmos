@@ -1,0 +1,58 @@
+From a3150b172d6021594240ba3e71c2213c510bcab4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Fri, 17 Jul 2026 16:38:20 +0200
+Subject: [PATCH 052/106] ASoC: qcom: q6voice: allow taking the call uplink
+ from a codec DMA port
+
+The CS-Voice capture mixer only offers the five MI2S TX ports, so a board
+whose microphone hangs off the LPASS codec rather than an I2S port cannot
+route its uplink at all: there is no control to point the voice session's
+TX end at TX_CODEC_DMA_TX_3, where the WCD9375's ADC1 arrives over
+SoundWire on the Xiaomi POCO X3 NFC.
+
+Add the four TX codec DMA ports to the mixer and to the DAPM routes.
+
+Verified on a POCO X3 NFC during a live call: the voice path now starts
+with tx_port resolving to AFE port 45111, TX_CODEC_DMA_TX_3.
+---
+ sound/soc/qcom/qdsp6/q6voice-dai.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice-dai.c b/sound/soc/qcom/qdsp6/q6voice-dai.c
+index ee3cf11a9..ceff89a08 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -121,6 +121,18 @@ static const struct snd_kcontrol_new voice_tx_mixer_controls[] = {
+ 		       q6voice_get_mixer, q6voice_put_mixer),
+ 	SOC_SINGLE_EXT("QUIN_MI2S_TX", QUINARY_MI2S_TX, 1, 1, 0,
+ 		       q6voice_get_mixer, q6voice_put_mixer),
++	/*
++	 * Boards that hang their microphone off the LPASS codec rather than an
++	 * I2S port take the uplink from one of the TX codec DMA ports.
++	 */
++	SOC_SINGLE_EXT("TX_CODEC_DMA_TX_0", TX_CODEC_DMA_TX_0, 1, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer),
++	SOC_SINGLE_EXT("TX_CODEC_DMA_TX_1", TX_CODEC_DMA_TX_1, 1, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer),
++	SOC_SINGLE_EXT("TX_CODEC_DMA_TX_2", TX_CODEC_DMA_TX_2, 1, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer),
++	SOC_SINGLE_EXT("TX_CODEC_DMA_TX_3", TX_CODEC_DMA_TX_3, 1, 1, 0,
++		       q6voice_get_mixer, q6voice_put_mixer),
+ };
+ 
+ static const struct snd_kcontrol_new primary_mi2s_rx_mixer_controls[] = {
+@@ -177,6 +189,10 @@ static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
+ 	{ "CS-Voice Capture Mixer",	"TERT_MI2S_TX",	"TERT_MI2S_TX" },
+ 	{ "CS-Voice Capture Mixer",	"QUAT_MI2S_TX",	"QUAT_MI2S_TX" },
+ 	{ "CS-Voice Capture Mixer",	"QUIN_MI2S_TX",	"QUIN_MI2S_TX" },
++	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_0", "TX_CODEC_DMA_TX_0" },
++	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_1", "TX_CODEC_DMA_TX_1" },
++	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_2", "TX_CODEC_DMA_TX_2" },
++	{ "CS-Voice Capture Mixer",	"TX_CODEC_DMA_TX_3", "TX_CODEC_DMA_TX_3" },
+ 	{ "CS-VOICE_UL1",		NULL,		"CS-Voice Capture Mixer" },
+ 
+ 	{ "PRI_MI2S_RX Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+-- 
+2.43.0
+

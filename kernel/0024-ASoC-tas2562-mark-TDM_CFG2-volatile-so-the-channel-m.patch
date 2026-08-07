@@ -1,0 +1,63 @@
+From 156af8822c4f4ce168a21c6aaeeccdbbd883388f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 15 Jul 2026 15:32:13 +0200
+Subject: [PATCH 024/106] ASoC: tas2562: mark TDM_CFG2 volatile so the channel
+ mux stops self-clobbering
+
+TDM_CFG2 (0x08) packs two unrelated fields: the ASI1 channel-select mux
+in bits 5:4 (a DAPM mux) and the I2S RX word/slot length in bits 3:2 and
+1:0 (written from hw_params via set_bitwidth). Two subsystems, two trigger
+times, one register, both doing read-modify-write through the regmap
+cache.
+
+Around a stream start they interleave, and with the cached copy stale one
+RMW stamps an old value back over the other's bits. In practice the
+channel select loses: bits 5:4 land on 0, which is the mux's I2C-offset /
+mute code, so the amp goes silent. Observed on a Xiaomi surya driving two
+of these amps as a stereo pair - setting each amp to its own channel (top
+= Left, bottom = Right) via UCM at profile-activation time intermittently
+muted whichever amp, not value-specific, while setting the same mux during
+steady playback (after hw_params has run) was always reliable.
+
+Mark the register volatile so every RMW reads the live value first; then
+neither the mux write nor set_bitwidth can clobber the other's bits, and
+true per-channel stereo becomes reliable.
+---
+ sound/soc/codecs/tas2562.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/sound/soc/codecs/tas2562.c b/sound/soc/codecs/tas2562.c
+index 81f6caff2..e95fce883 100644
+--- a/sound/soc/codecs/tas2562.c
++++ b/sound/soc/codecs/tas2562.c
+@@ -943,9 +943,26 @@ static const struct regmap_range_cfg tas2562_ranges[] = {
+ 	},
+ };
+ 
++/*
++ * TDM_CFG2 packs two unrelated fields written by two different subsystems at
++ * two different times: the channel-select mux (bits 5:4, a DAPM mux) and the
++ * I2S word/slot length (bits 3:2 and 1:0, written from hw_params). Both do
++ * read-modify-write. If the cached copy is stale when they interleave - which
++ * it is around a stream start - one stamps a stale value back over the other's
++ * bits, and the channel select lands on the mute code (bits 5:4 = 0). Making
++ * the register volatile forces every RMW to read the live value first, so
++ * neither writer can clobber the other. This is what makes true L/R stereo
++ * (each amp on its own channel) reliable instead of intermittently muting.
++ */
++static bool tas2562_volatile_reg(struct device *dev, unsigned int reg)
++{
++	return reg == TAS2562_TDM_CFG2;
++}
++
+ static const struct regmap_config tas2562_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
++	.volatile_reg = tas2562_volatile_reg,
+ 
+ 	.max_register = 254 * 128,
+ 	/*
+-- 
+2.43.0
+
