@@ -26,7 +26,7 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 | **GPS** | The engine ships locked in NV from the factory; unlocked persistently here |
 | **USB OTG** | Host mode, verified with a webcam |
 | **Notifications** | Sound **and vibration**, plus haptic feedback on key presses |
-| **Charging** | Including the switched-capacitor charger |
+| **Charging** | The battery charges and reports its level, with the BQ25970 charge pump driven and the current limit raised |
 
 ## What does not work
 
@@ -44,6 +44,9 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
 - Bluetooth: returning to the headset mid-call stays silent, and consecutive calls degrade until
   Bluetooth is power-cycled.
+- **Xiaomi's 33 W fast charge.** The charge pump works and the limit is raised, but the proprietary
+  handshake that unlocks the high-power mode is not implemented, so a Xiaomi charger delivers only
+  the standard rate.
 
 ## Requirements
 

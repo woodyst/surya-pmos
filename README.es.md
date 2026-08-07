@@ -27,7 +27,7 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 | **GPS** | El motor viene **bloqueado de fábrica** en la NV; aquí se desbloquea de forma persistente |
 | **USB OTG** | Modo anfitrión, verificado con una cámara web |
 | **Notificaciones** | Sonido **y vibración**, más respuesta háptica al pulsar |
-| **Carga** | Incluido el cargador de condensadores conmutados |
+| **Carga** | La batería carga e informa de su nivel, con la bomba de carga BQ25970 en marcha y el límite de corriente subido |
 
 ## Lo que no funciona
 
@@ -45,6 +45,9 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 - **Zoom**: el driver del sensor expone un solo modo; el firmware de fábrica tiene cinco.
 - Bluetooth: volver al auricular a mitad de llamada se queda mudo, y las llamadas seguidas se
   degradan hasta que se apaga y enciende el Bluetooth.
+- **La carga rápida de 33 W de Xiaomi.** La bomba de carga funciona y el límite está subido, pero
+  falta el protocolo propietario que desbloquea la potencia alta, así que un cargador de Xiaomi
+  entrega solo el ritmo estándar.
 
 ## Qué hace falta
 
