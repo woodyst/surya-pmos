@@ -44,6 +44,11 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
 - Bluetooth: returning to the headset mid-call stays silent, and consecutive calls degrade until
   Bluetooth is power-cycled.
+- **Galileo and BeiDou never show up**, so the sky view is GPS and GLONASS only, and
+  there is no A-GPS assistance either. The modem reports both constellations as
+  *enabled*, so the constellation control is not what is blocking them — the LOC messages
+  needed to ask that question at all had to be decoded and implemented first, see
+  [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
 - **Xiaomi's 33 W fast charge.** The charge pump works and the limit is raised, but the proprietary
   handshake that unlocks the high-power mode is not implemented, so a Xiaomi charger delivers only
   the standard rate.
@@ -72,8 +77,13 @@ cp kernel/*.patch kernel/APKBUILD kernel/config-* \
 #    (0001-0003) — ours are 0004 and 0005 and the APKBUILD lists all of them.
 cp packages/libcamera/*.patch packages/libcamera/APKBUILD "$PMAPORTS/temp/libcamera/"
 
-# 3. Checksums and build
-pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera
+# 3. libqmi with the GNSS constellation messages. Optional: everything else works
+#    without it. libqmi is not in pmaports, so it is built out of temp/.
+mkdir -p "$PMAPORTS/temp/libqmi"
+cp packages/libqmi/*.patch packages/libqmi/APKBUILD "$PMAPORTS/temp/libqmi/"
+
+# 4. Checksums and build
+pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi
 pmbootstrap shutdown          # see the pitfalls below
 pmbootstrap install
 ```
@@ -202,4 +212,7 @@ the same terms as the projects they extend. See [`NOTICE.md`](NOTICE.md).
 
 - [`docs/`](docs/) — per-subsystem notes: what was wrong, how it was found, and the traps.
 - [`kernel/`](kernel/) — the patch series, one commit per fix.
+- [`tools/qmi-loc-idl/`](tools/qmi-loc-idl/) — decoder for the modem's QMI LOC interface
+  table: all 470 messages, and the three that got implemented in
+  [`packages/libqmi`](packages/libqmi).
 - [Spanish version of this file](README.es.md).

@@ -1,0 +1,495 @@
+From 24ed9108df7775425eaad8bbd1588e6bdb14fdf6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 19:08:11 +0200
+Subject: [PATCH 2/2] qmicli,loc: expose the constellation control messages
+
+  --loc-get-constellation-control
+  --loc-set-constellation-control=[reset|disabled-mask[,enabled-mask]]
+  --loc-set-gnss-constellation-report-config=[measurement-mask[,polynomial-mask]]
+
+The query prints the two constellation sets through the new adapter rather
+than six separate lookups, and then the raw state values as well, so the
+reply is not hidden behind an interpretation of an enumeration nobody has
+published.
+
+The masks taken by the setters are accepted verbatim, in any base, and are
+described as opaque on purpose: their bit order is not the same in every
+message and has not been established for all of them.
+
+Like the rest of LOC, these are request-plus-indication: the response only
+carries the generic result, and the real answer arrives in a later
+indication. Reading the response alone tells you nothing.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/qmicli/qmicli-loc.c | 407 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 406 insertions(+), 1 deletion(-)
+
+diff --git a/src/qmicli/qmicli-loc.c b/src/qmicli/qmicli-loc.c
+index eceefd0..d85f7b1 100644
+--- a/src/qmicli/qmicli-loc.c
++++ b/src/qmicli/qmicli-loc.c
+@@ -69,6 +69,9 @@ typedef struct {
+     guint           inject_time_indication_id;
+     guint           get_predicted_orbits_data_source_indication_id;
+     guint           get_predicted_orbits_data_validity_indication_id;
++    guint           get_constellation_control_indication_id;
++    guint           set_constellation_control_indication_id;
++    guint           set_gnss_constellation_report_config_indication_id;
+ } Context;
+ static Context *ctx;
+ 
+@@ -94,6 +97,9 @@ static gdouble  inject_position_longitude = NAN;
+ static gboolean inject_time_flag;
+ static gboolean get_predicted_orbits_data_source_flag;
+ static gboolean get_predicted_orbits_data_validity_flag;
++static gboolean get_constellation_control_flag;
++static gchar   *set_constellation_control_str;
++static gchar   *set_gnss_constellation_report_config_str;
+ static gboolean noop_flag;
+ 
+ #define DEFAULT_LOC_TIMEOUT_SECS 30
+@@ -194,6 +200,24 @@ static GOptionEntry entries[] = {
+       "[default|msb|msa|standalone|cellid|wwan]"
+     },
+ #endif
++#if defined HAVE_QMI_MESSAGE_LOC_GET_CONSTELLATION_CONTROL
++    { "loc-get-constellation-control", 0, 0, G_OPTION_ARG_NONE, &get_constellation_control_flag,
++      "Get which GNSS constellations are enabled",
++      NULL
++    },
++#endif
++#if defined HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL
++    { "loc-set-constellation-control", 0, 0, G_OPTION_ARG_STRING, &set_constellation_control_str,
++      "Set which GNSS constellations are disabled, as an opaque mask, or reset to defaults",
++      "[reset|disabled-mask[,enabled-mask]]"
++    },
++#endif
++#if defined HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG
++    { "loc-set-gnss-constellation-report-config", 0, 0, G_OPTION_ARG_STRING, &set_gnss_constellation_report_config_str,
++      "Set which constellations the engine reports measurements for, as an opaque mask",
++      "[measurement-mask[,polynomial-mask]]"
++    },
++#endif
+ #if defined HAVE_QMI_MESSAGE_LOC_GET_ENGINE_LOCK
+     { "loc-get-engine-lock", 0, 0, G_OPTION_ARG_NONE, &get_engine_lock_flag,
+       "Get engine lock status",
+@@ -289,6 +313,9 @@ qmicli_loc_options_enabled (void)
+                  inject_time_flag +
+                  get_predicted_orbits_data_source_flag +
+                  get_predicted_orbits_data_validity_flag +
++                 get_constellation_control_flag +
++                 !!set_constellation_control_str +
++                 !!set_gnss_constellation_report_config_str +
+                  noop_flag);
+ 
+     if (n_actions > 1) {
+@@ -327,7 +354,10 @@ qmicli_loc_options_enabled (void)
+         !isnan (inject_position_longitude) ||
+         inject_time_flag ||
+         get_predicted_orbits_data_source_flag ||
+-        get_predicted_orbits_data_validity_flag)
++        get_predicted_orbits_data_validity_flag ||
++        get_constellation_control_flag ||
++        set_constellation_control_str ||
++        set_gnss_constellation_report_config_str)
+         qmicli_expect_indications ();
+ 
+     checked = TRUE;
+@@ -367,6 +397,15 @@ context_free (Context *context)
+     if (context->set_operation_mode_indication_id)
+         g_signal_handler_disconnect (context->client, context->set_operation_mode_indication_id);
+ 
++    if (context->get_constellation_control_indication_id)
++        g_signal_handler_disconnect (context->client, context->get_constellation_control_indication_id);
++
++    if (context->set_constellation_control_indication_id)
++        g_signal_handler_disconnect (context->client, context->set_constellation_control_indication_id);
++
++    if (context->set_gnss_constellation_report_config_indication_id)
++        g_signal_handler_disconnect (context->client, context->set_gnss_constellation_report_config_indication_id);
++
+     if (context->get_engine_lock_indication_id)
+         g_signal_handler_disconnect (context->client, context->get_engine_lock_indication_id);
+ 
+@@ -1124,6 +1163,297 @@ get_operation_mode_ready (QmiClientLoc *client,
+ }
+ #endif /* HAVE_QMI_MESSAGE_LOC_GET_OPERATION_MODE */
+ 
++/* Constellation control ****************************************************/
++
++#if defined HAVE_QMI_MESSAGE_LOC_GET_CONSTELLATION_CONTROL || \
++    defined HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL || \
++    defined HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG
++
++static gboolean
++constellation_operation_timed_out (void)
++{
++    ctx->timeout_id = 0;
++    g_printerr ("error: operation failed: timeout\n");
++    operation_shutdown (FALSE);
++    return G_SOURCE_REMOVE;
++}
++
++#endif
++
++#if defined HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL || \
++    defined HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG
++
++/* Both setters take opaque 64-bit masks whose bit order is not the same in
++ * every message, so no attempt is made to name the bits: the value is taken
++ * verbatim, in whatever base the user wrote it. */
++static gboolean
++parse_constellation_masks (const gchar *str,
++                           guint64     *out_first,
++                           gboolean    *out_second_set,
++                           guint64     *out_second)
++{
++    g_auto(GStrv)  split = NULL;
++    gchar         *endptr = NULL;
++
++    split = g_strsplit (str, ",", -1);
++    if (!split[0] || !split[0][0] || g_strv_length (split) > 2)
++        return FALSE;
++
++    *out_first = g_ascii_strtoull (split[0], &endptr, 0);
++    if (!endptr || *endptr)
++        return FALSE;
++
++    *out_second_set = FALSE;
++    *out_second = 0;
++    if (split[1]) {
++        endptr = NULL;
++        *out_second = g_ascii_strtoull (split[1], &endptr, 0);
++        if (!endptr || *endptr)
++            return FALSE;
++        *out_second_set = TRUE;
++    }
++    return TRUE;
++}
++
++#endif
++
++#if defined HAVE_QMI_MESSAGE_LOC_GET_CONSTELLATION_CONTROL
++
++static void
++get_constellation_control_received (QmiClientLoc                                  *client,
++                                    QmiIndicationLocGetConstellationControlOutput *output)
++{
++    QmiLocIndicationStatus   status;
++    QmiLocGnssConstellation  enabled = 0;
++    QmiLocGnssConstellation  disabled = 0;
++    guint32                  state;
++    g_autofree gchar        *enabled_str = NULL;
++    g_autofree gchar        *disabled_str = NULL;
++    g_autoptr(GError)        error = NULL;
++
++    if (!qmi_indication_loc_get_constellation_control_output_get_indication_status (output, &status, &error)) {
++        g_printerr ("error: couldn't get constellation control: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (status != QMI_LOC_INDICATION_STATUS_SUCCESS) {
++        g_printerr ("error: couldn't get constellation control: %s\n",
++                    qmi_loc_indication_status_get_string (status));
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_indication_loc_get_constellation_control_output_get_constellations (output,
++                                                                                &enabled,
++                                                                                &disabled,
++                                                                                &error)) {
++        g_printerr ("error: couldn't get constellation control: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    enabled_str = qmi_loc_gnss_constellation_build_string_from_mask (enabled);
++    disabled_str = qmi_loc_gnss_constellation_build_string_from_mask (disabled);
++
++    g_print ("Successfully retrieved constellation control\n"
++             "\tEnabled:  %s\n"
++             "\tDisabled: %s\n",
++             VALIDATE_MASK_NONE (enabled_str),
++             VALIDATE_MASK_NONE (disabled_str));
++
++    /* The state values themselves are an unpublished enumeration, so print them
++     * as well rather than hide the raw reply behind the interpretation. */
++    g_print ("\tReported state values:\n");
++
++#define PRINT_STATE(GETTER, LABEL)                                                \
++    if (qmi_indication_loc_get_constellation_control_output_get_##GETTER (        \
++            output, &state, NULL))                                                \
++        g_print ("\t\t%-8s %u\n", LABEL ":", state);
++
++    PRINT_STATE (gps_state,     "GPS")
++    PRINT_STATE (glonass_state, "GLONASS")
++    PRINT_STATE (beidou_state,  "BeiDou")
++    PRINT_STATE (qzss_state,    "QZSS")
++    PRINT_STATE (galileo_state, "Galileo")
++    PRINT_STATE (navic_state,   "NavIC")
++
++#undef PRINT_STATE
++
++    operation_shutdown (TRUE);
++}
++
++static void
++get_constellation_control_ready (QmiClientLoc *client,
++                                 GAsyncResult *res)
++{
++    g_autoptr(QmiMessageLocGetConstellationControlOutput) output = NULL;
++    g_autoptr(GError)                                     error = NULL;
++
++    output = qmi_client_loc_get_constellation_control_finish (client, res, &error);
++    if (!output) {
++        g_printerr ("error: operation failed: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_message_loc_get_constellation_control_output_get_result (output, &error)) {
++        g_printerr ("error: could not get constellation control: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++}
++
++#endif /* HAVE_QMI_MESSAGE_LOC_GET_CONSTELLATION_CONTROL */
++
++#if defined HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL
++
++static void
++set_constellation_control_received (QmiClientLoc                                  *client,
++                                    QmiIndicationLocSetConstellationControlOutput *output)
++{
++    QmiLocIndicationStatus  status;
++    g_autoptr(GError)       error = NULL;
++
++    if (!qmi_indication_loc_set_constellation_control_output_get_indication_status (output, &status, &error)) {
++        g_printerr ("error: couldn't set constellation control: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (status != QMI_LOC_INDICATION_STATUS_SUCCESS) {
++        g_printerr ("error: couldn't set constellation control: %s\n",
++                    qmi_loc_indication_status_get_string (status));
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    g_print ("Successfully set constellation control\n");
++    operation_shutdown (TRUE);
++}
++
++static void
++set_constellation_control_ready (QmiClientLoc *client,
++                                 GAsyncResult *res)
++{
++    g_autoptr(QmiMessageLocSetConstellationControlOutput) output = NULL;
++    g_autoptr(GError)                                     error = NULL;
++
++    output = qmi_client_loc_set_constellation_control_finish (client, res, &error);
++    if (!output) {
++        g_printerr ("error: operation failed: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_message_loc_set_constellation_control_output_get_result (output, &error)) {
++        g_printerr ("error: could not set constellation control: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++}
++
++static QmiMessageLocSetConstellationControlInput *
++set_constellation_control_input_create (const gchar *str)
++{
++    g_autoptr(QmiMessageLocSetConstellationControlInput) input = NULL;
++    guint64  disabled = 0;
++    guint64  enabled = 0;
++    gboolean enabled_set = FALSE;
++
++    input = qmi_message_loc_set_constellation_control_input_new ();
++
++    if (g_str_equal (str, "reset")) {
++        qmi_message_loc_set_constellation_control_input_set_reset (input, 1, NULL);
++        return g_steal_pointer (&input);
++    }
++
++    if (!parse_constellation_masks (str, &disabled, &enabled_set, &enabled)) {
++        g_printerr ("error: couldn't parse constellation masks: '%s'\n", str);
++        return NULL;
++    }
++
++    qmi_message_loc_set_constellation_control_input_set_reset (input, 0, NULL);
++    qmi_message_loc_set_constellation_control_input_set_disabled_constellations (input, disabled, NULL);
++    if (enabled_set)
++        qmi_message_loc_set_constellation_control_input_set_enabled_constellations (input, enabled, NULL);
++
++    return g_steal_pointer (&input);
++}
++
++#endif /* HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL */
++
++#if defined HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG
++
++static void
++set_gnss_constellation_report_config_received (QmiClientLoc                                             *client,
++                                               QmiIndicationLocSetGnssConstellationReportConfigOutput   *output)
++{
++    QmiLocIndicationStatus  status;
++    g_autoptr(GError)       error = NULL;
++
++    if (!qmi_indication_loc_set_gnss_constellation_report_config_output_get_indication_status (output, &status, &error)) {
++        g_printerr ("error: couldn't set GNSS constellation report config: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (status != QMI_LOC_INDICATION_STATUS_SUCCESS) {
++        g_printerr ("error: couldn't set GNSS constellation report config: %s\n",
++                    qmi_loc_indication_status_get_string (status));
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    g_print ("Successfully set GNSS constellation report config\n");
++    operation_shutdown (TRUE);
++}
++
++static void
++set_gnss_constellation_report_config_ready (QmiClientLoc *client,
++                                            GAsyncResult *res)
++{
++    g_autoptr(QmiMessageLocSetGnssConstellationReportConfigOutput) output = NULL;
++    g_autoptr(GError)                                              error = NULL;
++
++    output = qmi_client_loc_set_gnss_constellation_report_config_finish (client, res, &error);
++    if (!output) {
++        g_printerr ("error: operation failed: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_message_loc_set_gnss_constellation_report_config_output_get_result (output, &error)) {
++        g_printerr ("error: could not set GNSS constellation report config: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++}
++
++static QmiMessageLocSetGnssConstellationReportConfigInput *
++set_gnss_constellation_report_config_input_create (const gchar *str)
++{
++    g_autoptr(QmiMessageLocSetGnssConstellationReportConfigInput) input = NULL;
++    guint64  measurement = 0;
++    guint64  polynomial = 0;
++    gboolean polynomial_set = FALSE;
++
++    if (!parse_constellation_masks (str, &measurement, &polynomial_set, &polynomial)) {
++        g_printerr ("error: couldn't parse constellation masks: '%s'\n", str);
++        return NULL;
++    }
++
++    input = qmi_message_loc_set_gnss_constellation_report_config_input_new ();
++    qmi_message_loc_set_gnss_constellation_report_config_input_set_measurement_report_constellations (input, measurement, NULL);
++    if (polynomial_set)
++        qmi_message_loc_set_gnss_constellation_report_config_input_set_sv_polynomial_report_constellations (input, polynomial, NULL);
++
++    return g_steal_pointer (&input);
++}
++
++#endif /* HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG */
++
++
+ #if defined HAVE_QMI_MESSAGE_LOC_SET_OPERATION_MODE
+ 
+ static gboolean
+@@ -1888,6 +2218,81 @@ qmicli_loc_run (QmiDevice    *device,
+     }
+ #endif
+ 
++#if defined HAVE_QMI_MESSAGE_LOC_GET_CONSTELLATION_CONTROL
++    if (get_constellation_control_flag) {
++        g_debug ("Asynchronously getting constellation control...");
++        ctx->timeout_id = g_timeout_add_seconds (timeout > 0 ? timeout : DEFAULT_LOC_TIMEOUT_SECS,
++                                                 (GSourceFunc) constellation_operation_timed_out,
++                                                 NULL);
++        ctx->get_constellation_control_indication_id = g_signal_connect (ctx->client,
++                                                                        "get-constellation-control",
++                                                                        G_CALLBACK (get_constellation_control_received),
++                                                                        NULL);
++        qmi_client_loc_get_constellation_control (ctx->client,
++                                                  NULL,
++                                                  10,
++                                                  ctx->cancellable,
++                                                  (GAsyncReadyCallback) get_constellation_control_ready,
++                                                  NULL);
++        return;
++    }
++#endif
++
++#if defined HAVE_QMI_MESSAGE_LOC_SET_CONSTELLATION_CONTROL
++    if (set_constellation_control_str) {
++        g_autoptr(QmiMessageLocSetConstellationControlInput) input = NULL;
++
++        g_debug ("Asynchronously setting constellation control...");
++        input = set_constellation_control_input_create (set_constellation_control_str);
++        if (!input) {
++            operation_shutdown (FALSE);
++            return;
++        }
++        ctx->timeout_id = g_timeout_add_seconds (timeout > 0 ? timeout : DEFAULT_LOC_TIMEOUT_SECS,
++                                                 (GSourceFunc) constellation_operation_timed_out,
++                                                 NULL);
++        ctx->set_constellation_control_indication_id = g_signal_connect (ctx->client,
++                                                                        "set-constellation-control",
++                                                                        G_CALLBACK (set_constellation_control_received),
++                                                                        NULL);
++        qmi_client_loc_set_constellation_control (ctx->client,
++                                                  input,
++                                                  10,
++                                                  ctx->cancellable,
++                                                  (GAsyncReadyCallback) set_constellation_control_ready,
++                                                  NULL);
++        return;
++    }
++#endif
++
++#if defined HAVE_QMI_MESSAGE_LOC_SET_GNSS_CONSTELLATION_REPORT_CONFIG
++    if (set_gnss_constellation_report_config_str) {
++        g_autoptr(QmiMessageLocSetGnssConstellationReportConfigInput) input = NULL;
++
++        g_debug ("Asynchronously setting GNSS constellation report config...");
++        input = set_gnss_constellation_report_config_input_create (set_gnss_constellation_report_config_str);
++        if (!input) {
++            operation_shutdown (FALSE);
++            return;
++        }
++        ctx->timeout_id = g_timeout_add_seconds (timeout > 0 ? timeout : DEFAULT_LOC_TIMEOUT_SECS,
++                                                 (GSourceFunc) constellation_operation_timed_out,
++                                                 NULL);
++        ctx->set_gnss_constellation_report_config_indication_id =
++            g_signal_connect (ctx->client,
++                              "set-gnss-constellation-report-config",
++                              G_CALLBACK (set_gnss_constellation_report_config_received),
++                              NULL);
++        qmi_client_loc_set_gnss_constellation_report_config (ctx->client,
++                                                            input,
++                                                            10,
++                                                            ctx->cancellable,
++                                                            (GAsyncReadyCallback) set_gnss_constellation_report_config_ready,
++                                                            NULL);
++        return;
++    }
++#endif
++
+ #if defined HAVE_QMI_MESSAGE_LOC_SET_OPERATION_MODE
+     if (set_operation_mode_str) {
+         g_autoptr(QmiMessageLocSetOperationModeInput) input = NULL;

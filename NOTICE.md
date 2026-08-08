@@ -6,6 +6,8 @@
 |---|---|
 | `kernel/*.patch` | **GPL-2.0** — derived work of the Linux kernel |
 | `packages/libcamera/*.patch` | **LGPL-2.1-or-later** — matching libcamera upstream |
+| `packages/libqmi/*.patch` | **GPL-2.0-or-later AND LGPL-2.1-or-later** — matching libqmi upstream |
+| `tools/qmi-loc-idl/**` | **GPL-2.0-or-later** |
 | `packages/*/APKBUILD` | **GPL-2.0-or-later**, as the postmarketOS/Alpine aports they extend |
 | `device/**`, `scripts/**` | Configuration and glue, same terms as the projects they configure |
 
@@ -22,6 +24,11 @@ This phone needs binaries that belong to Xiaomi and Qualcomm to work fully:
 **None of them are in this repository.** They are on your own device, and postmarketOS does not
 erase the partitions that hold them, so you can read them from there. See
 [`docs/blobs.md`](docs/blobs.md).
+
+This applies to [`tools/qmi-loc-idl`](tools/qmi-loc-idl) as well. What it publishes is the
+*result* of reading the modem's interface description — message ids, field layouts, names — so
+that free software can talk to hardware you own. The library it reads is not included; the tool
+expects you to point it at the copy already on your phone.
 
 ## Nor is development material
 

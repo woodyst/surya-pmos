@@ -1,0 +1,2339 @@
+REQ  0x001e  QMI_LOC_GET_SUPPORTED_MSGS_REQ_V02                    (type in the common QMI table, external)  wire_max=0
+
+REQ  0x001f                                                        (type in the common QMI table, external)  wire_max=5
+
+REQ  0x0020                                                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0021                                                        struct_C=24     wire_max=29
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x10  optional    string, max 4 chars                      off_C=9     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u8/i8                                    off_C=21    wire<=4
+
+REQ  0x0022                                                        struct_C=148    wire_max=150
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=28    wire<=7
+    TLV 0x14  optional    struct[0]                                off_C=33    wire<=71
+    TLV 0x15  optional    u32/i32                                  off_C=104   wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=112   wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=120   wire<=7
+    TLV 0x18  optional    u8/i8                                    off_C=125   wire<=4
+    TLV 0x19  optional    u8/i8                                    off_C=127   wire<=4
+    TLV 0x1a  optional    struct[1]                                off_C=132   wire<=11
+    TLV 0x1b  optional    u32/i32                                  off_C=144   wire<=7
+
+REQ  0x0023                                                        struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x0032  QMI_LOC_GET_SERVICE_REVISION_REQ_V02                  struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0033  QMI_LOC_GET_FIX_CRITERIA_REQ_V02                      struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0034  QMI_LOC_NI_USER_RESPONSE_REQ_V02                      struct_C=1392   wire_max=1345
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    struct[9]                                off_C=12    wire<=224
+    TLV 0x11  optional    struct[15]                               off_C=244   wire<=456
+    TLV 0x12  optional    struct[17]                               off_C=716   wire<=153
+    TLV 0x13  optional    struct[18]                               off_C=884   wire<=228
+    TLV 0x14  optional    struct[19]                               off_C=1120  wire<=11
+    TLV 0x15  optional    struct[20]                               off_C=1133  wire<=259
+
+REQ  0x0035  QMI_LOC_INJECT_PREDICTED_ORBITS_DATA_REQ_V02          struct_C=1044   wire_max=1053
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u16/i16                                  off_C=4     wire<=5
+    TLV 0x03  mandatory   u16/i16                                  off_C=6     wire<=5
+    TLV 0x04  mandatory   u8/i8 x1024 (variable length)            off_C=12    wire<=1029
+    TLV 0x10  optional    u32/i32                                  off_C=1040  wire<=7
+
+REQ  0x0036  QMI_LOC_GET_PREDICTED_ORBITS_DATA_SOURCE_REQ_V02      struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0037  QMI_LOC_GET_PREDICTED_ORBITS_DATA_VALIDITY_REQ_V02    struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0038  QMI_LOC_INJECT_UTC_TIME_REQ_V02                       struct_C=24     wire_max=25
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=16    wire<=7
+
+REQ  0x0039  QMI_LOC_INJECT_POSITION_REQ_V02                       struct_C=568    wire_max=540
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x13  optional    u8/i8                                    off_C=41    wire<=4
+    TLV 0x14  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x18  optional    u8/i8                                    off_C=73    wire<=4
+    TLV 0x19  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x1a  optional    struct[30]                               off_C=84    wire<=15
+    TLV 0x1b  optional    u64/i64                                  off_C=104   wire<=11
+    TLV 0x1c  optional    u32/i32                                  off_C=116   wire<=7
+    TLV 0x1d  optional    u32/i32                                  off_C=124   wire<=7
+    TLV 0x1e  optional    u32/i32                                  off_C=132   wire<=7
+    TLV 0x1f  optional    u8/i8                                    off_C=137   wire<=4
+    TLV 0x20  optional    u8/i8                                    off_C=139   wire<=4
+    TLV 0x21  optional    u32/i32                                  off_C=144   wire<=7
+    TLV 0x22  optional    struct[2]                                off_C=152   wire<=9
+    TLV 0x23  optional    u32/i32                                  off_C=164   wire<=7
+    TLV 0x24  optional    u32/i32 x3 (fixed)                       off_C=172   wire<=15
+    TLV 0x25  optional    u32/i32 x3 (fixed)                       off_C=188   wire<=15
+    TLV 0x26  optional    u16/i16 x176 (variable length)           off_C=208   wire<=356
+    TLV 0x27  optional    u8/i8                                    off_C=561   wire<=4
+
+REQ  0x003a  QMI_LOC_SET_ENGINE_LOCK_REQ_V02                       struct_C=24     wire_max=25
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+
+REQ  0x003b  QMI_LOC_GET_ENGINE_LOCK_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+
+REQ  0x003c  QMI_LOC_SET_SBAS_CONFIG_REQ_V02                       struct_C=3      wire_max=8
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=2     wire<=4
+
+REQ  0x003d  QMI_LOC_GET_SBAS_CONFIG_REQ_V02                       struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x003e  QMI_LOC_SET_NMEA_TYPES_REQ_V02                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x003f  QMI_LOC_GET_NMEA_TYPES_REQ_V02                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0040  QMI_LOC_SET_LOW_POWER_MODE_REQ_V02                    struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x0041  QMI_LOC_GET_LOW_POWER_MODE_REQ_V02                    struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0042  QMI_LOC_SET_SERVER_REQ_V02                            struct_C=300    wire_max=297
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[12]                               off_C=8     wire<=9
+    TLV 0x11  optional    struct[13]                               off_C=20    wire<=23
+    TLV 0x12  optional    string, max 255 chars                    off_C=41    wire<=258
+
+REQ  0x0043  QMI_LOC_GET_SERVER_REQ_V02                            struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+REQ  0x0044  QMI_LOC_DELETE_ASSIST_DATA_REQ_V02                    struct_C=1888   wire_max=1160
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    struct[31] x128 (variable length)        off_C=8     wire<=900
+    TLV 0x11  optional    u64/i64                                  off_C=1552  wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=1564  wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=1572  wire<=7
+    TLV 0x14  optional    struct[32] x37 (variable length)         off_C=1584  wire<=115
+    TLV 0x15  optional    struct[33] x36 (variable length)         off_C=1740  wire<=112
+    TLV 0x16  optional    u8/i8                                    off_C=1885  wire<=4
+
+REQ  0x0045  QMI_LOC_SET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x0046  QMI_LOC_GET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0047  QMI_LOC_INJECT_WIFI_POSITION_REQ_V02                  struct_C=2520   wire_max=2353
+    TLV 0x10  optional    struct[34]                               off_C=4     wire<=7
+    TLV 0x11  optional    struct[35]                               off_C=16    wire<=26
+    TLV 0x12  optional    struct[36] x50 (variable length)         off_C=48    wire<=654
+    TLV 0x13  optional    u32/i32                                  off_C=852   wire<=7
+    TLV 0x14  optional    u16/i16                                  off_C=858   wire<=5
+    TLV 0x15  optional    struct[37] x50 (variable length)         off_C=868   wire<=1654
+
+REQ  0x0048  QMI_LOC_NOTIFY_WIFI_STATUS_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0049  QMI_LOC_GET_REGISTERED_EVENTS_REQ_V02                 struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x004a  QMI_LOC_SET_OPERATION_MODE_REQ_V02                    struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+REQ  0x004b  QMI_LOC_GET_OPERATION_MODE_REQ_V02                    struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x004c  QMI_LOC_SET_SPI_STATUS_REQ_V02                        struct_C=3      wire_max=8
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=2     wire<=4
+
+REQ  0x004d  QMI_LOC_INJECT_SENSOR_DATA_REQ_V02                    struct_C=3312   wire_max=2779
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    struct[39]                               off_C=12    wire<=709
+    TLV 0x12  optional    struct[39]                               off_C=828   wire<=709
+    TLV 0x13  optional    u32/i32                                  off_C=1644  wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=1652  wire<=7
+    TLV 0x15  optional    struct[41]                               off_C=1660  wire<=312
+    TLV 0x16  optional    struct[41]                               off_C=2076  wire<=312
+    TLV 0x17  optional    struct[39]                               off_C=2492  wire<=709
+    TLV 0x18  optional    u32/i32                                  off_C=3308  wire<=7
+
+REQ  0x004e  QMI_LOC_INJECT_TIME_SYNC_DATA_REQ_V02                 struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+REQ  0x004f  QMI_LOC_SET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+REQ  0x0050  QMI_LOC_GET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0051  QMI_LOC_SET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+REQ  0x0052  QMI_LOC_GET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0053  QMI_LOC_INFORM_LOCATION_SERVER_CONN_STATUS_REQ_V02    struct_C=136    wire_max=140
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x10  optional    struct[42]                               off_C=16    wire<=108
+    TLV 0x11  optional    u64/i64                                  off_C=128   wire<=11
+
+REQ  0x0054  QMI_LOC_SET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=96     wire_max=86
+    TLV 0x10  optional    u8/i8                                    off_C=1     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=28    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x18  optional    u8/i8                                    off_C=57    wire<=4
+    TLV 0x19  optional    u64/i64                                  off_C=64    wire<=11
+    TLV 0x1a  optional    u64/i64                                  off_C=80    wire<=11
+    TLV 0x1b  optional    u32/i32                                  off_C=92    wire<=7
+
+REQ  0x0055  QMI_LOC_GET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+
+REQ  0x0056  QMI_LOC_SET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=16     wire_max=14
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+
+REQ  0x0057  QMI_LOC_GET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x0058  QMI_LOC_SET_SENSOR_PROPERTIES_REQ_V02                 struct_C=104    wire_max=88
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=28    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x15  optional    u64/i64                                  off_C=48    wire<=11
+    TLV 0x16  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x1b  optional    u32/i32                                  off_C=100   wire<=7
+
+REQ  0x0059  QMI_LOC_GET_SENSOR_PROPERTIES_REQ_V02                 struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x005a  QMI_LOC_SET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=40     wire_max=42
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    struct[25]                               off_C=10    wire<=7
+    TLV 0x12  optional    struct[25]                               off_C=16    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x14  optional    struct[25]                               off_C=30    wire<=7
+    TLV 0x15  optional    struct[25]                               off_C=36    wire<=7
+
+REQ  0x005b  QMI_LOC_GET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x005c  QMI_LOC_INJECT_SUPL_CERTIFICATE_REQ_V02               struct_C=2008   wire_max=2009
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8 x2000 (variable length)            off_C=8     wire<=2005
+
+REQ  0x005d  QMI_LOC_DELETE_SUPL_CERTIFICATE_REQ_V02               struct_C=2      wire_max=4
+    TLV 0x10  optional    u8/i8                                    off_C=1     wire<=4
+
+REQ  0x005e  QMI_LOC_SET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=8      wire_max=16
+    TLV 0x10  optional    u8/i8                                    off_C=1     wire<=4
+    TLV 0x11  optional    u8/i8                                    off_C=3     wire<=4
+    TLV 0x12  optional    u8/i8                                    off_C=5     wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=7     wire<=4
+
+REQ  0x005f  QMI_LOC_GET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0063  QMI_LOC_ADD_CIRCULAR_GEOFENCE_REQ_V02                 struct_C=72     wire_max=70
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   struct[43]                               off_C=8     wire<=23
+    TLV 0x03  mandatory   u8/i8                                    off_C=32    wire<=4
+    TLV 0x04  mandatory   u8/i8                                    off_C=33    wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x14  optional    u8/i8                                    off_C=65    wire<=4
+
+REQ  0x0064  QMI_LOC_DELETE_GEOFENCE_REQ_V02                       struct_C=8      wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+
+REQ  0x0065  QMI_LOC_QUERY_GEOFENCE_REQ_V02                        struct_C=8      wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+
+REQ  0x0066  QMI_LOC_EDIT_GEOFENCE_REQ_V02                         struct_C=24     wire_max=32
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x11  optional    u8/i8                                    off_C=17    wire<=4
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+
+REQ  0x0067  QMI_LOC_GET_BEST_AVAILABLE_POSITION_REQ_V02           struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+REQ  0x0068  QMI_LOC_INJECT_MOTION_DATA_REQ_V02                    struct_C=16     wire_max=19
+    TLV 0x01  mandatory   struct[46]                               off_C=0     wire<=19
+
+REQ  0x0069  QMI_LOC_GET_NI_GEOFENCE_ID_LIST_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x006a  QMI_LOC_INJECT_GSM_CELL_INFO_REQ_V02                  struct_C=24     wire_max=30
+    TLV 0x01  mandatory   struct[47]                               off_C=0     wire<=19
+    TLV 0x02  mandatory   u8/i8                                    off_C=16    wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=20    wire<=7
+
+REQ  0x006b  QMI_LOC_INJECT_NETWORK_INITIATED_MESSAGE_REQ_V02      struct_C=1032   wire_max=1036
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8 x1024 (variable length)            off_C=8     wire<=1029
+
+REQ  0x006c  QMI_LOC_WWAN_OUT_OF_SERVICE_NOTIFICATION_REQ_V02      struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x006f  QMI_LOC_PEDOMETER_REPORT_REQ_V02                      struct_C=32     wire_max=46
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x04  mandatory   u32/i32                                  off_C=12    wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=17    wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=28    wire<=7
+
+REQ  0x0070  QMI_LOC_INJECT_WCDMA_CELL_INFO_REQ_V02                struct_C=32     wire_max=36
+    TLV 0x01  mandatory   struct[48]                               off_C=0     wire<=15
+    TLV 0x02  mandatory   u32/i32                                  off_C=12    wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=28    wire<=7
+
+REQ  0x0071  QMI_LOC_INJECT_TDSCDMA_CELL_INFO_REQ_V02              struct_C=28     wire_max=33
+    TLV 0x01  mandatory   struct[49]                               off_C=0     wire<=19
+    TLV 0x02  mandatory   u32/i32                                  off_C=16    wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=24    wire<=7
+
+REQ  0x0072  QMI_LOC_INJECT_SUBSCRIBER_ID_REQ_V02                  struct_C=32     wire_max=22
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+
+REQ  0x0073  QMI_LOC_SET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=228    wire_max=224
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u8/i8                                    off_C=29    wire<=4
+    TLV 0x14  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=40    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=48    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=56    wire<=7
+    TLV 0x18  optional    struct[44] x20 (variable length)         off_C=68    wire<=164
+
+REQ  0x0074  QMI_LOC_GET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0075  QMI_LOC_GET_BATCH_SIZE_REQ_V02                        struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+
+REQ  0x0076  QMI_LOC_START_BATCHING_REQ_V02                        struct_C=40     wire_max=39
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=28    wire<=7
+    TLV 0x14  optional    u8/i8                                    off_C=33    wire<=4
+    TLV 0x15  optional    u32/i32                                  off_C=36    wire<=7
+
+REQ  0x0079  QMI_LOC_READ_FROM_BATCH_REQ_V02                       struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+
+REQ  0x007a  QMI_LOC_STOP_BATCHING_REQ_V02                         struct_C=20     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+
+REQ  0x007b  QMI_LOC_RELEASE_BATCH_REQ_V02                         struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+REQ  0x007d  QMI_LOC_INJECT_WIFI_AP_DATA_REQ_V02                   struct_C=6056   wire_max=5200
+    TLV 0x01  mandatory   struct[51] x50 (variable length)         off_C=4     wire<=2454
+    TLV 0x10  optional    u32/i32                                  off_C=2808  wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=2816  wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=2832  wire<=11
+    TLV 0x13  optional    u8/i8                                    off_C=2841  wire<=4
+    TLV 0x14  optional    struct[52] x50 (variable length)         off_C=2848  wire<=2704
+    TLV 0x15  optional    u8/i8 x6 (fixed)                         off_C=6049  wire<=9
+
+REQ  0x007e  QMI_LOC_NOTIFY_WIFI_ATTACHMENT_STATUS_REQ_V02         struct_C=48     wire_max=51
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8 x6 (fixed)                         off_C=5     wire<=9
+    TLV 0x11  optional    string, max 32 chars                     off_C=12    wire<=35
+
+REQ  0x007f  QMI_LOC_NOTIFY_WIFI_ENABLED_STATUS_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0082  QMI_LOC_INJECT_VEHICLE_SENSOR_DATA_REQ_V02            struct_C=3964   wire_max=3360
+    TLV 0x10  optional    struct[54]                               off_C=4     wire<=1114
+    TLV 0x11  optional    struct[54]                               off_C=1320  wire<=1114
+    TLV 0x12  optional    struct[56]                               off_C=2636  wire<=1125
+    TLV 0x13  optional    u32/i32                                  off_C=3960  wire<=7
+
+REQ  0x0083  QMI_LOC_GET_AVAILABLE_WWAN_POSITION_REQ_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0084  QMI_LOC_SET_PREMIUM_SERVICES_CONFIG_REQ_V02           struct_C=8      wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+
+REQ  0x0085  QMI_LOC_SET_XTRA_VERSION_CHECK_REQ_V02                struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x0088  QMI_LOC_SET_GNSS_CONSTELL_REPORT_CONFIG_V02           struct_C=40     wire_max=34
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u8/i8                                    off_C=33    wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=35    wire<=4
+    TLV 0x14  optional    u8/i8                                    off_C=37    wire<=4
+
+REQ  0x0089  QMI_LOC_ADD_GEOFENCE_CONTEXT_REQ_V02                  struct_C=2596   wire_max=2517
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    struct[37] x20 (variable length)         off_C=20    wire<=664
+    TLV 0x12  optional    struct[66] x20 (variable length)         off_C=688   wire<=124
+    TLV 0x13  optional    struct[49] x20 (fixed)                   off_C=812   wire<=323
+    TLV 0x14  optional    struct[48] x20 (variable length)         off_C=1140  wire<=244
+    TLV 0x15  optional    struct[47] x20 (variable length)         off_C=1388  wire<=324
+    TLV 0x16  optional    struct[67] x20 (variable length)         off_C=1716  wire<=824
+
+REQ  0x008a  QMI_LOC_SET_GEOFENCE_ENGINE_CONTEXT_REQ_V02           struct_C=24     wire_max=25
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u32/i32                                  off_C=20    wire<=7
+
+REQ  0x008b  QMI_LOC_DELETE_GEOFENCE_CONTEXT_REQ_V02               struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+
+REQ  0x008d  QMI_LOC_INJECT_GTP_CLIENT_DOWNLOADED_DATA_REQ_V02     struct_C=516    wire_max=517
+    TLV 0x01  mandatory   u8/i8 x512 (variable length)             off_C=4     wire<=517
+
+REQ  0x008e  QMI_LOC_GDT_UPLOAD_BEGIN_STATUS_REQ_V02               struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+REQ  0x008f  QMI_LOC_GDT_UPLOAD_END_REQ_V02                        struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+REQ  0x0092  QMI_LOC_START_DBT_REQ_V02                             struct_C=28     wire_max=36
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x04  mandatory   u8/i8                                    off_C=12    wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=24    wire<=7
+
+REQ  0x0095  QMI_LOC_STOP_DBT_REQ_V02                              struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x0096  QMI_LOC_SECURE_GET_AVAILABLE_POSITION_REQ_V02         struct_C=264    wire_max=268
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8 x256 (variable length)             off_C=8     wire<=261
+
+REQ  0x0099  QMI_LOC_INJECT_TIME_ZONE_INFO_REQ_V02                 struct_C=24     wire_max=30
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   struct[45]                               off_C=8     wire<=19
+
+REQ  0x009a  QMI_LOC_INJECT_APCACHE_DATA_REQ_V02                   struct_C=2576   wire_max=2180
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8                                    off_C=1     wire<=4
+    TLV 0x03  mandatory   u8/i8                                    off_C=2     wire<=4
+    TLV 0x04  mandatory   struct[70] x80 (variable length)         off_C=8     wire<=1604
+    TLV 0x10  optional    struct[71] x80 (variable length)         off_C=1936  wire<=564
+
+REQ  0x009b  QMI_LOC_INJECT_APDONOTCACHE_DATA_REQ_V02              struct_C=648    wire_max=656
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8                                    off_C=1     wire<=4
+    TLV 0x03  mandatory   u8/i8                                    off_C=2     wire<=4
+    TLV 0x04  mandatory   struct[72] x80 (variable length)         off_C=8     wire<=644
+
+REQ  0x009d  QMI_LOC_QUERY_AON_CONFIG_REQ_V02                      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x009e  QMI_LOC_GTP_AP_STATUS_REQ_V02                         struct_C=544    wire_max=540
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u8/i8 x256 (variable length)             off_C=24    wire<=261
+    TLV 0x12  optional    u8/i8 x256 (variable length)             off_C=288   wire<=261
+
+REQ  0x009f  QMI_LOC_GDT_DOWNLOAD_BEGIN_STATUS_REQ_V02             struct_C=288    wire_max=294
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x10  optional    u16/i16                                  off_C=14    wire<=5
+    TLV 0x11  optional    u8/i8 x256 (variable length)             off_C=24    wire<=261
+    TLV 0x12  optional    u32/i32                                  off_C=284   wire<=7
+
+REQ  0x00a0  QMI_LOC_GDT_DOWNLOAD_READY_STATUS_REQ_V02             struct_C=272    wire_max=280
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x04  mandatory   u8/i8 x255 (variable length)             off_C=16    wire<=259
+
+REQ  0x00a1  QMI_LOC_GDT_RECEIVE_DONE_STATUS_REQ_V02               struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+REQ  0x00a2  QMI_LOC_GDT_DOWNLOAD_END_STATUS_REQ_V02               struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+REQ  0x00a6  QMI_LOC_DELETE_GNSS_SERVICE_DATA_REQ_V02              struct_C=48     wire_max=47
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x13  optional    struct[73]                               off_C=28    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=40    wire<=11
+
+REQ  0x00a7  QMI_LOC_INJECT_XTRA_DATA_REQ_V02                      struct_C=1044   wire_max=1053
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u16/i16                                  off_C=4     wire<=5
+    TLV 0x03  mandatory   u16/i16                                  off_C=6     wire<=5
+    TLV 0x04  mandatory   u8/i8 x1024 (variable length)            off_C=12    wire<=1029
+    TLV 0x10  optional    u32/i32                                  off_C=1040  wire<=7
+
+REQ  0x00a8  QMI_LOC_INJECT_XTRA_PCID_REQ_V02                      struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+
+REQ  0x00a9  QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02                 struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00aa  QMI_LOC_SET_INTERNAL_STATUS_CONFIG_REQ_V02            struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x00ad  QMI_LOC_INJECT_SRN_AP_DATA_REQ_V02                    struct_C=1592   wire_max=1448
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[75] x64 (variable length)         off_C=16    wire<=1412
+    TLV 0x11  optional    u64/i64                                  off_C=1560  wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=1576  wire<=11
+    TLV 0x13  optional    u32/i32                                  off_C=1588  wire<=7
+
+REQ  0x00ae  QMI_LOC_CROWDSOURCE_MANAGER_CONTROL_REQ_V02           struct_C=556    wire_max=545
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    struct[76]                               off_C=12    wire<=14
+    TLV 0x12  optional    u8/i8 x512 (variable length)             off_C=36    wire<=517
+    TLV 0x13  optional    u32/i32                                  off_C=552   wire<=7
+
+REQ  0x00af  QMI_LOC_CROWDSOURCE_MANAGER_READ_DATA_REQ_V02         struct_C=8      wire_max=7
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+
+REQ  0x00b0  QMI_LOC_QUERY_XTRA_INFO_REQ_V02                       struct_C=8      wire_max=12
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[79]                               off_C=5     wire<=5
+
+REQ  0x00b1  QMI_LOC_START_OUTDOOR_TRIP_BATCHING_REQ_V02           struct_C=20     wire_max=25
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x11  optional    u8/i8                                    off_C=17    wire<=4
+
+REQ  0x00b2  QMI_LOC_QUERY_OTB_ACCUMULATED_DISTANCE_REQ_V02        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00b4  QMI_LOC_GET_FDCL_BS_LIST_REQ_V02                      struct_C=32     wire_max=23
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+    TLV 0x12  optional    u16/i16                                  off_C=26    wire<=5
+
+REQ  0x00b5  QMI_LOC_INJECT_FDCL_DATA_REQ_V02                      struct_C=2776   wire_max=2273
+    TLV 0x01  mandatory   struct[85] x20 (variable length)         off_C=8     wire<=1244
+    TLV 0x02  mandatory   u32/i32                                  off_C=1448  wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=1456  wire<=11
+    TLV 0x11  optional    u32/i32 x20 (variable length)            off_C=1472  wire<=84
+    TLV 0x12  optional    u8/i8                                    off_C=1553  wire<=4
+    TLV 0x13  optional    u16/i16                                  off_C=1556  wire<=5
+    TLV 0x14  optional    u16/i16                                  off_C=1560  wire<=5
+    TLV 0x15  optional    u16/i16                                  off_C=1564  wire<=5
+    TLV 0x16  optional    u8/i8                                    off_C=1567  wire<=4
+    TLV 0x17  optional    struct[81] x100 (variable length)        off_C=1576  wire<=904
+
+REQ  0x00b6  QMI_LOC_SET_BLACKLIST_SV_REQ_V02                      struct_C=192    wire_max=132
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=40    wire<=11
+    TLV 0x13  optional    u64/i64                                  off_C=56    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x15  optional    u64/i64                                  off_C=88    wire<=11
+    TLV 0x16  optional    u64/i64                                  off_C=104   wire<=11
+    TLV 0x17  optional    u64/i64                                  off_C=120   wire<=11
+    TLV 0x18  optional    u64/i64                                  off_C=136   wire<=11
+    TLV 0x19  optional    u64/i64                                  off_C=152   wire<=11
+    TLV 0x1a  optional    u64/i64                                  off_C=168   wire<=11
+    TLV 0x1b  optional    u64/i64                                  off_C=184   wire<=11
+
+REQ  0x00b7  QMI_LOC_GET_BLACKLIST_SV_REQ_V02                      struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00b8  QMI_LOC_SET_CONSTELLATION_CONTROL_REQ_V02             struct_C=32     wire_max=26
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+
+REQ  0x00ba  QMI_LOC_REGISTER_MASTER_CLIENT_REQ_V02                struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x00bc                                                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00bd                                                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00be  QMI_LOC_SYSTEM_INFO_REQ_V02                           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x00bf  QMI_LOC_GET_CONSTELLATION_CONTROL_REQ_V02             struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00c1  QMI_LOC_ENABLE_POSITION_INJECTION_TEST_MODE_REQ_V02   struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x00c2  QMI_LOC_INJECT_TEST_POSITION_REQ_V02                  struct_C=40     wire_max=47
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   u64/i64                                  off_C=8     wire<=11
+    TLV 0x03  mandatory   u32/i32                                  off_C=16    wire<=7
+    TLV 0x04  mandatory   u64/i64                                  off_C=24    wire<=11
+    TLV 0x10  optional    u32/i32                                  off_C=36    wire<=7
+
+REQ  0x00c4  QMI_LOC_GET_BS_OBS_DATA_REQ_V02                       struct_C=24     wire_max=16
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u16/i16                                  off_C=18    wire<=5
+
+REQ  0x00ca  QMI_LOC_SET_CONSTRAINED_TUNC_MODE_REQ_V02             struct_C=16     wire_max=18
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+
+REQ  0x00cb  QMI_LOC_ENABLE_POSITION_ASSISTED_CLOCK_EST_REQ_V02    struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+REQ  0x00cc  QMI_LOC_QUERY_GNSS_ENERGY_CONSUMED_REQ_V02            struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00d0  QMI_LOC_INJECT_PLATFORM_POWER_STATE_REQ_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x00d1  QMI_LOC_SET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=3      wire_max=8
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=2     wire<=4
+
+REQ  0x00d2  QMI_LOC_GET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00d3                                                        struct_C=3960   wire_max=3816
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8                                    off_C=1     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=3     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x13  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=40    wire<=11
+    TLV 0x15  optional    u64/i64                                  off_C=56    wire<=11
+    TLV 0x16  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x17  optional    u64/i64                                  off_C=88    wire<=11
+    TLV 0x18  optional    u64/i64                                  off_C=104   wire<=11
+    TLV 0x19  optional    struct[97] x60 (variable length)         off_C=120   wire<=3724
+
+REQ  0x00d4  QMI_LOC_SET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=2      wire_max=5
+    TLV 0x01  mandatory   u16/i16                                  off_C=0     wire<=5
+
+REQ  0x00d5  QMI_LOC_GET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00d7  QMI_LOC_SET_PARAMETER_REQ_V02                         struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+REQ  0x00d8  QMI_LOC_GET_PARAMETER_REQ_V02                         struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+REQ  0x00d9                                                        struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+
+REQ  0x00da                                                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00dc                                                        struct_C=8      wire_max=7
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+
+REQ  0x00dd                                                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00de                                                        struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+REQ  0x00e0  QMI_LOC_SET_MULTIBAND_CONFIG_REQ_V02                  struct_C=16     wire_max=11
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+
+REQ  0x00e1  QMI_LOC_GET_MULTIBAND_CONFIG_REQ_V02                  struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+RESP 0x001e  QMI_LOC_GET_SUPPORTED_MSGS_REQ_V02                    (type in the common QMI table, external)  wire_max=8204
+
+RESP 0x001f                                                        (type in the common QMI table, external)  wire_max=115
+
+RESP 0x0020                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0021                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0022                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0023                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0032  QMI_LOC_GET_SERVICE_REVISION_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0033  QMI_LOC_GET_FIX_CRITERIA_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0034  QMI_LOC_NI_USER_RESPONSE_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0035  QMI_LOC_INJECT_PREDICTED_ORBITS_DATA_REQ_V02          struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0036  QMI_LOC_GET_PREDICTED_ORBITS_DATA_SOURCE_REQ_V02      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0037  QMI_LOC_GET_PREDICTED_ORBITS_DATA_VALIDITY_REQ_V02    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0038  QMI_LOC_INJECT_UTC_TIME_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0039  QMI_LOC_INJECT_POSITION_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003a  QMI_LOC_SET_ENGINE_LOCK_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003b  QMI_LOC_GET_ENGINE_LOCK_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003c  QMI_LOC_SET_SBAS_CONFIG_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003d  QMI_LOC_GET_SBAS_CONFIG_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003e  QMI_LOC_SET_NMEA_TYPES_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x003f  QMI_LOC_GET_NMEA_TYPES_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0040  QMI_LOC_SET_LOW_POWER_MODE_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0041  QMI_LOC_GET_LOW_POWER_MODE_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0042  QMI_LOC_SET_SERVER_REQ_V02                            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0043  QMI_LOC_GET_SERVER_REQ_V02                            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0044  QMI_LOC_DELETE_ASSIST_DATA_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0045  QMI_LOC_SET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0046  QMI_LOC_GET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0047  QMI_LOC_INJECT_WIFI_POSITION_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0048  QMI_LOC_NOTIFY_WIFI_STATUS_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0049  QMI_LOC_GET_REGISTERED_EVENTS_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004a  QMI_LOC_SET_OPERATION_MODE_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004b  QMI_LOC_GET_OPERATION_MODE_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004c  QMI_LOC_SET_SPI_STATUS_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004d  QMI_LOC_INJECT_SENSOR_DATA_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004e  QMI_LOC_INJECT_TIME_SYNC_DATA_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x004f  QMI_LOC_SET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0050  QMI_LOC_GET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0051  QMI_LOC_SET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0052  QMI_LOC_GET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0053  QMI_LOC_INFORM_LOCATION_SERVER_CONN_STATUS_REQ_V02    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0054  QMI_LOC_SET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0055  QMI_LOC_GET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0056  QMI_LOC_SET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0057  QMI_LOC_GET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0058  QMI_LOC_SET_SENSOR_PROPERTIES_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0059  QMI_LOC_GET_SENSOR_PROPERTIES_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005a  QMI_LOC_SET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005b  QMI_LOC_GET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005c  QMI_LOC_INJECT_SUPL_CERTIFICATE_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005d  QMI_LOC_DELETE_SUPL_CERTIFICATE_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005e  QMI_LOC_SET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x005f  QMI_LOC_GET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0063  QMI_LOC_ADD_CIRCULAR_GEOFENCE_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0064  QMI_LOC_DELETE_GEOFENCE_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0065  QMI_LOC_QUERY_GEOFENCE_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0066  QMI_LOC_EDIT_GEOFENCE_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0067  QMI_LOC_GET_BEST_AVAILABLE_POSITION_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0068  QMI_LOC_INJECT_MOTION_DATA_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0069  QMI_LOC_GET_NI_GEOFENCE_ID_LIST_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x006a  QMI_LOC_INJECT_GSM_CELL_INFO_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x006b  QMI_LOC_INJECT_NETWORK_INITIATED_MESSAGE_REQ_V02      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x006c  QMI_LOC_WWAN_OUT_OF_SERVICE_NOTIFICATION_REQ_V02      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x006f  QMI_LOC_PEDOMETER_REPORT_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0070  QMI_LOC_INJECT_WCDMA_CELL_INFO_REQ_V02                struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0071  QMI_LOC_INJECT_TDSCDMA_CELL_INFO_REQ_V02              struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0072  QMI_LOC_INJECT_SUBSCRIBER_ID_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0073  QMI_LOC_SET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0074  QMI_LOC_GET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0075  QMI_LOC_GET_BATCH_SIZE_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0076  QMI_LOC_START_BATCHING_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0079  QMI_LOC_READ_FROM_BATCH_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x007a  QMI_LOC_STOP_BATCHING_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x007b  QMI_LOC_RELEASE_BATCH_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x007d  QMI_LOC_INJECT_WIFI_AP_DATA_REQ_V02                   struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x007e  QMI_LOC_NOTIFY_WIFI_ATTACHMENT_STATUS_REQ_V02         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x007f  QMI_LOC_NOTIFY_WIFI_ENABLED_STATUS_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0082  QMI_LOC_INJECT_VEHICLE_SENSOR_DATA_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0083  QMI_LOC_GET_AVAILABLE_WWAN_POSITION_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0084  QMI_LOC_SET_PREMIUM_SERVICES_CONFIG_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0085  QMI_LOC_SET_XTRA_VERSION_CHECK_REQ_V02                struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0088  QMI_LOC_SET_GNSS_CONSTELL_REPORT_CONFIG_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0089  QMI_LOC_ADD_GEOFENCE_CONTEXT_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x008a  QMI_LOC_SET_GEOFENCE_ENGINE_CONTEXT_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x008b  QMI_LOC_DELETE_GEOFENCE_CONTEXT_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x008d  QMI_LOC_INJECT_GTP_CLIENT_DOWNLOADED_DATA_REQ_V02     struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x008e  QMI_LOC_GDT_UPLOAD_BEGIN_STATUS_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x008f  QMI_LOC_GDT_UPLOAD_END_REQ_V02                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0092  QMI_LOC_START_DBT_REQ_V02                             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0095  QMI_LOC_STOP_DBT_REQ_V02                              struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0096  QMI_LOC_SECURE_GET_AVAILABLE_POSITION_REQ_V02         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x0099  QMI_LOC_INJECT_TIME_ZONE_INFO_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x009a  QMI_LOC_INJECT_APCACHE_DATA_REQ_V02                   struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x009b  QMI_LOC_INJECT_APDONOTCACHE_DATA_REQ_V02              struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x009d  QMI_LOC_QUERY_AON_CONFIG_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x009e  QMI_LOC_GTP_AP_STATUS_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x009f  QMI_LOC_GDT_DOWNLOAD_BEGIN_STATUS_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a0  QMI_LOC_GDT_DOWNLOAD_READY_STATUS_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a1  QMI_LOC_GDT_RECEIVE_DONE_STATUS_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a2  QMI_LOC_GDT_DOWNLOAD_END_STATUS_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a6  QMI_LOC_DELETE_GNSS_SERVICE_DATA_REQ_V02              struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a7  QMI_LOC_INJECT_XTRA_DATA_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a8  QMI_LOC_INJECT_XTRA_PCID_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00a9  QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02                 struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00aa  QMI_LOC_SET_INTERNAL_STATUS_CONFIG_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00ad  QMI_LOC_INJECT_SRN_AP_DATA_REQ_V02                    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00ae  QMI_LOC_CROWDSOURCE_MANAGER_CONTROL_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00af  QMI_LOC_CROWDSOURCE_MANAGER_READ_DATA_REQ_V02         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b0  QMI_LOC_QUERY_XTRA_INFO_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b1  QMI_LOC_START_OUTDOOR_TRIP_BATCHING_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b2  QMI_LOC_QUERY_OTB_ACCUMULATED_DISTANCE_REQ_V02        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b4  QMI_LOC_GET_FDCL_BS_LIST_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b5  QMI_LOC_INJECT_FDCL_DATA_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b6  QMI_LOC_SET_BLACKLIST_SV_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b7  QMI_LOC_GET_BLACKLIST_SV_REQ_V02                      struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00b8  QMI_LOC_SET_CONSTELLATION_CONTROL_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00ba  QMI_LOC_REGISTER_MASTER_CLIENT_REQ_V02                struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00bc                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00bd                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00be  QMI_LOC_SYSTEM_INFO_REQ_V02                           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00bf  QMI_LOC_GET_CONSTELLATION_CONTROL_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00c1  QMI_LOC_ENABLE_POSITION_INJECTION_TEST_MODE_REQ_V02   struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00c2  QMI_LOC_INJECT_TEST_POSITION_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00c4  QMI_LOC_GET_BS_OBS_DATA_REQ_V02                       struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00ca  QMI_LOC_SET_CONSTRAINED_TUNC_MODE_REQ_V02             struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00cb  QMI_LOC_ENABLE_POSITION_ASSISTED_CLOCK_EST_REQ_V02    struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00cc  QMI_LOC_QUERY_GNSS_ENERGY_CONSUMED_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d0  QMI_LOC_INJECT_PLATFORM_POWER_STATE_REQ_V02           struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d1  QMI_LOC_SET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d2  QMI_LOC_GET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d3                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d4  QMI_LOC_SET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d5  QMI_LOC_GET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d7  QMI_LOC_SET_PARAMETER_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d8  QMI_LOC_GET_PARAMETER_REQ_V02                         struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00d9                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00da                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00dc                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00dd                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00de                                                        struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00e0  QMI_LOC_SET_MULTIBAND_CONFIG_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+RESP 0x00e1  QMI_LOC_GET_MULTIBAND_CONFIG_REQ_V02                  struct_C=8      wire_max=7
+    TLV 0x02  mandatory   struct@commonTable[0]                    off_C=0     wire<=7
+
+IND  0x0024                                                        struct_C=2536   wire_max=2488
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8                                    off_C=4     wire<=4
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x16  optional    u8/i8                                    off_C=65    wire<=4
+    TLV 0x17  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x1b  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x1c  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x1d  optional    u8/i8                                    off_C=113   wire<=4
+    TLV 0x1e  optional    u32/i32                                  off_C=116   wire<=7
+    TLV 0x1f  optional    u32/i32                                  off_C=124   wire<=7
+    TLV 0x20  optional    u32/i32                                  off_C=132   wire<=7
+    TLV 0x21  optional    u32/i32                                  off_C=140   wire<=7
+    TLV 0x22  optional    u32/i32                                  off_C=148   wire<=7
+    TLV 0x23  optional    u32/i32                                  off_C=156   wire<=7
+    TLV 0x24  optional    struct[3]                                off_C=164   wire<=15
+    TLV 0x25  optional    u64/i64                                  off_C=184   wire<=11
+    TLV 0x26  optional    u8/i8                                    off_C=193   wire<=4
+    TLV 0x27  optional    struct[2]                                off_C=196   wire<=9
+    TLV 0x28  optional    u32/i32                                  off_C=208   wire<=7
+    TLV 0x29  optional    u32/i32                                  off_C=216   wire<=7
+    TLV 0x2a  optional    struct[5]                                off_C=224   wire<=11
+    TLV 0x2b  optional    u32/i32                                  off_C=236   wire<=7
+    TLV 0x2c  optional    u16/i16 x80 (variable length)            off_C=248   wire<=164
+    TLV 0x2d  optional    u8/i8                                    off_C=409   wire<=4
+    TLV 0x2e  optional    u32/i32 x3 (fixed)                       off_C=412   wire<=15
+    TLV 0x2f  optional    u32/i32 x3 (fixed)                       off_C=428   wire<=15
+    TLV 0x30  optional    u64/i64                                  off_C=448   wire<=11
+    TLV 0x31  optional    u32/i32                                  off_C=460   wire<=7
+    TLV 0x32  optional    u8/i8                                    off_C=465   wire<=4
+    TLV 0x33  optional    struct[4]                                off_C=468   wire<=23
+    TLV 0x34  optional    u16/i16 x3 (variable length)             off_C=496   wire<=10
+    TLV 0x35  optional    u64/i64                                  off_C=504   wire<=11
+    TLV 0x36  optional    u16/i16 x176 (variable length)           off_C=520   wire<=356
+    TLV 0x37  optional    u64/i64 x176 (variable length)           off_C=880   wire<=1412
+    TLV 0x38  optional    struct[6] x19 (variable length)          off_C=2296  wire<=156
+    TLV 0x39  optional    u32/i32                                  off_C=2452  wire<=7
+    TLV 0x3a  optional    u32/i32                                  off_C=2460  wire<=7
+    TLV 0x3b  optional    u64/i64                                  off_C=2472  wire<=11
+    TLV 0x3c  optional    u16/i16                                  off_C=2482  wire<=5
+    TLV 0x3d  optional    u32/i32                                  off_C=2488  wire<=7
+    TLV 0x3e  optional    u32/i32                                  off_C=2496  wire<=7
+    TLV 0x3f  optional    u64/i64                                  off_C=2504  wire<=11
+    TLV 0x40  optional    u32/i32                                  off_C=2516  wire<=7
+    TLV 0x41  optional    u32/i32                                  off_C=2524  wire<=7
+    TLV 0x42  optional    u32/i32                                  off_C=2532  wire<=7
+
+IND  0x0025                                                        struct_C=11040  wire_max=9476
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    struct[7] x80 (variable length)          off_C=8     wire<=2244
+    TLV 0x11  optional    struct[8] x176 (variable length)         off_C=2576  wire<=5108
+    TLV 0x12  optional    u64/i64 x176 (variable length)           off_C=8920  wire<=1412
+    TLV 0x13  optional    u32/i32 x176 (variable length)           off_C=10336 wire<=708
+
+IND  0x0026                                                        struct_C=4298   wire_max=4301
+    TLV 0x01  mandatory   string, max 200 chars                    off_C=0     wire<=203
+    TLV 0x10  optional    string, max 4095 chars                   off_C=202   wire<=4098
+
+IND  0x0027                                                        struct_C=1388   wire_max=1342
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[9]                                off_C=8     wire<=224
+    TLV 0x11  optional    struct[15]                               off_C=240   wire<=456
+    TLV 0x12  optional    struct[17]                               off_C=712   wire<=153
+    TLV 0x13  optional    struct[18]                               off_C=880   wire<=228
+    TLV 0x14  optional    struct[19]                               off_C=1116  wire<=11
+    TLV 0x15  optional    struct[20]                               off_C=1129  wire<=259
+    TLV 0x16  optional    u8/i8                                    off_C=1386  wire<=4
+
+IND  0x0028                                                        struct_C=780    wire_max=776
+    TLV 0x10  optional    struct[22]                               off_C=4     wire<=776
+
+IND  0x0029                                                        struct_C=816    wire_max=808
+    TLV 0x01  mandatory   struct[23]                               off_C=0     wire<=11
+    TLV 0x10  optional    struct[24]                               off_C=12    wire<=772
+    TLV 0x11  optional    u64/i64                                  off_C=792   wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=804   wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=812   wire<=7
+
+IND  0x002a                                                        struct_C=32     wire_max=40
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   u64/i64                                  off_C=8     wire<=11
+    TLV 0x03  mandatory   u32/i32                                  off_C=16    wire<=7
+    TLV 0x04  mandatory   u64/i64                                  off_C=24    wire<=11
+
+IND  0x002b                                                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x002c                                                        struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x002d  QMI_LOC_EVENT_WIFI_REQ_IND_V02                        struct_C=12     wire_max=16
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u16/i16                                  off_C=6     wire<=5
+    TLV 0x11  optional    u8/i8                                    off_C=9     wire<=4
+
+IND  0x002e  QMI_LOC_EVENT_SENSOR_STREAMING_READY_STATUS_IND_V02   struct_C=48     wire_max=48
+    TLV 0x10  optional    struct[26]                               off_C=2     wire<=8
+    TLV 0x11  optional    struct[26]                               off_C=10    wire<=8
+    TLV 0x12  optional    struct[26]                               off_C=18    wire<=8
+    TLV 0x13  optional    struct[26]                               off_C=26    wire<=8
+    TLV 0x14  optional    struct[26]                               off_C=34    wire<=8
+    TLV 0x15  optional    struct[26]                               off_C=42    wire<=8
+
+IND  0x002f  QMI_LOC_EVENT_TIME_SYNC_REQ_IND_V02                   struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0030  QMI_LOC_EVENT_SET_SPI_STREAMING_REPORT_IND_V02        struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+IND  0x0031  QMI_LOC_EVENT_LOCATION_SERVER_CONNECTION_REQ_IND_V02  struct_C=40     wire_max=46
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=36    wire<=7
+
+IND  0x0032  QMI_LOC_GET_SERVICE_REVISION_REQ_V02                  struct_C=524    wire_max=532
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    string, max 127 chars                    off_C=9     wire<=130
+    TLV 0x11  optional    string, max 127 chars                    off_C=138   wire<=130
+    TLV 0x12  optional    string, max 255 chars                    off_C=267   wire<=258
+
+IND  0x0033  QMI_LOC_GET_FIX_CRITERIA_REQ_V02                      struct_C=132    wire_max=135
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    struct[0]                                off_C=29    wire<=71
+    TLV 0x14  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=116   wire<=7
+    TLV 0x17  optional    u8/i8                                    off_C=121   wire<=4
+    TLV 0x18  optional    struct[1]                                off_C=124   wire<=11
+
+IND  0x0034  QMI_LOC_NI_USER_RESPONSE_REQ_V02                      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0035  QMI_LOC_INJECT_PREDICTED_ORBITS_DATA_REQ_V02          struct_C=8      wire_max=12
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u16/i16                                  off_C=6     wire<=5
+
+IND  0x0036  QMI_LOC_GET_PREDICTED_ORBITS_DATA_SOURCE_REQ_V02      struct_C=792    wire_max=790
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[23]                               off_C=8     wire<=11
+    TLV 0x11  optional    struct[24]                               off_C=20    wire<=772
+
+IND  0x0037  QMI_LOC_GET_PREDICTED_ORBITS_DATA_VALIDITY_REQ_V02    struct_C=24     wire_max=20
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[29]                               off_C=8     wire<=13
+
+IND  0x0038  QMI_LOC_INJECT_UTC_TIME_REQ_V02                       struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0039  QMI_LOC_INJECT_POSITION_REQ_V02                       struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x003a  QMI_LOC_SET_ENGINE_LOCK_REQ_V02                       struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x003b  QMI_LOC_GET_ENGINE_LOCK_REQ_V02                       struct_C=32     wire_max=32
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u64/i64                                  off_C=24    wire<=11
+
+IND  0x003c  QMI_LOC_SET_SBAS_CONFIG_REQ_V02                       struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x003d  QMI_LOC_GET_SBAS_CONFIG_REQ_V02                       struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x003e  QMI_LOC_SET_NMEA_TYPES_REQ_V02                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x003f  QMI_LOC_GET_NMEA_TYPES_REQ_V02                        struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x0040  QMI_LOC_SET_LOW_POWER_MODE_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0041  QMI_LOC_GET_LOW_POWER_MODE_REQ_V02                    struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0042  QMI_LOC_SET_SERVER_REQ_V02                            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0043  QMI_LOC_GET_SERVER_REQ_V02                            struct_C=304    wire_max=304
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    struct[12]                               off_C=12    wire<=9
+    TLV 0x11  optional    struct[13]                               off_C=24    wire<=23
+    TLV 0x12  optional    string, max 255 chars                    off_C=45    wire<=258
+
+IND  0x0044  QMI_LOC_DELETE_ASSIST_DATA_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0045  QMI_LOC_SET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0046  QMI_LOC_GET_XTRA_T_SESSION_CONTROL_REQ_V02            struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0047  QMI_LOC_INJECT_WIFI_POSITION_REQ_V02                  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0048  QMI_LOC_NOTIFY_WIFI_STATUS_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0049  QMI_LOC_GET_REGISTERED_EVENTS_REQ_V02                 struct_C=16     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+
+IND  0x004a  QMI_LOC_SET_OPERATION_MODE_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x004b  QMI_LOC_GET_OPERATION_MODE_REQ_V02                    struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x004c  QMI_LOC_SET_SPI_STATUS_REQ_V02                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x004d  QMI_LOC_INJECT_SENSOR_DATA_REQ_V02                    struct_C=24     wire_max=34
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u8/i8                                    off_C=13    wire<=4
+    TLV 0x12  optional    u8/i8                                    off_C=15    wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=17    wire<=4
+    TLV 0x14  optional    u8/i8                                    off_C=19    wire<=4
+    TLV 0x15  optional    u8/i8                                    off_C=21    wire<=4
+
+IND  0x004e  QMI_LOC_INJECT_TIME_SYNC_DATA_REQ_V02                 struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x004f  QMI_LOC_SET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0050  QMI_LOC_GET_CRADLE_MOUNT_CONFIG_REQ_V02               struct_C=16     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u8/i8                                    off_C=13    wire<=4
+
+IND  0x0051  QMI_LOC_SET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0052  QMI_LOC_GET_EXTERNAL_POWER_CONFIG_REQ_V02             struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x0053  QMI_LOC_INFORM_LOCATION_SERVER_CONN_STATUS_REQ_V02    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0054  QMI_LOC_SET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=16     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+
+IND  0x0055  QMI_LOC_GET_PROTOCOL_CONFIG_PARAMETERS_REQ_V02        struct_C=96     wire_max=93
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=40    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=48    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=56    wire<=7
+    TLV 0x18  optional    u8/i8                                    off_C=61    wire<=4
+    TLV 0x19  optional    u64/i64                                  off_C=64    wire<=11
+    TLV 0x1a  optional    u64/i64                                  off_C=80    wire<=11
+    TLV 0x1b  optional    u32/i32                                  off_C=92    wire<=7
+
+IND  0x0056  QMI_LOC_SET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0057  QMI_LOC_GET_SENSOR_CONTROL_CONFIG_REQ_V02             struct_C=20     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+
+IND  0x0058  QMI_LOC_SET_SENSOR_PROPERTIES_REQ_V02                 struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x0059  QMI_LOC_GET_SENSOR_PROPERTIES_REQ_V02                 struct_C=104    wire_max=95
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=40    wire<=7
+    TLV 0x15  optional    u64/i64                                  off_C=48    wire<=11
+    TLV 0x16  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x1b  optional    u32/i32                                  off_C=100   wire<=7
+
+IND  0x005a  QMI_LOC_SET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x005b  QMI_LOC_GET_SENSOR_PERFORMANCE_CONTROL_CONFIGURATION_REQ_V02  struct_C=44     wire_max=49
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    struct[25]                               off_C=14    wire<=7
+    TLV 0x12  optional    struct[25]                               off_C=20    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=28    wire<=7
+    TLV 0x14  optional    struct[25]                               off_C=34    wire<=7
+    TLV 0x15  optional    struct[25]                               off_C=40    wire<=7
+
+IND  0x005c  QMI_LOC_INJECT_SUPL_CERTIFICATE_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x005d  QMI_LOC_DELETE_SUPL_CERTIFICATE_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x005e  QMI_LOC_SET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x005f  QMI_LOC_GET_POSITION_ENGINE_CONFIG_PARAMETERS_REQ_V02  struct_C=12     wire_max=23
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+    TLV 0x11  optional    u8/i8                                    off_C=7     wire<=4
+    TLV 0x12  optional    u8/i8                                    off_C=9     wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=11    wire<=4
+
+IND  0x0060  QMI_LOC_EVENT_NI_GEOFENCE_NOTIFICATION_IND_V02        struct_C=8      wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+
+IND  0x0061  QMI_LOC_EVENT_GEOFENCE_GEN_ALERT_IND_V02              struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0062  QMI_LOC_EVENT_GEOFENCE_BREACH_NOTIFICATION_IND_V02    struct_C=104    wire_max=85
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    struct[27]                               off_C=16    wire<=64
+    TLV 0x11  optional    u32/i32                                  off_C=100   wire<=7
+
+IND  0x0063  QMI_LOC_ADD_CIRCULAR_GEOFENCE_REQ_V02                 struct_C=20     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+
+IND  0x0064  QMI_LOC_DELETE_GEOFENCE_REQ_V02                       struct_C=20     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+
+IND  0x0065  QMI_LOC_QUERY_GEOFENCE_REQ_V02                        struct_C=72     wire_max=65
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x14  optional    struct[43]                               off_C=40    wire<=23
+    TLV 0x15  optional    u32/i32                                  off_C=68    wire<=7
+
+IND  0x0066  QMI_LOC_EDIT_GEOFENCE_REQ_V02                         struct_C=28     wire_max=28
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+
+IND  0x0067  QMI_LOC_GET_BEST_AVAILABLE_POSITION_REQ_V02           struct_C=2232   wire_max=2193
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=32    wire<=11
+    TLV 0x13  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x16  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x17  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x1b  optional    u8/i8                                    off_C=113   wire<=4
+    TLV 0x1c  optional    u8/i8                                    off_C=115   wire<=4
+    TLV 0x1d  optional    u32/i32                                  off_C=120   wire<=7
+    TLV 0x1e  optional    u32/i32                                  off_C=128   wire<=7
+    TLV 0x1f  optional    u32/i32                                  off_C=136   wire<=7
+    TLV 0x20  optional    u32/i32                                  off_C=144   wire<=7
+    TLV 0x21  optional    u8/i8                                    off_C=149   wire<=4
+    TLV 0x22  optional    u32/i32                                  off_C=152   wire<=7
+    TLV 0x23  optional    u32/i32                                  off_C=160   wire<=7
+    TLV 0x24  optional    u32/i32                                  off_C=168   wire<=7
+    TLV 0x25  optional    u32/i32                                  off_C=176   wire<=7
+    TLV 0x26  optional    u32/i32                                  off_C=184   wire<=7
+    TLV 0x27  optional    u32/i32                                  off_C=192   wire<=7
+    TLV 0x28  optional    u32/i32                                  off_C=200   wire<=7
+    TLV 0x29  optional    struct[3]                                off_C=208   wire<=15
+    TLV 0x2a  optional    struct[2]                                off_C=224   wire<=9
+    TLV 0x2b  optional    u32/i32                                  off_C=236   wire<=7
+    TLV 0x2c  optional    struct[5]                                off_C=244   wire<=11
+    TLV 0x2d  optional    u16/i16 x80 (variable length)            off_C=260   wire<=164
+    TLV 0x2e  optional    struct[4]                                off_C=424   wire<=23
+    TLV 0x2f  optional    u64/i64                                  off_C=448   wire<=11
+    TLV 0x30  optional    u16/i16 x176 (variable length)           off_C=464   wire<=356
+    TLV 0x31  optional    u64/i64 x176 (variable length)           off_C=824   wire<=1412
+
+IND  0x0068  QMI_LOC_INJECT_MOTION_DATA_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0069  QMI_LOC_GET_NI_GEOFENCE_ID_LIST_REQ_V02               struct_C=84     wire_max=82
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32 x16 (variable length)            off_C=20    wire<=68
+
+IND  0x006a  QMI_LOC_INJECT_GSM_CELL_INFO_REQ_V02                  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x006b  QMI_LOC_INJECT_NETWORK_INITIATED_MESSAGE_REQ_V02      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x006c  QMI_LOC_WWAN_OUT_OF_SERVICE_NOTIFICATION_REQ_V02      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x006d  QMI_LOC_EVENT_PEDOMETER_CONTROL_IND_V02               struct_C=8      wire_max=15
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=2     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=4     wire<=7
+
+IND  0x006e  QMI_LOC_EVENT_MOTION_DATA_CONTROL_IND_V02             struct_C=1      wire_max=4
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+
+IND  0x006f  QMI_LOC_PEDOMETER_REPORT_REQ_V02                      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0070  QMI_LOC_INJECT_WCDMA_CELL_INFO_REQ_V02                struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0071  QMI_LOC_INJECT_TDSCDMA_CELL_INFO_REQ_V02              struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0072  QMI_LOC_INJECT_SUBSCRIBER_ID_REQ_V02                  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0073  QMI_LOC_SET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x0074  QMI_LOC_GET_GEOFENCE_ENGINE_CONFIG_REQ_V02            struct_C=40     wire_max=39
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x14  optional    u8/i8                                    off_C=37    wire<=4
+
+IND  0x0075  QMI_LOC_GET_BATCH_SIZE_REQ_V02                        struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+IND  0x0076  QMI_LOC_START_BATCHING_REQ_V02                        struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x0077  QMI_LOC_EVENT_BATCH_FULL_NOTIFICATION_IND_V02         struct_C=28     wire_max=28
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+
+IND  0x0078  QMI_LOC_EVENT_LIVE_BATCHED_POSITION_REPORT_IND_V02    struct_C=96     wire_max=90
+    TLV 0x01  mandatory   struct[50]                               off_C=0     wire<=90
+
+IND  0x0079  QMI_LOC_READ_FROM_BATCH_REQ_V02                       struct_C=504    wire_max=460
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x11  optional    struct[50] x5 (variable length)          off_C=24    wire<=439
+
+IND  0x007a  QMI_LOC_STOP_BATCHING_REQ_V02                         struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+
+IND  0x007b  QMI_LOC_RELEASE_BATCH_REQ_V02                         struct_C=8      wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+
+IND  0x007c  QMI_LOC_EVENT_INJECT_WIFI_AP_DATA_REQ_IND_V02         struct_C=2      wire_max=4
+    TLV 0x10  optional    u8/i8                                    off_C=1     wire<=4
+
+IND  0x007d  QMI_LOC_INJECT_WIFI_AP_DATA_REQ_V02                   struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x007e  QMI_LOC_NOTIFY_WIFI_ATTACHMENT_STATUS_REQ_V02         struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x007f  QMI_LOC_NOTIFY_WIFI_ENABLED_STATUS_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0080  QMI_LOC_EVENT_GEOFENCE_BATCHED_BREACH_NOTIFICATION_IND_V02  struct_C=3088   wire_max=3045
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[28] x80 (variable length)         off_C=12    wire<=644
+    TLV 0x11  optional    u32/i32 x80 (variable length)            off_C=660   wire<=324
+    TLV 0x12  optional    struct[27]                               off_C=984   wire<=64
+    TLV 0x13  optional    u32/i32                                  off_C=1068  wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=1076  wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=1084  wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=1092  wire<=7
+    TLV 0x17  optional    u8/i8                                    off_C=1097  wire<=4
+    TLV 0x18  optional    u8/i8                                    off_C=1099  wire<=4
+    TLV 0x19  optional    struct[3]                                off_C=1104  wire<=15
+    TLV 0x1a  optional    u16/i16 x80 (variable length)            off_C=1124  wire<=164
+    TLV 0x1b  optional    struct[4]                                off_C=1288  wire<=23
+    TLV 0x1c  optional    u16/i16 x176 (variable length)           off_C=1316  wire<=356
+    TLV 0x1d  optional    u64/i64 x176 (variable length)           off_C=1680  wire<=1412
+
+IND  0x0081  QMI_LOC_EVENT_VEHICLE_DATA_READY_STATUS_IND_V02       struct_C=6      wire_max=12
+    TLV 0x10  optional    u8/i8                                    off_C=1     wire<=4
+    TLV 0x11  optional    u8/i8                                    off_C=3     wire<=4
+    TLV 0x12  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0082  QMI_LOC_INJECT_VEHICLE_SENSOR_DATA_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0083  QMI_LOC_GET_AVAILABLE_WWAN_POSITION_REQ_V02           struct_C=160    wire_max=145
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=32    wire<=11
+    TLV 0x13  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x16  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x17  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x1b  optional    u8/i8                                    off_C=113   wire<=4
+    TLV 0x1c  optional    u8/i8                                    off_C=115   wire<=4
+    TLV 0x1d  optional    u32/i32                                  off_C=120   wire<=7
+    TLV 0x1e  optional    u32/i32                                  off_C=128   wire<=7
+    TLV 0x1f  optional    u8/i8                                    off_C=133   wire<=4
+    TLV 0x20  optional    u32/i32                                  off_C=136   wire<=7
+    TLV 0x21  optional    struct[2]                                off_C=144   wire<=9
+    TLV 0x22  optional    u32/i32                                  off_C=156   wire<=7
+
+IND  0x0084  QMI_LOC_SET_PREMIUM_SERVICES_CONFIG_REQ_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0085  QMI_LOC_SET_XTRA_VERSION_CHECK_REQ_V02                struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0086  QMI_LOC_EVENT_GNSS_MEASUREMENT_REPORT_IND_V02         struct_C=3888   wire_max=3151
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8                                    off_C=1     wire<=4
+    TLV 0x03  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    struct[57]                               off_C=12    wire<=15
+    TLV 0x11  optional    struct[58]                               off_C=25    wire<=5
+    TLV 0x12  optional    struct[59]                               off_C=28    wire<=12
+    TLV 0x13  optional    struct[59]                               off_C=44    wire<=12
+    TLV 0x14  optional    struct[59]                               off_C=60    wire<=12
+    TLV 0x15  optional    struct[59]                               off_C=76    wire<=12
+    TLV 0x16  optional    struct[59]                               off_C=92    wire<=12
+    TLV 0x17  optional    struct[59]                               off_C=108   wire<=12
+    TLV 0x18  optional    struct[60]                               off_C=124   wire<=21
+    TLV 0x19  optional    struct[61]                               off_C=148   wire<=18
+    TLV 0x1a  optional    struct[62]                               off_C=168   wire<=20
+    TLV 0x1b  optional    struct[64] x16 (variable length)         off_C=200   wire<=1444
+    TLV 0x1c  optional    u32/i32                                  off_C=1996  wire<=7
+    TLV 0x1d  optional    u32/i32 x16 (variable length)            off_C=2008  wire<=68
+    TLV 0x1e  optional    u64/i64                                  off_C=2080  wire<=11
+    TLV 0x1f  optional    struct[6]                                off_C=2092  wire<=11
+    TLV 0x20  optional    struct[59]                               off_C=2104  wire<=12
+    TLV 0x21  optional    struct[59]                               off_C=2120  wire<=12
+    TLV 0x22  optional    struct[59]                               off_C=2136  wire<=12
+    TLV 0x23  optional    struct[59]                               off_C=2152  wire<=12
+    TLV 0x24  optional    struct[59]                               off_C=2168  wire<=12
+    TLV 0x25  optional    struct[59]                               off_C=2184  wire<=12
+    TLV 0x26  optional    struct[59]                               off_C=2200  wire<=12
+    TLV 0x27  optional    u8/i8                                    off_C=2213  wire<=4
+    TLV 0x28  optional    u32/i32                                  off_C=2216  wire<=7
+    TLV 0x29  optional    u8/i8 x8 (variable length)               off_C=2228  wire<=12
+    TLV 0x2a  optional    struct[59]                               off_C=2240  wire<=12
+    TLV 0x2b  optional    struct[59]                               off_C=2256  wire<=12
+    TLV 0x2c  optional    struct[59]                               off_C=2272  wire<=12
+    TLV 0x2d  optional    struct[59]                               off_C=2288  wire<=12
+    TLV 0x2e  optional    struct[64] x8 (variable length)          off_C=2312  wire<=724
+    TLV 0x2f  optional    u32/i32 x8 (variable length)             off_C=3216  wire<=36
+    TLV 0x30  optional    u64/i64                                  off_C=3256  wire<=11
+    TLV 0x31  optional    u32/i32                                  off_C=3268  wire<=7
+    TLV 0x32  optional    u32/i32                                  off_C=3276  wire<=7
+    TLV 0x33  optional    u16/i16                                  off_C=3282  wire<=5
+    TLV 0x34  optional    struct[65] x24 (variable length)         off_C=3296  wire<=484
+    TLV 0x35  optional    u32/i32                                  off_C=3876  wire<=7
+    TLV 0x36  optional    u8/i8                                    off_C=3881  wire<=4
+    TLV 0x37  optional    u8/i8                                    off_C=3883  wire<=4
+
+IND  0x0087  QMI_LOC_EVENT_SV_POLYNOMIAL_REPORT_IND_V02            struct_C=472    wire_max=441
+    TLV 0x01  mandatory   u16/i16                                  off_C=0     wire<=5
+    TLV 0x02  mandatory   u64/i64                                  off_C=8     wire<=11
+    TLV 0x03  mandatory   u16/i16                                  off_C=16    wire<=5
+    TLV 0x04  mandatory   u16/i16                                  off_C=18    wire<=5
+    TLV 0x10  optional    u64/i64 x3 (fixed)                       off_C=24    wire<=27
+    TLV 0x11  optional    u64/i64 x9 (fixed)                       off_C=56    wire<=75
+    TLV 0x12  optional    u32/i32 x4 (fixed)                       off_C=132   wire<=19
+    TLV 0x13  optional    u8/i8                                    off_C=149   wire<=4
+    TLV 0x14  optional    u16/i16                                  off_C=152   wire<=5
+    TLV 0x15  optional    u32/i32                                  off_C=156   wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=164   wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=172   wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=180   wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=188   wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=196   wire<=7
+    TLV 0x1b  optional    u32/i32                                  off_C=204   wire<=7
+    TLV 0x1c  optional    u32/i32                                  off_C=212   wire<=7
+    TLV 0x1d  optional    u32/i32                                  off_C=220   wire<=7
+    TLV 0x1e  optional    u32/i32                                  off_C=228   wire<=7
+    TLV 0x1f  optional    u64/i64 x12 (fixed)                      off_C=240   wire<=99
+    TLV 0x20  optional    u32/i32                                  off_C=340   wire<=7
+    TLV 0x21  optional    u32/i32                                  off_C=348   wire<=7
+    TLV 0x22  optional    u32/i32                                  off_C=356   wire<=7
+    TLV 0x23  optional    u32/i32                                  off_C=364   wire<=7
+    TLV 0x24  optional    u32/i32                                  off_C=372   wire<=7
+    TLV 0x25  optional    u32/i32                                  off_C=380   wire<=7
+    TLV 0x26  optional    u32/i32                                  off_C=388   wire<=7
+    TLV 0x27  optional    u32/i32                                  off_C=396   wire<=7
+    TLV 0x28  optional    u32/i32                                  off_C=404   wire<=7
+    TLV 0x29  optional    u32/i32                                  off_C=412   wire<=7
+    TLV 0x2a  optional    u32/i32                                  off_C=420   wire<=7
+    TLV 0x2b  optional    u32/i32                                  off_C=428   wire<=7
+    TLV 0x2c  optional    u32/i32                                  off_C=436   wire<=7
+    TLV 0x2d  optional    u32/i32                                  off_C=444   wire<=7
+    TLV 0x2e  optional    u32/i32                                  off_C=452   wire<=7
+    TLV 0x2f  optional    u64/i64                                  off_C=464   wire<=11
+
+IND  0x0088  QMI_LOC_SET_GNSS_CONSTELL_REPORT_CONFIG_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0089  QMI_LOC_ADD_GEOFENCE_CONTEXT_REQ_V02                  struct_C=28     wire_max=28
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+
+IND  0x008a  QMI_LOC_SET_GEOFENCE_ENGINE_CONTEXT_REQ_V02           struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x008b  QMI_LOC_DELETE_GEOFENCE_CONTEXT_REQ_V02               struct_C=28     wire_max=28
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+
+IND  0x008c  QMI_LOC_EVENT_GEOFENCE_PROXIMITY_NOTIFICATION_IND_V02  struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=12    wire<=7
+
+IND  0x008d  QMI_LOC_INJECT_GTP_CLIENT_DOWNLOADED_DATA_REQ_V02     struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x008e  QMI_LOC_GDT_UPLOAD_BEGIN_STATUS_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x008f  QMI_LOC_GDT_UPLOAD_END_REQ_V02                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0090  QMI_LOC_EVENT_GDT_UPLOAD_BEGIN_STATUS_REQ_IND_V02     struct_C=268    wire_max=273
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u8/i8 x255 (variable length)             off_C=12    wire<=259
+
+IND  0x0091  QMI_LOC_EVENT_GDT_UPLOAD_END_REQ_IND_V02              struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+IND  0x0092  QMI_LOC_START_DBT_REQ_V02                             struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0093  QMI_LOC_EVENT_DBT_POSITION_REPORT_IND_V02             struct_C=2104   wire_max=2074
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   struct[69]                               off_C=8     wire<=64
+    TLV 0x03  mandatory   u32/i32                                  off_C=88    wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=96    wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=104   wire<=7
+    TLV 0x12  optional    u8/i8                                    off_C=109   wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=111   wire<=4
+    TLV 0x14  optional    struct[3]                                off_C=116   wire<=15
+    TLV 0x15  optional    u16/i16 x80 (variable length)            off_C=136   wire<=164
+    TLV 0x16  optional    u32/i32                                  off_C=300   wire<=7
+    TLV 0x17  optional    struct[4]                                off_C=308   wire<=23
+    TLV 0x18  optional    u16/i16 x176 (variable length)           off_C=336   wire<=356
+    TLV 0x19  optional    u64/i64 x176 (variable length)           off_C=696   wire<=1412
+
+IND  0x0094  QMI_LOC_EVENT_DBT_SESSION_STATUS_IND_V02              struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0095  QMI_LOC_STOP_DBT_REQ_V02                              struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x0096  QMI_LOC_SECURE_GET_AVAILABLE_POSITION_REQ_V02         struct_C=1040   wire_max=1043
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u8/i8 x1024 (variable length)            off_C=16    wire<=1029
+
+IND  0x0097  QMI_LOC_EVENT_GEOFENCE_BATCHED_DWELL_NOTIFICATION_IND_V02  struct_C=3080   wire_max=3038
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[28] x80 (variable length)         off_C=12    wire<=644
+    TLV 0x11  optional    u32/i32 x80 (variable length)            off_C=660   wire<=324
+    TLV 0x12  optional    struct[27]                               off_C=984   wire<=64
+    TLV 0x13  optional    u32/i32                                  off_C=1068  wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=1076  wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=1084  wire<=7
+    TLV 0x16  optional    u8/i8                                    off_C=1089  wire<=4
+    TLV 0x17  optional    u8/i8                                    off_C=1091  wire<=4
+    TLV 0x18  optional    struct[3]                                off_C=1096  wire<=15
+    TLV 0x19  optional    u16/i16 x80 (variable length)            off_C=1116  wire<=164
+    TLV 0x1a  optional    struct[4]                                off_C=1280  wire<=23
+    TLV 0x1b  optional    u16/i16 x176 (variable length)           off_C=1308  wire<=356
+    TLV 0x1c  optional    u64/i64 x176 (variable length)           off_C=1672  wire<=1412
+
+IND  0x0098  QMI_LOC_EVENT_GET_TIME_ZONE_INFO_IND_V02              struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x0099  QMI_LOC_INJECT_TIME_ZONE_INFO_REQ_V02                 struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x009a  QMI_LOC_INJECT_APCACHE_DATA_REQ_V02                   struct_C=76     wire_max=70
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=40    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=48    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=56    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=64    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=72    wire<=7
+
+IND  0x009b  QMI_LOC_INJECT_APDONOTCACHE_DATA_REQ_V02              struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x009c  QMI_LOC_EVENT_BATCHING_STATUS_IND_V02                 struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x009d  QMI_LOC_QUERY_AON_CONFIG_REQ_V02                      struct_C=20     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+
+IND  0x009e  QMI_LOC_GTP_AP_STATUS_REQ_V02                         struct_C=12     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u16/i16                                  off_C=4     wire<=5
+    TLV 0x03  mandatory   struct[68]                               off_C=6     wire<=6
+
+IND  0x009f  QMI_LOC_GDT_DOWNLOAD_BEGIN_STATUS_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a0  QMI_LOC_GDT_DOWNLOAD_READY_STATUS_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a1  QMI_LOC_GDT_RECEIVE_DONE_STATUS_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a2  QMI_LOC_GDT_DOWNLOAD_END_STATUS_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a3  QMI_LOC_EVENT_GDT_DOWNLOAD_BEGIN_REQ_IND_V02          struct_C=5800   wire_max=5811
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x04  mandatory   u8/i8 x1500 (variable length)            off_C=16    wire<=1505
+    TLV 0x05  mandatory   u8/i8 x4000 (variable length)            off_C=1520  wire<=4005
+    TLV 0x06  mandatory   u8/i8 x255 (variable length)             off_C=5524  wire<=259
+    TLV 0x10  optional    u32/i32                                  off_C=5780  wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=5788  wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=5796  wire<=7
+
+IND  0x00a4  QMI_LOC_EVENT_GDT_RECEIVE_DONE_IND_V02                struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+IND  0x00a5  QMI_LOC_EVENT_GDT_DOWNLOAD_END_REQ_IND_V02            struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+IND  0x00a6  QMI_LOC_DELETE_GNSS_SERVICE_DATA_REQ_V02              struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a7  QMI_LOC_INJECT_XTRA_DATA_REQ_V02                      struct_C=24     wire_max=23
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u16/i16                                  off_C=6     wire<=5
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+
+IND  0x00a8  QMI_LOC_INJECT_XTRA_PCID_REQ_V02                      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00a9  QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02                 struct_C=120    wire_max=122
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8 x100 (variable length)             off_C=8     wire<=104
+    TLV 0x10  optional    u64/i64                                  off_C=112   wire<=11
+
+IND  0x00aa  QMI_LOC_SET_INTERNAL_STATUS_CONFIG_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00ab  QMI_LOC_EVENT_INTERNAL_STATUS_REPORT_IND_V02          struct_C=3756   wire_max=3756
+    TLV 0x01  mandatory   struct[74] x67 (variable length)         off_C=4     wire<=3756
+
+IND  0x00ac  QMI_LOC_EVENT_INJECT_SRN_AP_DATA_REQ_IND_V02          struct_C=12     wire_max=22
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8                                    off_C=4     wire<=4
+    TLV 0x10  optional    u8/i8                                    off_C=6     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x00ad  QMI_LOC_INJECT_SRN_AP_DATA_REQ_V02                    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00ae  QMI_LOC_CROWDSOURCE_MANAGER_CONTROL_REQ_V02           struct_C=540    wire_max=540
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    struct[77]                               off_C=14    wire<=9
+    TLV 0x12  optional    u8/i8 x512 (variable length)             off_C=28    wire<=517
+
+IND  0x00b0  QMI_LOC_QUERY_XTRA_INFO_REQ_V02                       struct_C=1584   wire_max=1574
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   struct[78]                               off_C=8     wire<=1562
+    TLV 0x10  optional    struct[79]                               off_C=1577  wire<=5
+
+IND  0x00b1  QMI_LOC_START_OUTDOOR_TRIP_BATCHING_REQ_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00b2  QMI_LOC_QUERY_OTB_ACCUMULATED_DISTANCE_REQ_V02        struct_C=12     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   u32/i32                                  off_C=8     wire<=7
+
+IND  0x00b3  QMI_LOC_EVENT_FDCL_SERVICE_REQ_IND_V02                struct_C=624    wire_max=618
+    TLV 0x10  optional    struct[80]                               off_C=1     wire<=5
+    TLV 0x11  optional    string, max 255 chars                    off_C=4     wire<=258
+    TLV 0x12  optional    struct[81]                               off_C=264   wire<=12
+    TLV 0x13  optional    string, max 255 chars                    off_C=277   wire<=258
+    TLV 0x14  optional    u16/i16                                  off_C=534   wire<=5
+    TLV 0x15  optional    u16/i16                                  off_C=538   wire<=5
+    TLV 0x16  optional    u32/i32                                  off_C=544   wire<=7
+    TLV 0x17  optional    struct[83]                               off_C=552   wire<=37
+    TLV 0x18  optional    struct[84]                               off_C=596   wire<=23
+    TLV 0x19  optional    u8/i8                                    off_C=617   wire<=4
+    TLV 0x1a  optional    u8/i8                                    off_C=619   wire<=4
+
+IND  0x00b4  QMI_LOC_GET_FDCL_BS_LIST_REQ_V02                      struct_C=2464   wire_max=2456
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   struct[84] x100 (variable length)        off_C=8     wire<=2004
+    TLV 0x10  optional    u8/i8                                    off_C=2009  wire<=4
+    TLV 0x11  optional    u32/i32 x100 (variable length)           off_C=2016  wire<=404
+    TLV 0x12  optional    struct[83]                               off_C=2424  wire<=37
+
+IND  0x00b5  QMI_LOC_INJECT_FDCL_DATA_REQ_V02                      struct_C=268    wire_max=272
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    string, max 255 chars                    off_C=9     wire<=258
+
+IND  0x00b6  QMI_LOC_SET_BLACKLIST_SV_REQ_V02                      struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00b7  QMI_LOC_GET_BLACKLIST_SV_REQ_V02                      struct_C=96     wire_max=73
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=40    wire<=11
+    TLV 0x13  optional    u64/i64                                  off_C=56    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x15  optional    u64/i64                                  off_C=88    wire<=11
+
+IND  0x00b8  QMI_LOC_SET_CONSTELLATION_CONTROL_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00b9                                                        struct_C=84     wire_max=80
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u16/i16                                  off_C=10    wire<=5
+    TLV 0x12  optional    u8/i8 x64 (variable length)              off_C=20    wire<=68
+
+IND  0x00ba  QMI_LOC_REGISTER_MASTER_CLIENT_REQ_V02                struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00bb                                                        struct_C=24     wire_max=25
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u64/i64                                  off_C=16    wire<=11
+
+IND  0x00be  QMI_LOC_SYSTEM_INFO_REQ_V02                           struct_C=36     wire_max=28
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    struct[86]                               off_C=8     wire<=21
+
+IND  0x00bf  QMI_LOC_GET_CONSTELLATION_CONTROL_REQ_V02             struct_C=52     wire_max=49
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=16    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=24    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=32    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=40    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=48    wire<=7
+
+IND  0x00c0  QMI_LOC_EVENT_UNPROPAGATED_POSITION_REPORT_IND_V02    struct_C=2536   wire_max=2488
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u8/i8                                    off_C=4     wire<=4
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u32/i32                                  off_C=36    wire<=7
+    TLV 0x13  optional    u32/i32                                  off_C=44    wire<=7
+    TLV 0x14  optional    u32/i32                                  off_C=52    wire<=7
+    TLV 0x15  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x16  optional    u8/i8                                    off_C=65    wire<=4
+    TLV 0x17  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x1b  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x1c  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x1d  optional    u8/i8                                    off_C=113   wire<=4
+    TLV 0x1e  optional    u32/i32                                  off_C=116   wire<=7
+    TLV 0x1f  optional    u32/i32                                  off_C=124   wire<=7
+    TLV 0x20  optional    u32/i32                                  off_C=132   wire<=7
+    TLV 0x21  optional    u32/i32                                  off_C=140   wire<=7
+    TLV 0x22  optional    u32/i32                                  off_C=148   wire<=7
+    TLV 0x23  optional    u32/i32                                  off_C=156   wire<=7
+    TLV 0x24  optional    struct[3]                                off_C=164   wire<=15
+    TLV 0x25  optional    u64/i64                                  off_C=184   wire<=11
+    TLV 0x26  optional    u8/i8                                    off_C=193   wire<=4
+    TLV 0x27  optional    struct[2]                                off_C=196   wire<=9
+    TLV 0x28  optional    u32/i32                                  off_C=208   wire<=7
+    TLV 0x29  optional    u32/i32                                  off_C=216   wire<=7
+    TLV 0x2a  optional    struct[5]                                off_C=224   wire<=11
+    TLV 0x2b  optional    u32/i32                                  off_C=236   wire<=7
+    TLV 0x2c  optional    u16/i16 x80 (variable length)            off_C=248   wire<=164
+    TLV 0x2d  optional    u8/i8                                    off_C=409   wire<=4
+    TLV 0x2e  optional    u32/i32 x3 (fixed)                       off_C=412   wire<=15
+    TLV 0x2f  optional    u32/i32 x3 (fixed)                       off_C=428   wire<=15
+    TLV 0x30  optional    u64/i64                                  off_C=448   wire<=11
+    TLV 0x31  optional    u32/i32                                  off_C=460   wire<=7
+    TLV 0x32  optional    u8/i8                                    off_C=465   wire<=4
+    TLV 0x33  optional    struct[4]                                off_C=468   wire<=23
+    TLV 0x34  optional    u16/i16 x3 (variable length)             off_C=496   wire<=10
+    TLV 0x35  optional    u64/i64                                  off_C=504   wire<=11
+    TLV 0x36  optional    u16/i16 x176 (variable length)           off_C=520   wire<=356
+    TLV 0x37  optional    u64/i64 x176 (variable length)           off_C=880   wire<=1412
+    TLV 0x38  optional    struct[6] x19 (variable length)          off_C=2296  wire<=156
+    TLV 0x39  optional    u32/i32                                  off_C=2452  wire<=7
+    TLV 0x3a  optional    u32/i32                                  off_C=2460  wire<=7
+    TLV 0x3b  optional    u64/i64                                  off_C=2472  wire<=11
+    TLV 0x3c  optional    u16/i16                                  off_C=2482  wire<=5
+    TLV 0x3d  optional    u32/i32                                  off_C=2488  wire<=7
+    TLV 0x3e  optional    u32/i32                                  off_C=2496  wire<=7
+    TLV 0x3f  optional    u64/i64                                  off_C=2504  wire<=11
+    TLV 0x40  optional    u32/i32                                  off_C=2516  wire<=7
+    TLV 0x41  optional    u32/i32                                  off_C=2524  wire<=7
+    TLV 0x42  optional    u32/i32                                  off_C=2532  wire<=7
+
+IND  0x00c1  QMI_LOC_ENABLE_POSITION_INJECTION_TEST_MODE_REQ_V02   struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x00c2  QMI_LOC_INJECT_TEST_POSITION_REQ_V02                  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00c3  QMI_LOC_EVENT_BS_OBS_DATA_SERVICE_REQ_IND_V02         struct_C=2      wire_max=5
+    TLV 0x01  mandatory   u16/i16                                  off_C=0     wire<=5
+
+IND  0x00c4  QMI_LOC_GET_BS_OBS_DATA_REQ_V02                       struct_C=11216  wire_max=10015
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   struct[87] x100 (variable length)        off_C=8     wire<=10004
+    TLV 0x10  optional    u8/i8                                    off_C=11209 wire<=4
+
+IND  0x00c5  QMI_LOC_EVENT_GPS_EPHEMERIS_REPORT_IND_V02            struct_C=1568   wire_max=1425
+    TLV 0x01  mandatory   struct[89] x8 (variable length)          off_C=8     wire<=1404
+    TLV 0x10  optional    struct[60]                               off_C=1548  wire<=21
+
+IND  0x00c6  QMI_LOC_EVENT_GLONASS_EPHEMERIS_REPORT_IND_V02        struct_C=992    wire_max=897
+    TLV 0x01  mandatory   struct[90] x8 (variable length)          off_C=8     wire<=876
+    TLV 0x10  optional    struct[60]                               off_C=972   wire<=21
+
+IND  0x00c7  QMI_LOC_EVENT_BDS_EPHEMERIS_REPORT_IND_V02            struct_C=1632   wire_max=1457
+    TLV 0x01  mandatory   struct[91] x8 (variable length)          off_C=8     wire<=1436
+    TLV 0x10  optional    struct[60]                               off_C=1612  wire<=21
+
+IND  0x00c8  QMI_LOC_EVENT_GALILEO_EPHEMERIS_REPORT_IND_V02        struct_C=1632   wire_max=1481
+    TLV 0x01  mandatory   struct[92] x8 (variable length)          off_C=8     wire<=1460
+    TLV 0x10  optional    struct[60]                               off_C=1612  wire<=21
+
+IND  0x00c9  QMI_LOC_EVENT_QZSS_EPHEMERIS_REPORT_IND_V02           struct_C=1568   wire_max=1425
+    TLV 0x01  mandatory   struct[89] x8 (variable length)          off_C=8     wire<=1404
+    TLV 0x10  optional    struct[60]                               off_C=1548  wire<=21
+
+IND  0x00ca  QMI_LOC_SET_CONSTRAINED_TUNC_MODE_REQ_V02             struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00cb  QMI_LOC_ENABLE_POSITION_ASSISTED_CLOCK_EST_REQ_V02    struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00cc  QMI_LOC_QUERY_GNSS_ENERGY_CONSUMED_REQ_V02            struct_C=16     wire_max=22
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   u64/i64                                  off_C=8     wire<=11
+
+IND  0x00cd  QMI_LOC_EVENT_REPORT_IND_V02                          struct_C=104    wire_max=97
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x10  optional    struct[60]                               off_C=12    wire<=21
+    TLV 0x11  optional    struct[93]                               off_C=36    wire<=39
+    TLV 0x12  optional    u64/i64                                  off_C=80    wire<=11
+    TLV 0x13  optional    u8/i8                                    off_C=89    wire<=4
+    TLV 0x14  optional    u64/i64                                  off_C=96    wire<=11
+
+IND  0x00ce  QMI_LOC_GET_BAND_MEASUREMENT_METRICS_IND_V02          struct_C=128    wire_max=124
+    TLV 0x01  mandatory   u64/i64                                  off_C=0     wire<=11
+    TLV 0x02  mandatory   u32/i32                                  off_C=8     wire<=7
+    TLV 0x10  optional    struct[94]                               off_C=16    wire<=11
+    TLV 0x11  optional    struct[94]                               off_C=28    wire<=11
+    TLV 0x12  optional    struct[94]                               off_C=40    wire<=11
+    TLV 0x13  optional    struct[94]                               off_C=52    wire<=11
+    TLV 0x14  optional    struct[94]                               off_C=64    wire<=11
+    TLV 0x15  optional    struct[94]                               off_C=76    wire<=11
+    TLV 0x16  optional    struct[94]                               off_C=88    wire<=11
+    TLV 0x17  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x18  optional    struct[94]                               off_C=108   wire<=11
+    TLV 0x19  optional    struct[94]                               off_C=120   wire<=11
+
+IND  0x00cf  QMI_LOC_LOCATION_REQUEST_NOTIFICATION_IND_V02         struct_C=48     wire_max=66
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x03  mandatory   string, max 20 chars                     off_C=8     wire<=23
+    TLV 0x04  mandatory   u32/i32                                  off_C=32    wire<=7
+    TLV 0x05  mandatory   u32/i32                                  off_C=36    wire<=7
+    TLV 0x06  mandatory   u8/i8                                    off_C=40    wire<=4
+    TLV 0x07  mandatory   u8/i8                                    off_C=41    wire<=4
+    TLV 0x10  optional    string, max 4 chars                      off_C=43    wire<=7
+
+IND  0x00d0  QMI_LOC_INJECT_PLATFORM_POWER_STATE_REQ_V02           struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00d1  QMI_LOC_SET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00d2  QMI_LOC_GET_ROBUST_LOCATION_CONFIG_REQ_V02            struct_C=16     wire_max=21
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+    TLV 0x11  optional    u8/i8                                    off_C=7     wire<=4
+    TLV 0x12  optional    struct[95]                               off_C=10    wire<=6
+
+IND  0x00d3                                                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00d4  QMI_LOC_SET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00d5  QMI_LOC_GET_MIN_GPS_WEEK_NUMBER_REQ_V02               struct_C=8      wire_max=12
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u16/i16                                  off_C=6     wire<=5
+
+IND  0x00d6  QMI_LOC_EVENT_QUERY_XTRA_INFO_REQ_IND_V02             struct_C=1      wire_max=0
+     (empty message: no TLVs)
+
+IND  0x00d7  QMI_LOC_SET_PARAMETER_REQ_V02                         struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00d8  QMI_LOC_GET_PARAMETER_REQ_V02                         struct_C=12     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x02  mandatory   u32/i32                                  off_C=4     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=9     wire<=4
+
+IND  0x00d9                                                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00da                                                        struct_C=12     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+    TLV 0x11  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x00db                                                        struct_C=184    wire_max=161
+    TLV 0x10  optional    u32/i32                                  off_C=4     wire<=7
+    TLV 0x11  optional    u32/i32                                  off_C=12    wire<=7
+    TLV 0x12  optional    u32/i32                                  off_C=20    wire<=7
+    TLV 0x13  optional    u64/i64                                  off_C=32    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=48    wire<=11
+    TLV 0x15  optional    u32/i32                                  off_C=60    wire<=7
+    TLV 0x16  optional    u32/i32                                  off_C=68    wire<=7
+    TLV 0x17  optional    u32/i32                                  off_C=76    wire<=7
+    TLV 0x18  optional    u32/i32                                  off_C=84    wire<=7
+    TLV 0x19  optional    u32/i32                                  off_C=92    wire<=7
+    TLV 0x1a  optional    u32/i32                                  off_C=100   wire<=7
+    TLV 0x1b  optional    u8/i8                                    off_C=105   wire<=4
+    TLV 0x1c  optional    u32/i32                                  off_C=108   wire<=7
+    TLV 0x1d  optional    u32/i32                                  off_C=116   wire<=7
+    TLV 0x1e  optional    u32/i32                                  off_C=124   wire<=7
+    TLV 0x1f  optional    u8/i8                                    off_C=129   wire<=4
+    TLV 0x20  optional    u32/i32                                  off_C=132   wire<=7
+    TLV 0x21  optional    u32/i32                                  off_C=140   wire<=7
+    TLV 0x22  optional    u32/i32                                  off_C=148   wire<=7
+    TLV 0x23  optional    u16/i16                                  off_C=154   wire<=5
+    TLV 0x24  optional    u32/i32                                  off_C=160   wire<=7
+    TLV 0x25  optional    u32/i32                                  off_C=168   wire<=7
+    TLV 0x26  optional    u32/i32                                  off_C=176   wire<=7
+
+IND  0x00dc                                                        struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00dd                                                        struct_C=12     wire_max=14
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u32/i32                                  off_C=8     wire<=7
+
+IND  0x00de                                                        struct_C=8      wire_max=11
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u8/i8                                    off_C=5     wire<=4
+
+IND  0x00df                                                        struct_C=5656   wire_max=5590
+    TLV 0x01  mandatory   u8/i8                                    off_C=0     wire<=4
+    TLV 0x02  mandatory   u8/i8                                    off_C=1     wire<=4
+    TLV 0x03  mandatory   struct[60]                               off_C=4     wire<=21
+    TLV 0x10  optional    u64/i64 x17 (fixed)                      off_C=32    wire<=139
+    TLV 0x11  optional    u64/i64 x17 (fixed)                      off_C=176   wire<=139
+    TLV 0x12  optional    u8/i8                                    off_C=313   wire<=4
+    TLV 0x13  optional    u8/i8                                    off_C=315   wire<=4
+    TLV 0x14  optional    u64/i64                                  off_C=320   wire<=11
+    TLV 0x15  optional    u64/i64 x6 (fixed)                       off_C=336   wire<=51
+    TLV 0x16  optional    u64/i64                                  off_C=392   wire<=11
+    TLV 0x17  optional    u8/i8                                    off_C=401   wire<=4
+    TLV 0x18  optional    u64/i64                                  off_C=408   wire<=11
+    TLV 0x19  optional    u64/i64 x6 (fixed)                       off_C=424   wire<=51
+    TLV 0x1a  optional    u64/i64                                  off_C=480   wire<=11
+    TLV 0x1b  optional    u8/i8                                    off_C=489   wire<=4
+    TLV 0x1c  optional    u64/i64 x3 (fixed)                       off_C=496   wire<=27
+    TLV 0x1d  optional    u64/i64 x3 (fixed)                       off_C=528   wire<=27
+    TLV 0x1e  optional    u8/i8 x3 (fixed)                         off_C=553   wire<=6
+    TLV 0x1f  optional    u64/i64 x3 (fixed)                       off_C=560   wire<=27
+    TLV 0x20  optional    u64/i64 x3 (fixed)                       off_C=592   wire<=27
+    TLV 0x21  optional    u8/i8 x3 (fixed)                         off_C=617   wire<=6
+    TLV 0x22  optional    u64/i64 x3 (fixed)                       off_C=624   wire<=27
+    TLV 0x23  optional    u64/i64 x4 (fixed)                       off_C=656   wire<=35
+    TLV 0x24  optional    u32/i32 x3 (fixed)                       off_C=692   wire<=15
+    TLV 0x25  optional    u32/i32 x3 (fixed)                       off_C=708   wire<=15
+    TLV 0x26  optional    u32/i32 x3 (fixed)                       off_C=724   wire<=15
+    TLV 0x27  optional    u32/i32 x3 (fixed)                       off_C=740   wire<=15
+    TLV 0x28  optional    u64/i64 x9 (fixed)                       off_C=760   wire<=75
+    TLV 0x29  optional    u32/i32                                  off_C=836   wire<=7
+    TLV 0x2a  optional    u64/i64 x9 (fixed)                       off_C=848   wire<=75
+    TLV 0x2b  optional    u8/i8                                    off_C=921   wire<=4
+    TLV 0x2c  optional    u8/i8                                    off_C=923   wire<=4
+    TLV 0x2d  optional    u64/i64 x3 (fixed)                       off_C=928   wire<=27
+    TLV 0x2e  optional    u32/i32 x2 (fixed)                       off_C=956   wire<=11
+    TLV 0x2f  optional    u8/i8                                    off_C=965   wire<=4
+    TLV 0x30  optional    u32/i32 x3 (fixed)                       off_C=968   wire<=15
+    TLV 0x31  optional    u32/i32 x3 (fixed)                       off_C=984   wire<=15
+    TLV 0x32  optional    u8/i8                                    off_C=997   wire<=4
+    TLV 0x33  optional    u64/i64 x3 (fixed)                       off_C=1000  wire<=27
+    TLV 0x34  optional    u8/i8                                    off_C=1025  wire<=4
+    TLV 0x35  optional    u32/i32                                  off_C=1028  wire<=7
+    TLV 0x36  optional    u16/i16 x176 (variable length)           off_C=1040  wire<=356
+    TLV 0x37  optional    u64/i64 x176 (variable length)           off_C=1400  wire<=1412
+    TLV 0x38  optional    u32/i32 x176 (variable length)           off_C=2816  wire<=708
+    TLV 0x39  optional    u32/i32 x176 (variable length)           off_C=3528  wire<=708
+    TLV 0x3a  optional    u32/i32 x176 (variable length)           off_C=4240  wire<=708
+    TLV 0x3b  optional    u32/i32 x176 (variable length)           off_C=4952  wire<=708
+
+IND  0x00e0  QMI_LOC_SET_MULTIBAND_CONFIG_REQ_V02                  struct_C=4      wire_max=7
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+
+IND  0x00e1  QMI_LOC_GET_MULTIBAND_CONFIG_REQ_V02                  struct_C=16     wire_max=18
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+
+IND  0x00e2                                                        struct_C=168    wire_max=124
+    TLV 0x01  mandatory   u32/i32                                  off_C=0     wire<=7
+    TLV 0x10  optional    u64/i64                                  off_C=8     wire<=11
+    TLV 0x11  optional    u64/i64                                  off_C=24    wire<=11
+    TLV 0x12  optional    u64/i64                                  off_C=40    wire<=11
+    TLV 0x13  optional    u64/i64                                  off_C=56    wire<=11
+    TLV 0x14  optional    u64/i64                                  off_C=72    wire<=11
+    TLV 0x15  optional    u64/i64                                  off_C=88    wire<=11
+    TLV 0x16  optional    u64/i64                                  off_C=104   wire<=11
+    TLV 0x17  optional    u64/i64                                  off_C=120   wire<=11
+    TLV 0x18  optional    u64/i64                                  off_C=136   wire<=11
+    TLV 0x19  optional    u64/i64                                  off_C=152   wire<=11
+    TLV 0x1a  optional    u32/i32                                  off_C=164   wire<=7
+

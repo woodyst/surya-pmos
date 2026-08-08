@@ -45,6 +45,11 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 - **Zoom**: el driver del sensor expone un solo modo; el firmware de fábrica tiene cinco.
 - Bluetooth: volver al auricular a mitad de llamada se queda mudo, y las llamadas seguidas se
   degradan hasta que se apaga y enciende el Bluetooth.
+- **Galileo y BeiDou no aparecen nunca**, así que el cielo se ve solo con GPS y GLONASS, y
+  tampoco hay asistencia A-GPS. El módem dice que ambas constelaciones están
+  *habilitadas*, o sea que el bloqueo no es el control de constelaciones — para poder
+  siquiera hacer esa pregunta hubo que decodificar e implementar los mensajes de LOC, ver
+  [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
 - **La carga rápida de 33 W de Xiaomi.** La bomba de carga funciona y el límite está subido, pero
   falta el protocolo propietario que desbloquea la potencia alta, así que un cargador de Xiaomi
   entrega solo el ritmo estándar.
@@ -73,8 +78,13 @@ cp kernel/*.patch kernel/APKBUILD kernel/config-* \
 #    (0001-0003): los nuestros son el 0004 y el 0005, y el APKBUILD los lista todos.
 cp packages/libcamera/*.patch packages/libcamera/APKBUILD "$PMAPORTS/temp/libcamera/"
 
-# 3. Sumas y compilación
-pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera
+# 3. libqmi con los mensajes de constelaciones GNSS. Opcional: todo lo demás
+#    funciona sin él. libqmi no está en pmaports, así que se compila desde temp/.
+mkdir -p "$PMAPORTS/temp/libqmi"
+cp packages/libqmi/*.patch packages/libqmi/APKBUILD "$PMAPORTS/temp/libqmi/"
+
+# 4. Sumas y compilación
+pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi
 pmbootstrap shutdown          # ver las trampas de abajo
 pmbootstrap install
 ```
@@ -204,4 +214,7 @@ publican bajo los mismos términos que los proyectos que extienden. Ver [`NOTICE
 
 - [`docs/`](docs/) — notas por subsistema: qué fallaba, cómo se encontró y con qué trampas.
 - [`kernel/`](kernel/) — la serie de parches, un commit por arreglo.
+- [`tools/qmi-loc-idl/`](tools/qmi-loc-idl/) — decodificador de la tabla de interfaz QMI
+  LOC del módem: los 470 mensajes, y los tres que se implementaron en
+  [`packages/libqmi`](packages/libqmi).
 - [Versión en inglés](README.md).
