@@ -1,7 +1,7 @@
 # libqmi
 
-Two things live here. The first patch is a plain bug fix. The other two add GNSS
-constellation control to the LOC service.
+Two things live here. The first patch is a plain bug fix. The rest add GNSS
+constellation control to the LOC service, and make the satellite list reachable.
 
 | Patch | What it does |
 |---|---|
