@@ -1,0 +1,43 @@
+From 0bce1cece754c3a0d31ad8f68011d05abd000f36 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 20:38:06 +0200
+Subject: [PATCH 4/4] qmicli,loc: report unknown satellite systems by number
+
+qmi_loc_system_get_string() returns NULL for a constellation the enum does
+not cover, and the value was printed straight through, so a satellite from
+an unknown system showed up as "system: (null)" -- which reads like missing
+data rather than like a constellation nobody has named yet. Print the number
+instead.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/qmicli/qmicli-loc.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/qmicli/qmicli-loc.c b/src/qmicli/qmicli-loc.c
+index 54016f0..cc5114f 100644
+--- a/src/qmicli/qmicli-loc.c
++++ b/src/qmicli/qmicli-loc.c
+@@ -586,7 +586,20 @@ gnss_sv_info_received (QmiClientLoc                     *client,
+ 
+         element = &g_array_index (satellite_infos, QmiIndicationLocGnssSvInfoOutputListElement, i);
+         g_print ("   [satellite #%u]\n", i);
+-        g_print ("      system:           %s\n", (element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_SYSTEM) ? qmi_loc_system_get_string (element->system) : "n/a");
++        if (!(element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_SYSTEM))
++            g_print ("      system:           n/a\n");
++        else {
++            const gchar *system_str;
++
++            /* Modems report constellations this enum does not cover yet. Print
++             * the number rather than an empty string, so an unknown one is
++             * reported instead of silently looking like missing data. */
++            system_str = qmi_loc_system_get_string (element->system);
++            if (system_str)
++                g_print ("      system:           %s\n", system_str);
++            else
++                g_print ("      system:           unknown (0x%x)\n", element->system);
++        }
+         if (element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_GNSS_SATELLITE_ID)
+             g_print ("      satellite id:     %u\n", element->gnss_satellite_id);
+         else

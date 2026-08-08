@@ -45,11 +45,12 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 - **Zoom**: el driver del sensor expone un solo modo; el firmware de fábrica tiene cinco.
 - Bluetooth: volver al auricular a mitad de llamada se queda mudo, y las llamadas seguidas se
   degradan hasta que se apaga y enciende el Bluetooth.
-- **Galileo y BeiDou no aparecen nunca**, así que el cielo se ve solo con GPS y GLONASS, y
-  tampoco hay asistencia A-GPS. El módem dice que ambas constelaciones están
-  *habilitadas*, o sea que el bloqueo no es el control de constelaciones — para poder
-  siquiera hacer esa pregunta hubo que decodificar e implementar los mensajes de LOC, ver
-  [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
+- **Galileo y BeiDou no llegan a las aplicaciones**, así que el cielo se ve solo con GPS y
+  GLONASS, y tampoco hay asistencia A-GPS. El módem sí los sigue —preguntándole por QMI
+  reporta 31 satélites de las cuatro constelaciones—, pero su NMEA solo lleva `$GPGSV` y
+  `$GLGSV`, y el NMEA es lo que leen las aplicaciones. Ver
+  [`packages/libqmi`](packages/libqmi) para cómo preguntar, y
+  [`tools/qmi-loc-idl`](tools/qmi-loc-idl) para cómo se recuperaron los mensajes.
 - **La carga rápida de 33 W de Xiaomi.** La bomba de carga funciona y el límite está subido, pero
   falta el protocolo propietario que desbloquea la potencia alta, así que un cargador de Xiaomi
   entrega solo el ritmo estándar.

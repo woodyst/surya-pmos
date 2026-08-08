@@ -3,7 +3,7 @@ maintainer="Achill Gilgenast <achill@achill.org>"
 pkgname=libqmi
 pkgver=1.38.0_git20260414
 _commit=cff17a676e10d75081516dafa997fe9bc9043c38
-pkgrel=3
+pkgrel=6
 pkgdesc="QMI modem protocol helper library"
 url="https://www.freedesktop.org/wiki/Software/libqmi"
 arch="all"
@@ -30,7 +30,10 @@ subpackages="
 source="https://gitlab.freedesktop.org/mobile-broadband/libqmi/-/archive/$_commit/libqmi-$_commit.tar.gz
 	0001-qmicli-pdc-fix-invalid-free-of-mmapped-config.patch
 	0002-loc-add-constellation-control-messages-and-adapter.patch
-	0003-qmicli-loc-expose-constellation-control-messages.patch"
+	0003-qmicli-loc-expose-constellation-control-messages.patch
+	0004-qmicli-loc-combine-loc-start-with-monitoring.patch
+	0005-qmicli-loc-report-unknown-satellite-systems.patch
+	0006-loc-add-beidou-to-qmilocsystem.patch"
 builddir="$srcdir/$pkgname-$_commit"
 
 build() {
@@ -61,6 +64,9 @@ utils() {
 sha512sums="
 fc178689675b47faaa46c14b126dc054354044238ea00464b4cc4910c5f2c73faaa12d80a5219fbfad65ab575e38f7af3fd79ae7974ea80ed67bfffe027b85c3  libqmi-cff17a676e10d75081516dafa997fe9bc9043c38.tar.gz
 066d9926bdc6a9f57e07cee965745e56643e24907591baf6246277e84d5d495a0bc828914c0c91c9506f43126de3344c3d7940cf38b12cafec618fbefe7c1967  0001-qmicli-pdc-fix-invalid-free-of-mmapped-config.patch
-98aa1bd9cf8dc5fa7aa2fb9502a3b8e776207ad14e496905b1cf4b27a2240d344ea55d492583b6eb5a33fb03801edaab6dcd15b3915ad195c5ff0282fbd185ba  0002-loc-add-constellation-control-messages-and-adapter.patch
-4894ebf662cc742a33c1ab91aa698e60723300e7500017f4c3b99b395fdd7f771aae6d59487b4d1ad4c5db38fff9876b3966d440d3e81aa10af2071358342f2c  0003-qmicli-loc-expose-constellation-control-messages.patch
+0668be659ad407821f5e12adf5cdc51a0424e7cbbffb26a81350c2fe8754448a24de76401c969d77b298f712b1a00228dbc739abb2815aa55ffc722026c06eae  0002-loc-add-constellation-control-messages-and-adapter.patch
+e529dfefd1e8883f39cbf59f35c6204acb21055500c049559301d9b0daf8f65939368baf6a677b8f1d883f3a0b4f6d8e725f282773d6b66f0148f654727ca1ea  0003-qmicli-loc-expose-constellation-control-messages.patch
+651ffdc32e082b665616752c080ca3507f710f7a88e7c4296bdb2bb68fef47d89899a5d102ebdacf8e8a9476932fd6f70e99a43d93c4e06c55f28f1458abe510  0004-qmicli-loc-combine-loc-start-with-monitoring.patch
+a7eaa76d4745e2591729f0e9806ff0a5c2103a88ff6c6627e8f2ede84a1d039e20786edcb213a53569568f3ffde26b474e73c026a1aa5a99b41ede96ca21c332  0005-qmicli-loc-report-unknown-satellite-systems.patch
+85c15145c7257931eafe5cfa1d1febec89f35fe2e8b86368a544e0fed935d0284f1bfd078824f45bb496084624e935a2d5ad6b45990f9d6eca315ad1a96bb41e  0006-loc-add-beidou-to-qmilocsystem.patch
 "

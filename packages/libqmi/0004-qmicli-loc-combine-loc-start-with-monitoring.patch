@@ -1,0 +1,234 @@
+From 6bd25e8dd2abdda27f833a17352fe868e339cfe1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 20:30:32 +0200
+Subject: [PATCH 3/3] qmicli,loc: let --loc-start be combined with the
+ monitoring actions
+
+The engine reports to the client that owns the session. A client that only
+registers for events gets nothing while somebody else owns it -- and qmicli
+could only ever do one of the two, because starting a session and following
+indications were separate, mutually exclusive actions. Which meant that the
+one arrangement that actually delivers indications was the one arrangement
+qmicli could not produce.
+
+So --loc-start now composes with --loc-get-* and --loc-follow-*: it stops
+being an action of its own and becomes a step of the monitoring sequence,
+run right after the event registration, so the session belongs to the very
+client that just registered. On its own it behaves exactly as before.
+
+The session is torn down on the way out, including when the user interrupts
+with Ctrl+C -- the stop is deliberately sent without the cancellable, since
+we may be there precisely because it was cancelled and the session still has
+to be closed.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/qmicli/qmicli-loc.c | 135 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 132 insertions(+), 3 deletions(-)
+
+diff --git a/src/qmicli/qmicli-loc.c b/src/qmicli/qmicli-loc.c
+index d85f7b1..54016f0 100644
+--- a/src/qmicli/qmicli-loc.c
++++ b/src/qmicli/qmicli-loc.c
+@@ -45,6 +45,7 @@
+ typedef enum {
+     MONITORING_STEP_FIRST,
+     MONITORING_STEP_REGISTER_EVENTS,
++    MONITORING_STEP_START_SESSION,
+     MONITORING_STEP_SETUP_TIMEOUT,
+     MONITORING_STEP_ONGOING,
+ } MonitoringStep;
+@@ -72,6 +73,7 @@ typedef struct {
+     guint           get_constellation_control_indication_id;
+     guint           set_constellation_control_indication_id;
+     guint           set_gnss_constellation_report_config_indication_id;
++    gboolean        session_started;
+ } Context;
+ static Context *ctx;
+ 
+@@ -104,6 +106,17 @@ static gboolean noop_flag;
+ 
+ #define DEFAULT_LOC_TIMEOUT_SECS 30
+ 
++/* Whether the user asked for something that waits on indications. */
++static gboolean
++monitoring_action_requested (void)
++{
++    return (get_position_report_flag ||
++            get_gnss_sv_info_flag ||
++            follow_position_report_flag ||
++            follow_gnss_sv_info_flag ||
++            follow_nmea_flag);
++}
++
+ static GOptionEntry entries[] = {
+ #if defined HAVE_QMI_MESSAGE_LOC_START || defined HAVE_QMI_MESSAGE_LOC_STOP
+     {
+@@ -115,7 +128,8 @@ static GOptionEntry entries[] = {
+ #if defined HAVE_QMI_MESSAGE_LOC_START
+     {
+         "loc-start", 0, 0, G_OPTION_ARG_NONE, &start_flag,
+-        "Start location gathering",
++        "Start location gathering; may be combined with a --loc-get/--loc-follow action, "
++      "so that the session belongs to the client that receives the events",
+         NULL,
+     },
+ #endif
+@@ -297,7 +311,10 @@ qmicli_loc_options_enabled (void)
+      *  - Other single-request operations.
+      */
+     follow_action = !!(follow_position_report_flag + follow_gnss_sv_info_flag + follow_nmea_flag);
+-    n_actions = (start_flag +
++
++    /* --loc-start may be combined with a monitoring action, and then it is not
++     * an action of its own: it becomes a step of the monitoring sequence. */
++    n_actions = ((start_flag && !monitoring_action_requested ()) +
+                  stop_flag +
+                  get_position_report_flag +
+                  get_gnss_sv_info_flag +
+@@ -430,9 +447,62 @@ context_free (Context *context)
+     g_slice_free (Context, context);
+ }
+ 
++static void operation_shutdown (gboolean operation_status);
++
++#if defined HAVE_QMI_MESSAGE_LOC_STOP
++
++static void
++session_stop_ready (QmiClientLoc *client,
++                    GAsyncResult *res,
++                    gpointer      user_data)
++{
++    g_autoptr(QmiMessageLocStopOutput) output = NULL;
++    g_autoptr(GError)                  error = NULL;
++
++    output = qmi_client_loc_stop_finish (client, res, &error);
++    if (!output || !qmi_message_loc_stop_output_get_result (output, &error))
++        g_printerr ("warning: could not stop the location session: %s\n", error->message);
++
++    operation_shutdown (GPOINTER_TO_UINT (user_data));
++}
++
++/* If we started the session ourselves, tear it down before leaving, so that
++ * quitting does not leave the engine running behind us. */
++static gboolean
++stop_own_session (gboolean operation_status)
++{
++    g_autoptr(QmiMessageLocStopInput) input = NULL;
++
++    if (!ctx || !ctx->session_started)
++        return FALSE;
++
++    /* Cleared up front: the callback comes back through operation_shutdown(). */
++    ctx->session_started = FALSE;
++
++    input = qmi_message_loc_stop_input_new ();
++    qmi_message_loc_stop_input_set_session_id (input, (guint8) session_id, NULL);
++
++    /* No cancellable on purpose: we may well be here *because* it was
++     * cancelled, and the session still has to be closed. */
++    qmi_client_loc_stop (ctx->client,
++                         input,
++                         10,
++                         NULL,
++                         (GAsyncReadyCallback) session_stop_ready,
++                         GUINT_TO_POINTER (operation_status));
++    return TRUE;
++}
++
++#endif /* HAVE_QMI_MESSAGE_LOC_STOP */
++
+ static void
+ operation_shutdown (gboolean operation_status)
+ {
++#if defined HAVE_QMI_MESSAGE_LOC_STOP
++    if (stop_own_session (operation_status))
++        return;
++#endif
++
+     context_free (ctx);
+     qmicli_async_operation_done (operation_status, FALSE);
+ }
+@@ -889,6 +959,61 @@ monitoring_step_register_events (void)
+     qmi_message_loc_register_events_input_unref (re_input);
+ }
+ 
++#if defined HAVE_QMI_MESSAGE_LOC_START
++
++static void
++start_session_ready (QmiClientLoc *client,
++                     GAsyncResult *res)
++{
++    g_autoptr(QmiMessageLocStartOutput) output = NULL;
++    g_autoptr(GError)                   error = NULL;
++
++    output = qmi_client_loc_start_finish (client, res, &error);
++    if (!output || !qmi_message_loc_start_output_get_result (output, &error)) {
++        g_printerr ("error: could not start the location session: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    ctx->session_started = TRUE;
++
++    ctx->monitoring_step++;
++    monitoring_step_run ();
++}
++
++#endif /* HAVE_QMI_MESSAGE_LOC_START */
++
++/* The engine reports to the client that owns the session, so a client that only
++ * registers for events gets nothing while somebody else owns it. Starting the
++ * session here, from the very client that just registered, is what makes the
++ * indications arrive. Without --loc-start we keep the old behaviour and wait on
++ * a session someone else owns. */
++static void
++monitoring_step_start_session (void)
++{
++#if defined HAVE_QMI_MESSAGE_LOC_START
++    g_autoptr(QmiMessageLocStartInput) input = NULL;
++
++    if (start_flag) {
++        input = qmi_message_loc_start_input_new ();
++        qmi_message_loc_start_input_set_session_id (input, (guint8) session_id, NULL);
++        qmi_message_loc_start_input_set_intermediate_report_state (input, QMI_LOC_INTERMEDIATE_REPORT_STATE_ENABLE, NULL);
++        qmi_message_loc_start_input_set_minimum_interval_between_position_reports (input, 1000, NULL);
++        qmi_message_loc_start_input_set_fix_recurrence_type (input, QMI_LOC_FIX_RECURRENCE_TYPE_REQUEST_PERIODIC_FIXES, NULL);
++        qmi_client_loc_start (ctx->client,
++                              input,
++                              10,
++                              ctx->cancellable,
++                              (GAsyncReadyCallback) start_session_ready,
++                              NULL);
++        return;
++    }
++#endif
++
++    ctx->monitoring_step++;
++    monitoring_step_run ();
++}
++
+ static void
+ monitoring_step_run (void)
+ {
+@@ -901,6 +1026,10 @@ monitoring_step_run (void)
+         monitoring_step_register_events ();
+         return;
+ 
++    case MONITORING_STEP_START_SESSION:
++        monitoring_step_start_session ();
++        return;
++
+     case MONITORING_STEP_SETUP_TIMEOUT:
+         monitoring_step_setup_timeout ();
+         return;
+@@ -2082,7 +2211,7 @@ qmicli_loc_run (QmiDevice    *device,
+     ctx->cancellable = g_object_ref (cancellable);
+ 
+ #if defined HAVE_QMI_MESSAGE_LOC_START
+-    if (start_flag) {
++    if (start_flag && !monitoring_action_requested ()) {
+         QmiMessageLocStartInput *input;
+ 
+         input = qmi_message_loc_start_input_new ();

@@ -44,11 +44,12 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
 - Bluetooth: returning to the headset mid-call stays silent, and consecutive calls degrade until
   Bluetooth is power-cycled.
-- **Galileo and BeiDou never show up**, so the sky view is GPS and GLONASS only, and
-  there is no A-GPS assistance either. The modem reports both constellations as
-  *enabled*, so the constellation control is not what is blocking them — the LOC messages
-  needed to ask that question at all had to be decoded and implemented first, see
-  [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
+- **Galileo and BeiDou never reach applications**, so the sky view is GPS and GLONASS
+  only, and there is no A-GPS assistance either. The modem does track them — asked
+  directly over QMI it reports 31 satellites across all four constellations — but its
+  NMEA only ever carries `$GPGSV` and `$GLGSV`, and NMEA is what applications read. See
+  [`packages/libqmi`](packages/libqmi) for how to ask, and
+  [`tools/qmi-loc-idl`](tools/qmi-loc-idl) for how the messages were recovered.
 - **Xiaomi's 33 W fast charge.** The charge pump works and the limit is raised, but the proprietary
   handshake that unlocks the high-power mode is not implemented, so a Xiaomi charger delivers only
   the standard rate.

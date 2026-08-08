@@ -8,6 +8,9 @@ constellation control to the LOC service.
 | `0001-qmicli-pdc-…` | Fixes an invalid free of an mmapped config in `qmicli`'s PDC code |
 | `0002-loc-add-constellation-control-messages…` | Adds three LOC messages and an adapter for the query |
 | `0003-qmicli-loc-expose-constellation-control…` | Exposes them on the command line |
+| `0004-qmicli-loc-combine-loc-start-with-monitoring` | Lets one client start the session *and* follow the events |
+| `0005-qmicli-loc-report-unknown-satellite-systems` | Prints the number instead of `(null)` for a constellation the enum lacks |
+| `0006-loc-add-beidou-to-qmilocsystem` | Adds BeiDou (6) to `QmiLocSystem` |
 
 ## The constellation messages
 
@@ -66,7 +69,39 @@ settled on hardware: a first attempt had the grouping backwards and reported GPS
 disabled on a phone that was tracking GPS. So `qmicli` prints the numbers too, rather than
 hide the reply behind an interpretation.
 
-## What this does not fix
+## ★ What patch 0004 is really for
 
-**Galileo and BeiDou come back enabled and still do not appear** in the satellite list. So
-whatever is keeping them out, it is not the constellation control. That is still open.
+The modem **does** track Galileo and BeiDou. It just never puts them in its NMEA, which
+only ever carries `$GPGSV` and `$GLGSV`. The full list lives in the GNSS SV info
+indication — the same one Android's HAL consumes.
+
+Getting at it took patch 0004, because LOC delivers indications **to the client that owns
+the session**, and `qmicli` could only ever start a session *or* follow events: the one
+arrangement that receives anything was the one arrangement it could not produce. Now:
+
+```sh
+qmicli -p -d qrtr://0 --loc-session-id=2 --loc-start --loc-follow-gnss-sv-info
+```
+
+```
+31 satellites per indication:  gps · glonass · bds · galileo
+```
+
+It works without stopping ModemManager — two sessions coexist.
+
+⚠️ A near miss worth recording. The first attempt started the session from one client and
+followed from another: zero indications, which looked like proof that the modem does not
+send them. **The positive control was zero too** — no NMEA either — so that zero proved
+nothing. Without the control it would have been closed, wrongly.
+
+BeiDou showed up as `system: (null)`, which reads like missing data but was just a value
+missing from the enum. Patch 0005 prints the number when the system is not recognised (so
+it turned out to be `0x6`), and 0006 adds it. Identified two independent ways: satellite
+ids in the 201-237 range QMI uses for BeiDou, and the modem's own `$GNGSA` reporting
+system 4 at the same time, which is BeiDou in NMEA 4.10.
+
+## What is still missing
+
+Getting those satellites to applications. ModemManager has no satellite-list interface, so
+the cheap route is for it to synthesise `$GAGSV`/`$GBGSV` from the indication into the
+NMEA block it already publishes — no application would need changing.

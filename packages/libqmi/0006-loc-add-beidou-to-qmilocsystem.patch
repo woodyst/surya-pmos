@@ -1,0 +1,37 @@
+From 8b07319cf5b9c0942bdeb7aa48b16856147bb363 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 20:44:55 +0200
+Subject: [PATCH 5/5] loc: add BeiDou to QmiLocSystem
+
+A SM7150 modem reports satellites with system 6, which the enum does not
+cover, so they came out as unknown. They are BeiDou: their satellite ids sit
+in the 201-237 range that QMI LOC uses for BeiDou, and at the same time the
+modem's own NMEA reports a GSA with system id 4, which is BeiDou in NMEA
+4.10. COMPASS (4) is the older name and is left alone.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/libqmi-glib/qmi-enums-loc.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/libqmi-glib/qmi-enums-loc.h b/src/libqmi-glib/qmi-enums-loc.h
+index 6c7e623..6366b01 100644
+--- a/src/libqmi-glib/qmi-enums-loc.h
++++ b/src/libqmi-glib/qmi-enums-loc.h
+@@ -279,6 +279,7 @@ typedef enum { /*< since=1.22 >*/
+  * @QMI_LOC_SYSTEM_SBAS: SBAS.
+  * @QMI_LOC_SYSTEM_COMPASS: COMPASS (BeiDou).
+  * @QMI_LOC_SYSTEM_GLONASS: GLONASS.
++ * @QMI_LOC_SYSTEM_BDS: BeiDou. Since 1.39.
+  *
+  * Which location system a satellite is part of.
+  *
+@@ -290,6 +291,7 @@ typedef enum { /*< since=1.22 >*/
+     QMI_LOC_SYSTEM_SBAS    = 3,
+     QMI_LOC_SYSTEM_COMPASS = 4,
+     QMI_LOC_SYSTEM_GLONASS = 5,
++    QMI_LOC_SYSTEM_BDS     = 6,
+ } QmiLocSystem;
+ 
+ /**
