@@ -1,0 +1,95 @@
+From b6733e203f50cbcdeea85a5a7783c7f56cd32d52 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 23:49:23 +0200
+Subject: [PATCH] Capture even when output power management cannot be acquired
+
+Only one client may own output power management per output, and wlroots
+sends `failed` to anyone who asks second. On compositors where the shell
+already owns it -- phosh does, since it is what blanks the screen -- wayvnc
+therefore always gets `failed`.
+
+That is fatal today, because capture is deferred until a power event
+arrives: wayvnc_start_capture_immediate() returns without calling
+screencopy_start(), and output_power_failed() then destroys the power object
+without telling anyone. The event being waited for can never arrive, so
+capture never starts and clients are served the freshly allocated buffer --
+a uniform grey screen, with no error anywhere to explain it.
+
+So remember the failure, so the next acquisition does not ask again and fail
+again, notify the observers that were waiting, and treat an unknown power
+state as a reason to capture rather than a reason to do nothing. Not knowing
+whether the output is on is no reason to send nothing at all.
+
+Reproduced on phoc 0.55.1 (phosh) with wayvnc 0.10.0: without this, every
+client gets 360x800 of solid #606060.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ include/output.h |  4 ++++
+ src/main.c       |  7 +++++++
+ src/output.c     | 11 +++++++++++
+ 3 files changed, 22 insertions(+)
+
+diff --git a/include/output.h b/include/output.h
+index 62a06a9..94d6e61 100644
+--- a/include/output.h
++++ b/include/output.h
+@@ -59,6 +59,10 @@ struct output {
+ 
+ 	enum image_source_power_state power;
+ 
++	/* Set when the compositor refuses to hand over output power management,
++	 * e.g. because another client already owns it. */
++	bool power_management_failed;
++
+ 	void* userdata;
+ };
+ 
+diff --git a/src/main.c b/src/main.c
+index 8525ef2..924dc01 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -1364,6 +1364,13 @@ static void on_image_source_power_change(struct observer* observer,
+ 		screencopy_stop(self->screencopy);
+ 		blank_screen(self);
+ 		break;
++	case IMAGE_SOURCE_POWER_UNKNOWN:
++		/* We cannot tell whether the output is on, which is what happens
++		 * when power management could not be acquired. Capture anyway:
++		 * not knowing is no reason to send nothing at all. */
++		wayvnc_start_capture_immediate(self);
++		wayvnc_start_cursor_capture(self, true);
++		break;
+ 	default:
+ 		break;
+ 	}
+diff --git a/src/output.c b/src/output.c
+index 06393ed..6253e68 100644
+--- a/src/output.c
++++ b/src/output.c
+@@ -215,6 +215,14 @@ static void output_power_failed(void *data,
+ 	self->power = IMAGE_SOURCE_POWER_UNKNOWN;
+ 	zwlr_output_power_v1_destroy(self->wlr_output_power);
+ 	self->wlr_output_power = NULL;
++
++	/* Only one client may own output power management, so on compositors
++	 * where the shell already owns it (phosh, for one) this always fails.
++	 * Remember it, or the next acquisition would ask again and fail again,
++	 * and tell whoever is waiting: they were promised a power event that is
++	 * never going to arrive. */
++	self->power_management_failed = true;
++	observable_notify(&self->image_source.observable.power_change, NULL);
+ }
+ 
+ static const struct zwlr_output_power_v1_listener wlr_output_power_listener = {
+@@ -227,6 +235,9 @@ int output_acquire_power_on(struct output* output)
+ 	if (output->wlr_output_power)
+ 		return 1;
+ 
++	if (output->power_management_failed)
++		return -1;
++
+ 	struct zwlr_output_power_manager_v1 *power_manager =
+ 		output->wayland->zwlr_output_power_manager_v1;
+ 	if (!power_manager)

@@ -1,0 +1,51 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Fri, 14 Aug 2026 10:20:00 +0200
+Subject: [PATCH] net: qrtr: ns: say which server the del-client failed on, once
+
+On a device where one local server never accepts the del-client command,
+these two messages repeat forever -- measured at one pair every 10
+seconds, indefinitely, on an SM7150 phone.
+
+Rate limiting does not help: the default budget passes a message every 10
+seconds without ever tripping. The result is a console ring buffer made
+entirely of this:
+
+    failed to send del client cmd
+    failed while handling packet from 1:16457
+
+That matters beyond the noise. The ramoops console buffer is what
+survives a crash, and on this device it is 1 MB. After an overnight hang
+it held 11600 lines of which 234 were anything else, so a hung task
+report from hours earlier had already been pushed out by the time the
+machine was recovered.
+
+Report each of them once, and say which server the send failed on and
+with what error. As it stood the message named neither the destination
+nor the errno, so a permanently stuck endpoint was indistinguishable
+from a transient one and there was no way to tell which of the local
+servers was refusing -- the very things needed to fix it.
+
+The condition is permanent when it happens, so the first occurrence
+carries all the information the repeats do, and the error is still
+returned to the caller either way.
+--- a/net/qrtr/ns.c	2026-08-14 09:55:15.046872928 +0200
++++ b/net/qrtr/ns.c	2026-08-14 10:02:47.419052640 +0200
+@@ -489,7 +489,8 @@
+ 
+ 		ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
+ 		if (ret < 0 && ret != -ENODEV) {
+-			pr_err("failed to send del client cmd\n");
++			pr_err_once("failed to send del client cmd to %d:%d: %d\n",
++				     srv->node, srv->port, ret);
+ 			return ret;
+ 		}
+ 	}
+@@ -719,7 +720,7 @@
+ 		}
+ 
+ 		if (ret < 0)
+-			pr_err_ratelimited("failed while handling packet from %d:%d",
++			pr_err_once("failed while handling packet from %d:%d",
+ 			       sq.sq_node, sq.sq_port);
+ 	}
+ 

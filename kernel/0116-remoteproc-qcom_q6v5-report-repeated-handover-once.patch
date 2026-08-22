@@ -1,0 +1,54 @@
+From 570a40f3dd02acef2eb58e7da4c5194e44d82102 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 12 Aug 2026 10:38:42 +0200
+Subject: [PATCH 1/2] remoteproc: qcom_q6v5: only report a repeated handover
+ once
+
+On some platforms the handover interrupt fires again after the handover has
+already been issued, and it does not do so once: measured at ~4 times a
+second, indefinitely, on an SM7150 phone whose modem otherwise works fine
+(data, calls and SMS all normal).
+
+Logged at every occurrence, this one line drowns everything else. It filled
+a 1 MiB ramoops console buffer with 10854 copies of itself, leaving no room
+for anything else -- so the buffer that exists to preserve the last words of
+a crashing kernel contained nothing but this message, and a hang under
+investigation left no evidence at all. The buffer rewrites itself roughly
+every 40 minutes at that rate.
+
+Use dev_err_once(). The condition is still worth reporting, but repeating it
+destroys more information than it provides.
+
+Why the interrupt re-fires is not addressed here.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ drivers/remoteproc/qcom_q6v5.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/remoteproc/qcom_q6v5.c b/drivers/remoteproc/qcom_q6v5.c
+index 58d5b85..781efef 100644
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -165,7 +165,19 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *data)
+ 	struct qcom_q6v5 *q6v5 = data;
+ 
+ 	if (q6v5->handover_issued) {
+-		dev_err(q6v5->dev, "Handover signaled, but it already happened\n");
++		/*
++		 * On some platforms this fires continuously - measured at
++		 * ~4 times a second, forever, on an SM7150 phone with a
++		 * perfectly working modem. Logged at every occurrence it
++		 * drowns the kernel log: it filled a 1 MiB ramoops console
++		 * buffer with 10854 copies of this one line, wiping every
++		 * trace of the crash that buffer existed to preserve.
++		 *
++		 * Say it once. The condition is worth knowing about, but
++		 * repeating it destroys more information than it provides.
++		 */
++		dev_err_once(q6v5->dev,
++			     "Handover signaled, but it already happened\n");
+ 		return IRQ_HANDLED;
+ 	}
+ 

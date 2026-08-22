@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 17 Aug 2026 20:10:00 +0200
+Subject: [PATCH] media: dw9807-vcm: don't disable the regulator twice on system
+ suspend
+
+The same pair of callbacks is used for runtime PM and for system sleep:
+
+	SET_SYSTEM_SLEEP_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume)
+	SET_RUNTIME_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume, NULL)
+
+The VCM is idle almost all of the time, so runtime PM has normally already
+suspended it -- and disabled its regulator -- by the time the system
+suspends. The system sleep callback then runs regardless and calls
+regulator_disable() a second time, which fails with -EIO on the unbalanced
+disable. That error is returned to the PM core:
+
+  dw9807 12-000c: PM: dpm_run_callback(): dw9807_vcm_suspend returns -5
+  dw9807 12-000c: PM: failed to suspend async: error -5
+  PM: Some devices failed to suspend, or early wake event detected
+
+and it aborts the whole suspend, so a phone with the camera driver loaded
+never suspends at all. Measured on a Xiaomi POCO X3 NFC (sm7150): every
+suspend attempt returned after ~2 s instead of sleeping.
+
+Note the driver already knows about this hazard -- remove() guards the very
+same regulator_disable() with pm_runtime_status_suspended() -- it just was
+never applied to the system sleep path.
+
+Use pm_runtime_force_suspend()/pm_runtime_force_resume(), which skip the
+callback when the device is already runtime suspended and restore the
+runtime PM state on resume. Nothing else is needed: the driver already calls
+pm_runtime_set_active() + pm_runtime_enable() in probe().
+
+Signed-off-by: Eduardo García-Mádico Portabella <woodyst@gmail.com>
+---
+diff --git a/drivers/media/i2c/dw9807-vcm.c b/drivers/media/i2c/dw9807-vcm.c
+index 7d1df1af3..d8d7b1ac4 100644
+--- a/drivers/media/i2c/dw9807-vcm.c
++++ b/drivers/media/i2c/dw9807-vcm.c
+@@ -327,7 +327,7 @@ static const struct of_device_id dw9807_of_table[] = {
+ MODULE_DEVICE_TABLE(of, dw9807_of_table);
+ 
+ static const struct dev_pm_ops dw9807_pm_ops = {
+-	SET_SYSTEM_SLEEP_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume)
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+ 	SET_RUNTIME_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume, NULL)
+ };
+ 
+-- 
+2.51.0

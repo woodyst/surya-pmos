@@ -1,0 +1,55 @@
+From a366f90850075f28b2d202f5a87698dd402bc855 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 12 Aug 2026 13:38:57 +0200
+Subject: [PATCH] Revert "q6v5-pas: keep modem proxy power vote at handover
+ (RF-online test)"
+
+This reverts the local RF-online experiment, which its own commit message
+described as a test: instead of releasing the AP-side proxy power vote when
+the modem signals handover, it kept cx/mx/mss pinned at INT_MAX forever.
+
+The problem it was chasing -- the modem coming up DeviceNotReady -- turned out
+to have a different cause entirely (a WRQ bug in tqftpserv 1.1.1, fixed in
+1.2), so the vote was never the fix. It just stayed.
+
+The cost only became visible once qcom_stats was loaded and the system's
+low-power counters could be read: with cx and mx held at maximum performance
+state, aosd, cxsd and ddr can never be entered, so the SoC never reaches deep
+sleep no matter what else idles. Measured over 2043 s of uptime: all three
+counters at zero.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ drivers/remoteproc/qcom_q6v5_pas.c | 12 +-----------
+ 1 file changed, 1 insertion(+), 11 deletions(-)
+
+diff --git a/drivers/remoteproc/qcom_q6v5_pas.c b/drivers/remoteproc/qcom_q6v5_pas.c
+index 72702ffd5..56aed30ab 100644
+--- a/drivers/remoteproc/qcom_q6v5_pas.c
++++ b/drivers/remoteproc/qcom_q6v5_pas.c
+@@ -387,23 +387,13 @@ static void qcom_pas_handover(struct qcom_q6v5 *q6v5)
+ {
+ 	struct qcom_pas *pas = container_of(q6v5, struct qcom_pas, q6v5);
+ 
+-	/* RF-online experiment (surya modem DeviceNotReady): the modem is a PAS
+-	 * subsystem at 4080000; for it, keep the AP-side proxy power vote
+-	 * (cx/mx/mss at INT_MAX) instead of releasing it at handover, to test
+-	 * whether the modem loses power needed to bring RF online. */
+-	bool is_modem = !strcmp(dev_name(pas->dev), "4080000.remoteproc");
+-
+-	dev_info(pas->dev, "q6v5-pas handover (pas_id=%d, is_modem=%d): %s proxy power vote\n",
+-		 pas->pas_id, is_modem, is_modem ? "KEEPING" : "releasing");
+-
+ 	if (pas->px_supply)
+ 		regulator_disable(pas->px_supply);
+ 	if (pas->cx_supply)
+ 		regulator_disable(pas->cx_supply);
+ 	clk_disable_unprepare(pas->aggre2_clk);
+ 	clk_disable_unprepare(pas->xo);
+-	if (!is_modem)
+-		qcom_pas_pds_disable(pas, pas->proxy_pds, pas->proxy_pd_count);
++	qcom_pas_pds_disable(pas, pas->proxy_pds, pas->proxy_pd_count);
+ }
+ 
+ static int qcom_pas_stop(struct rproc *rproc)

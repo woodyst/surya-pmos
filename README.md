@@ -27,6 +27,11 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 | **USB OTG** | Host mode, verified with a webcam |
 | **Notifications** | Sound **and vibration**, plus haptic feedback on key presses |
 | **Charging** | The battery charges and reports its level, with the BQ25970 charge pump driven and the current limit raised |
+| **Battery life** | The phone **suspends properly**: a wakeup line was aborting every single suspend. **−46 %** idle draw (~34 h → ~64 h) |
+| **Battery gauge** | The percentage used to be voltage on a straight line and was **19 points off** near empty; now IR-compensated against a measured OCV table |
+| **GNSS constellations** | **Galileo and BeiDou reach applications**: ModemManager synthesises the NMEA the modem never emits |
+| **Muting a call** | The mute button in the dialer actually mutes — on earpiece and speaker |
+| **Remote screen** | VNC into the running phone (patched ) |
 
 ## What does not work
 
@@ -37,19 +42,24 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
   all**, not even the rear one.
 - **Vibration is weak**, even at maximum. The actuator is a linear motor and only performs at its
   resonant frequency; the driver may not calibrate it.
-- **The phone hangs on its own now and then**, roughly once or twice a night, with no trace of any
-  kind — the signature of the hardware watchdog. Cause unknown.
+- **The phone reboots on its own** under heavy modem use. This used to hang silently with no
+  trace; it is now instrumented (`hung_task_panic`), which turned the hang into a panic that
+  leaves a full stack behind — and that named the cause: **IPA's runtime suspend blocks forever**
+  in `gsi_channel_trans_quiesce()`, an untimed `wait_for_completion()` on the modem's last GSI
+  transaction (`drivers/net/ipa/gsi.c`). `irq/172-ipa`, which shows up in every signature, is a
+  *victim*: its `pm_runtime_get_sync()` waits for the suspend that never ends. **No fix yet** —
+  see [`docs/suspend.es.md`](docs/suspend.es.md).
 - **Image quality is uncalibrated**: the software ISP has no tuning file for this sensor, so photos
   look washed out with dark corners.
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
 - Bluetooth: returning to the headset mid-call stays silent, and consecutive calls degrade until
-  Bluetooth is power-cycled.
-- **Galileo and BeiDou never reach applications**, so the sky view is GPS and GLONASS
-  only, and there is no A-GPS assistance either. The modem does track them — asked
-  directly over QMI it reports 31 satellites across all four constellations — but its
-  NMEA only ever carries `$GPGSV` and `$GLGSV`, and NMEA is what applications read. See
-  [`packages/libqmi`](packages/libqmi) for how to ask, and
-  [`tools/qmi-loc-idl`](tools/qmi-loc-idl) for how the messages were recovered.
+  Bluetooth is power-cycled. **Muting the microphone does not work on a headset either**: the mic
+  is the headset's, it comes in over SLIMBus and no gain control is exposed on that path. Giving
+  the profile a source so the button had something to act on left the call with **no audio at
+  all**, so it was reverted. Workaround: switch to speaker and mute there.
+- **No A-GPS assistance.** Galileo and BeiDou now *do* reach applications (see above), but there
+  is still no assistance data, so a cold fix takes its time. See
+  [`packages/libqmi`](packages/libqmi) and [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
 - **Xiaomi's 33 W fast charge.** The charge pump works and the limit is raised, but the proprietary
   handshake that unlocks the high-power mode is not implemented, so a Xiaomi charger delivers only
   the standard rate.

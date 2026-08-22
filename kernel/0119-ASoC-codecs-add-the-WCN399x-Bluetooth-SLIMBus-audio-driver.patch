@@ -1,0 +1,1584 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Wed, 12 Aug 2026 17:30:00 +0200
+Subject: [PATCH] ASoC: codecs: add the WCN399x Bluetooth SLIMBus audio driver
+
+Bring wcn-bt-slim into the tree instead of building it out of tree.
+
+The reason is not tidiness. CONFIG_MODVERSIONS is off here, so the only
+thing checked at load time is the version string: an out-of-tree module
+built against a different kernel is either rejected outright or, worse,
+loaded with a mismatched ABI. It happened, and the symptom pointed
+nowhere near the module -- Bluetooth call audio went silent while the
+routing stayed structurally perfect (call profile active, eSCO up, sinks
+RUNNING), and hours went into suspecting PipeWire suspension instead.
+
+Built as a module and NOT autoloaded: on this platform the driver must
+bind after the Bluetooth stack has taken the chip, so it stays
+blacklisted and is loaded by hand once userspace is up. Building it in
+does not change that.
+
+The driver itself is unchanged, including .laddr_optional = true, which
+keeps the ASoC component registered from the moment the module loads so
+the sound card never waits on a codec that is repeatedly torn down.
+
+--- a/sound/soc/codecs/Kconfig	2026-08-12 17:26:50.034927078 +0200
++++ b/sound/soc/codecs/Kconfig	2026-08-12 17:26:50.078259994 +0200
+@@ -303,6 +303,7 @@
+ 	imply SND_SOC_WCD937X_SDW
+ 	imply SND_SOC_WCD938X_SDW
+ 	imply SND_SOC_WCD939X_SDW
++	imply SND_SOC_WCN_BT_SLIM
+ 	imply SND_SOC_LPASS_MACRO_COMMON
+ 	imply SND_SOC_LPASS_RX_MACRO
+ 	imply SND_SOC_LPASS_TX_MACRO
+@@ -2478,6 +2479,22 @@
+ 	  The WCD9390/9395 is a audio codec IC Integrated in
+ 	  Qualcomm SoCs like SM8650.
+ 
++config SND_SOC_WCN_BT_SLIM
++	tristate "Qualcomm WCN399x Bluetooth audio over SLIMBus"
++	depends on SLIMBUS
++	help
++	  Say Y or M if you want to route Bluetooth call audio on a Qualcomm
++	  platform whose WCN399x combo chip is reached over SLIMBus.
++
++	  On these SoCs a circuit-switched call never crosses the CPU: the
++	  modem's vocoder and the audio DSP talk to each other directly, and
++	  the DSP reaches a Bluetooth headset over SLIMBus. This driver owns
++	  the far end of that link - it enumerates the chip and configures its
++	  SCO ports so the DSP's stream has somewhere to land.
++
++	  Without it a Bluetooth call is silent in both directions even though
++	  the routing looks perfectly healthy.
++
+ config SND_SOC_WM0010
+ 	tristate
+ 	depends on SPI_MASTER
+--- a/sound/soc/codecs/Makefile	2026-08-12 17:26:50.034927078 +0200
++++ b/sound/soc/codecs/Makefile	2026-08-12 17:27:04.061458573 +0200
+@@ -361,6 +361,7 @@
+ snd-soc-wcd938x-sdw-y := wcd938x-sdw.o
+ snd-soc-wcd939x-y := wcd939x.o
+ snd-soc-wcd939x-sdw-y := wcd939x-sdw.o
++snd-soc-wcn-bt-slim-y := wcn-bt-slim.o
+ snd-soc-wm-adsp-y := wm_adsp.o
+ snd-soc-wm-adsp-test-y := wm_adsp_fw_find_test.o
+ snd-soc-wm0010-y := wm0010.o
+@@ -808,6 +809,7 @@
+ # avoid link failure by forcing sdw code built-in when needed
+ obj-$(CONFIG_SND_SOC_WCD939X) += snd-soc-wcd939x-sdw.o
+ endif
++obj-$(CONFIG_SND_SOC_WCN_BT_SLIM) += snd-soc-wcn-bt-slim.o
+ obj-$(CONFIG_SND_SOC_WM0010)	+= snd-soc-wm0010.o
+ obj-$(CONFIG_SND_SOC_WM1250_EV1) += snd-soc-wm1250-ev1.o
+ obj-$(CONFIG_SND_SOC_WM2000)	+= snd-soc-wm2000.o
+--- /dev/null	2026-07-30 22:00:07.076666674 +0200
++++ b/sound/soc/codecs/wcn-bt-slim.c	2026-08-12 17:26:50.044926982 +0200
+@@ -0,0 +1,1507 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SLIMBus driver for the WCN399x's Bluetooth audio interface.
++ *
++ * On this SoC a circuit-switched call never crosses the CPU: the modem's
++ * vocoder and the audio DSP talk to each other directly, and the DSP reaches
++ * a Bluetooth headset over SLIMBus - port SLIMBUS_7 on the DSP side, and the
++ * WCN399x's own SCO ports on the other. This driver owns that far end: it
++ * enumerates the chip, and configures its ports so the DSP's stream has
++ * somewhere to land.
++ *
++ * The chip presents two SLIMBus devices, and both are needed:
++ *   - the interface device (IFD, device index 0), through which its registers
++ *     are read and written;
++ *   - the ported generic device (PGD, device index 1), which owns the audio
++ *     ports themselves.
++ *
++ * Modelled on the downstream btfm_slim driver, which is the only description
++ * of this hardware that exists.
++ */
++#include <linux/module.h>
++#include <linux/slimbus.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <sound/pcm.h>
++#include <sound/soc.h>
++#include <sound/soc-dai.h>
++#include <linux/io.h>
++#include <linux/pm_runtime.h>
++#include <linux/debugfs.h>
++
++/*
++ * Registers, addressed through the interface device.
++ *
++ * The addresses below are the chip's own, and they all sit at an offset:
++ * downstream adds SLIM_SLAVE_REG_OFFSET to every access, and the WCN3990
++ * redefines that offset to 0x800. Reading the bare addresses instead lands
++ * 0x800 below the real map, where every byte reads back as zero - which looks
++ * exactly like a successful read of a chip that has nothing to say.
++ */
++#define WCN_SB_REG_OFFSET		0x0800
++
++#define WCN_SB_SLAVE_HW_REV_MSB		0x0001
++#define WCN_SB_SLAVE_HW_REV_LSB		0x0002
++#define WCN_SB_PGD_PORT_TX_CFGN(n)	(0x0050 + (n))
++#define WCN_SB_PGD_PORT_RX_CFGN(n)	(0x0040 + (n))
++#define WCN_SB_PGD_TX_PORTn_MULTI_CHNL_0(n)	(0x0100 + 4 * (n))
++#define WCN_SB_PGD_RX_PORTn_MULTI_CHNL_0(n)	(0x0180 + 4 * (n))
++#define WCN_SB_PGD_PORT_INT_EN_RX_0	0x0030
++#define WCN_SB_PGD_PORT_INT_EN_TX_0	0x0032
++#define WCN_SB_PGD_PORT_TX_OR_UR_CFGN(n)	(0x01F0 + (n))
++
++#define WCN_SB_PGD_PORT_ENABLE		BIT(0)
++/*
++ * Watermark: how full the port's FIFO gets before it asks the bus for
++ * service. The field is three bits wide starting at bit 1, so the value goes
++ * in shifted - a plain 0x18 lands on bits 3 and 4 instead, which is what was
++ * being written here and left the port configured with a watermark it never
++ * reaches. The vendor driver uses a deep watermark on the receiving port and a
++ * shallow one on the transmitting one.
++ */
++#define WCN_SB_PGD_PORT_WM(v)		((v) << 1)
++#define WCN_SB_PGD_PORT_WM_L1		WCN_SB_PGD_PORT_WM(0x1)
++#define WCN_SB_PGD_PORT_WM_LB		WCN_SB_PGD_PORT_WM(0xB)
++
++/* The transmitting port recovers from over/underrun on its own. */
++#define WCN_SB_ENABLE_OVERRUN_AUTO_RECOVERY	BIT(1)
++#define WCN_SB_ENABLE_UNDERRUN_AUTO_RECOVERY	BIT(0)
++
++/*
++ * The chip's own port numbering. SCO is what a phone call uses; the A2DP and
++ * FM ports exist too but nothing here needs them yet.
++ */
++#define WCN_PGD_PORT_TX_SCO		0
++#define WCN_PGD_PORT_RX_SCO		16
++
++/*
++ * Bus channel numbers for the chip, taken from downstream's machine driver
++ * (sm6150.c): the WCN gets 157/158 towards it and 159/160/161 back. A mono
++ * SCO call uses the first of each.
++ */
++#define WCN_SLIM_CH_RX_SCO		157
++#define WCN_SLIM_CH_TX_SCO		159
++
++/* The device index distinguishes the two devices sharing one product ID. */
++#define WCN_DEV_INDEX_IFD		0
++#define WCN_DEV_INDEX_PGD		1
++
++/*
++ * The bus manager only learns about the chip a moment after something first
++ * asks for its logical address - the first query is what sets enumeration
++ * going. Asking once and giving up finds nothing; downstream retries too.
++ */
++/*
++ * Attempts, not milliseconds: there is deliberately no delay between them
++ * (see the read path), so each costs about a millisecond and the whole loop
++ * is worth well under a second.
++ *
++ * The number comes from measurement: after a long idle the chip has taken up
++ * to 205 attempts to answer. Sixty - which was enough back when each attempt
++ * slept 20ms and the loop therefore spanned more than a second - leaves far
++ * too little room once the sleep is gone, and shows up as
++ * "write 0x0050 still failing after 60 tries".
++ */
++#define WCN_READ_TRIES			600
++
++#define WCN_LADDR_TRIES			20
++#define WCN_LADDR_POLL_MS		250
++
++struct wcn_bt_slim {
++	struct slim_device *ifd;
++	struct slim_device *pgd;
++	struct delayed_work laddr_work;
++	int tries;
++	bool ready;
++	/* Bus channels reserved while each direction is streaming. */
++	struct slim_stream_runtime *rx_stream;
++	struct slim_stream_runtime *tx_stream;
++};
++
++static struct wcn_bt_slim *wcn_bt;
++static DEFINE_MUTEX(wcn_bt_lock);
++
++/*
++ * Register access can come back short right after enumeration; downstream
++ * retries three times, 5ms apart, and so do we.
++ */
++/*
++ * Writes need the same treatment as reads: they land in the chip's quiet
++ * windows just as often, and there they are rejected outright.
++ */
++static int wcn_bt_slim_writeb_retry(struct slim_device *sdev, u32 addr, u8 val)
++{
++	int ret, tries;
++
++	for (tries = 0; tries < WCN_READ_TRIES; tries++) {
++		ret = slim_writeb(sdev, WCN_SB_REG_OFFSET + addr, val);
++		if (!ret)
++			return 0;
++		cond_resched();		/* see the note in the read path */
++	}
++
++	dev_err(&sdev->dev, "write 0x%04x still failing after %d tries\n",
++		addr, WCN_READ_TRIES);
++
++	return ret;
++}
++
++static int wcn_bt_slim_readb_via(struct slim_device *sdev, u32 addr)
++{
++	int ret, tries;
++
++	/*
++	 * The chip is only reachable in windows: measured over many cycles it
++	 * answers for a very regular ~1040 ms and then goes quiet for a few
++	 * hundred, so any single attempt has about a one in five chance of
++	 * landing in a gap. Retrying across one is all that is needed.
++	 *
++	 * This only became practical once rejected messages started failing
++	 * fast: while every miss cost a one second timeout, a loop long enough
++	 * to cross a gap would have taken half a minute.
++	 */
++	for (tries = 0; tries < WCN_READ_TRIES; tries++) {
++		ret = slim_readb(sdev, WCN_SB_REG_OFFSET + addr);
++		if (ret >= 0) {
++			if (tries)
++				dev_dbg(&sdev->dev, "read 0x%04x ok on try %d\n",
++					addr, tries);
++			return ret;
++		}
++		/*
++		 * Deliberately no delay between attempts. The chip only
++		 * answers while the bus is being driven continuously:
++		 * measured over 150 attempts it answers 41% of the time
++		 * back-to-back, 2% with a 5ms pause, and not at all with 50ms.
++		 * Sleeping "to be polite" here is what made this look, for
++		 * days, like a chip that never responds.
++		 */
++		cond_resched();
++	}
++
++	dev_err(&sdev->dev, "read 0x%04x still failing after %d tries\n",
++		addr, WCN_READ_TRIES);
++
++	return ret;
++}
++
++/*
++ * Downstream reads these through the interface device, but that times out
++ * here, so try the ported device too and report both - whichever answers is
++ * the one this chip actually wants.
++ */
++static int wcn_bt_slim_readb(struct wcn_bt_slim *wb, u32 addr)
++{
++	int via_ifd, via_pgd;
++
++	via_ifd = wcn_bt_slim_readb_via(wb->ifd, addr);
++	via_pgd = wcn_bt_slim_readb_via(wb->pgd, addr);
++
++	dev_info(&wb->pgd->dev, "reg 0x%04x: via IFD -> %d, via PGD -> %d\n",
++		 addr, via_ifd, via_pgd);
++
++	if (via_ifd >= 0)
++		return via_ifd;
++
++	return via_pgd;
++}
++
++static int wcn_bt_slim_read_hw_rev(struct wcn_bt_slim *wb)
++{
++	int msb, lsb;
++
++	msb = wcn_bt_slim_readb(wb, WCN_SB_SLAVE_HW_REV_MSB);
++	if (msb < 0)
++		return msb;
++
++	lsb = wcn_bt_slim_readb(wb, WCN_SB_SLAVE_HW_REV_LSB);
++	if (lsb < 0)
++		return lsb;
++
++	dev_info(&wb->ifd->dev, "WCN399x SLIMBus slave rev %u.%u step %u\n",
++		 (msb & 0xf0) >> 4, msb & 0x0f, lsb);
++
++	return 0;
++}
++
++/*
++ * Point one of the chip's ports at a bus channel and switch it on. The port
++ * configuration lives in the PGD but is written through the interface device,
++ * which is the only one that answers register access.
++ */
++static int wcn_bt_slim_port_enable(struct wcn_bt_slim *wb, u8 port, bool rx,
++				   u8 chan)
++{
++	u16 cfg_reg = rx ? WCN_SB_PGD_PORT_RX_CFGN(port - WCN_PGD_PORT_RX_SCO)
++			 : WCN_SB_PGD_PORT_TX_CFGN(port);
++	u16 chan_reg = rx ? WCN_SB_PGD_RX_PORTn_MULTI_CHNL_0(port - WCN_PGD_PORT_RX_SCO)
++			  : WCN_SB_PGD_TX_PORTn_MULTI_CHNL_0(port);
++	int ret;
++
++	ret = wcn_bt_slim_writeb_retry(wb->ifd, chan_reg, BIT(chan));
++	if (ret) {
++		dev_err(&wb->ifd->dev, "port %u: channel select failed: %d\n",
++			port, ret);
++		return ret;
++	}
++
++	if (!rx) {
++		ret = wcn_bt_slim_writeb_retry(wb->ifd,
++				WCN_SB_PGD_PORT_TX_OR_UR_CFGN(port),
++				WCN_SB_ENABLE_OVERRUN_AUTO_RECOVERY |
++				WCN_SB_ENABLE_UNDERRUN_AUTO_RECOVERY);
++		if (ret) {
++			dev_err(&wb->ifd->dev,
++				"port %u: auto-recovery setup failed: %d\n",
++				port, ret);
++			return ret;
++		}
++	}
++
++	ret = wcn_bt_slim_writeb_retry(wb->ifd, cfg_reg,
++			  WCN_SB_PGD_PORT_ENABLE |
++			  (rx ? WCN_SB_PGD_PORT_WM_LB : WCN_SB_PGD_PORT_WM_L1));
++	if (ret)
++		dev_err(&wb->ifd->dev, "port %u: enable failed: %d\n", port, ret);
++
++	return ret;
++}
++
++static int wcn_bt_slim_port_disable(struct wcn_bt_slim *wb, u8 port, bool rx)
++{
++	u16 cfg_reg = rx ? WCN_SB_PGD_PORT_RX_CFGN(port - WCN_PGD_PORT_RX_SCO)
++			 : WCN_SB_PGD_PORT_TX_CFGN(port);
++
++	return wcn_bt_slim_writeb_retry(wb->ifd, cfg_reg, 0);
++}
++
++/*
++ * Both devices have to be enumerated before anything can be said to the chip:
++ * the PGD owns the ports, the IFD carries the register traffic.
++ */
++static void wcn_bt_slim_laddr_work(struct work_struct *work)
++{
++	struct wcn_bt_slim *wb = container_of(to_delayed_work(work),
++					      struct wcn_bt_slim, laddr_work);
++	int ret;
++
++	mutex_lock(&wcn_bt_lock);
++
++	if (!wb->ifd || !wb->pgd)
++		goto retry;
++
++	ret = slim_get_logical_addr(wb->ifd);
++	if (ret)
++		goto retry;
++
++	ret = slim_get_logical_addr(wb->pgd);
++	if (ret)
++		goto retry;
++
++	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
++		 wb->pgd->laddr, wb->ifd->laddr);
++
++	if (!wcn_bt_slim_read_hw_rev(wb))
++		wb->ready = true;
++
++	mutex_unlock(&wcn_bt_lock);
++	return;
++
++retry:
++	if (++wb->tries < WCN_LADDR_TRIES) {
++		schedule_delayed_work(&wb->laddr_work,
++				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
++	} else {
++		dev_warn(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
++			 "chip never showed up on the bus\n");
++	}
++
++	mutex_unlock(&wcn_bt_lock);
++}
++
++/*
++ * ASoC side: a DAI for the chip's SCO ports.
++ *
++ * This exists for the sake of *when* things happen, not just what. Downstream
++ * reaches the chip's registers from btfm_slim_dai_startup() - that is, while
++ * an audio stream is being brought up - and never from a quiet bus. Every
++ * register access tried here so far has been the other way round: bus idle,
++ * nothing playing, and universally NACKed.
++ *
++ * Registering a DAI lets the machine driver put this on the far end of the
++ * DSP's SLIMBUS_7 port, so starting a stream brings the DSP's side up first
++ * and then calls startup() here, reproducing the factory order for the first
++ * time.
++ */
++/*
++ * Reserve a channel on the bus for this stream.
++ *
++ * Enabling the chip's port and telling the DSP which channel to use is not
++ * enough: nobody had asked the bus manager to actually carry that channel, so
++ * the DSP's port had nowhere to put its samples and writing to the PCM came
++ * back as an I/O error. The stream API is what reserves it.
++ */
++/*
++ * Whether to reserve the channel from this side at all.
++ *
++ * The ADSP owns the bus master, so it may well be allocating the channel for
++ * its own port already; asking for the same channel from here would then be
++ * at best redundant. Kept switchable to find out which it is.
++ */
++static bool reservar = true;
++module_param(reservar, bool, 0644);
++MODULE_PARM_DESC(reservar, "reserve the bus channel from this side");
++
++static uint ch_rx = WCN_SLIM_CH_RX_SCO;
++module_param(ch_rx, uint, 0644);
++MODULE_PARM_DESC(ch_rx, "bus channel the chip listens on for SCO");
++
++static uint ch_tx = WCN_SLIM_CH_TX_SCO;
++module_param(ch_tx, uint, 0644);
++MODULE_PARM_DESC(ch_tx, "bus channel the chip sends its SCO microphone on");
++
++static int wcn_bt_slim_stream_start(struct snd_pcm_substream *substream,
++				    struct snd_soc_dai *dai, unsigned int rate)
++{
++	bool play = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++	unsigned int ch = play ? ch_rx : ch_tx;
++	struct slim_stream_config cfg = {
++		.rate = rate,
++		.bps = 16,
++		.ch_count = 1,
++		.chs = &ch,
++		.port_mask = BIT(play ? WCN_PGD_PORT_RX_SCO : WCN_PGD_PORT_TX_SCO),
++		.direction = substream->stream,
++	};
++	struct slim_stream_runtime **slot = play ? &wcn_bt->rx_stream
++						 : &wcn_bt->tx_stream;
++	int ret;
++
++	if (*slot || !reservar)
++		return 0;
++
++	*slot = slim_stream_allocate(wcn_bt->pgd, play ? "SCO-rx" : "SCO-tx");
++	if (IS_ERR(*slot)) {
++		ret = PTR_ERR(*slot);
++		*slot = NULL;
++		dev_err(dai->dev, "stream allocate failed: %d\n", ret);
++		return ret;
++	}
++
++	ret = slim_stream_prepare(*slot, &cfg);
++	if (ret) {
++		dev_err(dai->dev, "stream prepare failed: %d\n", ret);
++		goto err;
++	}
++
++	ret = slim_stream_enable(*slot);
++	if (ret) {
++		dev_err(dai->dev, "stream enable failed: %d\n", ret);
++		slim_stream_unprepare(*slot);
++		goto err;
++	}
++
++	dev_info(dai->dev, "bus channel %u reserved for %s\n",
++		 ch, play ? "playback" : "capture");
++	return 0;
++
++err:
++	slim_stream_free(*slot);
++	*slot = NULL;
++	return ret;
++}
++
++static void wcn_bt_slim_stream_stop(struct snd_pcm_substream *substream)
++{
++	bool play = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++	struct slim_stream_runtime **slot;
++
++	if (!wcn_bt)
++		return;
++
++	slot = play ? &wcn_bt->rx_stream : &wcn_bt->tx_stream;
++	if (!*slot)
++		return;
++
++	slim_stream_disable(*slot);
++	slim_stream_unprepare(*slot);
++	slim_stream_free(*slot);
++	*slot = NULL;
++}
++
++static int wcn_bt_slim_dai_startup(struct snd_pcm_substream *substream,
++				   struct snd_soc_dai *dai)
++{
++	int ret, val;
++
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		dev_err(dai->dev, "chip not enumerated\n");
++		return -ENODEV;
++	}
++
++	/*
++	 * Read a register from inside stream startup, which is the one context
++	 * that has never been tried. If the chip answers here and nowhere
++	 * else, then its interface is tied to the audio path being up.
++	 */
++	val = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++	dev_info(dai->dev, "startup: hw rev read -> %d\n", val);
++
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		/*
++		 * Bit 0, not bit 1: the vendor driver selects the channel with
++		 * `1 << port`, and the SCO transmit port is port 0. Writing
++		 * bit 1 left the port pointing at a channel nothing was
++		 * carrying, and the capture came back as exact digital
++		 * silence while the receive direction worked fine.
++		 */
++		ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_TX_SCO,
++					      false, 0);
++	else
++		ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_RX_SCO,
++					      true, 0);
++	if (ret)
++		dev_err(dai->dev, "port setup failed: %d\n", ret);
++
++	/*
++	 * Do not fail the stream on that: the point here is to find out
++	 * whether the chip answers at all in this context.
++	 */
++	return 0;
++}
++
++static void wcn_bt_slim_dai_shutdown(struct snd_pcm_substream *substream,
++				     struct snd_soc_dai *dai)
++{
++	wcn_bt_slim_stream_stop(substream);
++
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_TX_SCO, false);
++	else
++		wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_RX_SCO, true);
++}
++
++/*
++ * Which bus channels this chip's SCO ports live on. The machine driver asks
++ * for these and hands them to the DSP: without them the ADSP refuses to
++ * enable its side of the port at all.
++ */
++static int wcn_bt_slim_get_channel_map(const struct snd_soc_dai *dai,
++				       unsigned int *tx_num, unsigned int *tx_slot,
++				       unsigned int *rx_num, unsigned int *rx_slot)
++{
++	if (dai->id == 0) {		/* playback: towards the headset */
++		if (!rx_slot || !rx_num)
++			return -EINVAL;
++		rx_slot[0] = ch_rx;
++		*rx_num = 1;
++	} else {			/* capture: the headset's microphone */
++		if (!tx_slot || !tx_num)
++			return -EINVAL;
++		tx_slot[0] = ch_tx;
++		*tx_num = 1;
++	}
++
++	return 0;
++}
++
++/*
++ * The same read again, but from prepare rather than startup.
++ *
++ * startup runs before the DSP has actually started its side of the port -
++ * that happens in prepare - so a read there still finds the bus idle, which
++ * is the very condition being tested. By the time this runs the ADSP's
++ * SLIMBUS_7 port is up, which is as close to the factory's ordering as this
++ * can get.
++ */
++static int wcn_bt_slim_dai_prepare(struct snd_pcm_substream *substream,
++				   struct snd_soc_dai *dai)
++{
++	int val;
++
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid)
++		return 0;
++
++	val = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++	dev_info(dai->dev, "prepare (DSP port up): hw rev read -> %d\n", val);
++
++	return 0;
++}
++
++/*
++ * Reserve the bus channel here, not in prepare.
++ *
++ * ALSA runs hw_params on every DAI before it runs prepare on any of them, and
++ * the DSP's own port is started from its prepare. Reserving from prepare left
++ * the channel arriving after the DSP had already started its side, and the
++ * port then never moved a single frame - the ADSP acknowledged everything and
++ * quietly sat there. Doing it from hw_params puts the channel on the bus
++ * first, which is the order the factory driver uses.
++ */
++static int wcn_bt_slim_dai_hw_params(struct snd_pcm_substream *substream,
++				     struct snd_pcm_hw_params *params,
++				     struct snd_soc_dai *dai)
++{
++	if (!wcn_bt || !wcn_bt->pgd || !wcn_bt->pgd->is_laddr_valid)
++		return 0;
++
++	return wcn_bt_slim_stream_start(substream, dai, params_rate(params));
++}
++
++static const struct snd_soc_dai_ops wcn_bt_slim_dai_ops = {
++	.startup = wcn_bt_slim_dai_startup,
++	.hw_params = wcn_bt_slim_dai_hw_params,
++	.prepare = wcn_bt_slim_dai_prepare,
++	.shutdown = wcn_bt_slim_dai_shutdown,
++	.get_channel_map = wcn_bt_slim_get_channel_map,
++};
++
++/* Mono, 8 or 16 kHz: a phone call, narrowband or wide. */
++#define WCN_BT_SCO_RATES	(SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000)
++#define WCN_BT_SCO_FORMATS	SNDRV_PCM_FMTBIT_S16_LE
++
++static struct snd_soc_dai_driver wcn_bt_slim_dais[] = {
++	{
++		.name = "wcn-bt-sco-rx",
++		.id = 0,
++		.playback = {
++			.stream_name = "BT SCO Playback",
++			.rates = WCN_BT_SCO_RATES,
++			.formats = WCN_BT_SCO_FORMATS,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 16000,
++		},
++		.ops = &wcn_bt_slim_dai_ops,
++	},
++	{
++		.name = "wcn-bt-sco-tx",
++		.id = 1,
++		.capture = {
++			.stream_name = "BT SCO Capture",
++			.rates = WCN_BT_SCO_RATES,
++			.formats = WCN_BT_SCO_FORMATS,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 16000,
++		},
++		.ops = &wcn_bt_slim_dai_ops,
++	},
++};
++
++static const struct snd_soc_component_driver wcn_bt_slim_component = {
++	.name = "wcn-bt-slim",
++};
++
++static int wcn_bt_slim_probe(struct slim_device *sdev)
++{
++	mutex_lock(&wcn_bt_lock);
++
++	if (!wcn_bt) {
++		wcn_bt = kzalloc(sizeof(*wcn_bt), GFP_KERNEL);
++		if (!wcn_bt) {
++			mutex_unlock(&wcn_bt_lock);
++			return -ENOMEM;
++		}
++		INIT_DELAYED_WORK(&wcn_bt->laddr_work, wcn_bt_slim_laddr_work);
++	}
++
++	if (sdev->e_addr.dev_index == WCN_DEV_INDEX_IFD)
++		wcn_bt->ifd = sdev;
++	else
++		wcn_bt->pgd = sdev;
++
++	/*
++	 * Hold the controller awake, on the theory that its runtime suspend
++	 * drops the NGD's enumeration on the bus.
++	 *
++	 * Note this has NOT been shown to help: register access measured
++	 * 0/10 both with and without it. The one run that ever read
++	 * registers successfully (8/10) predates this call. Kept because
++	 * holding the parent resumed is correct regardless, but do not
++	 * mistake it for the fix.
++	 */
++	pm_runtime_get_sync(sdev->dev.parent);
++
++	dev_info(&sdev->dev, "bound %s (dev_index %u)\n",
++		 sdev->e_addr.dev_index == WCN_DEV_INDEX_IFD ? "interface device"
++							     : "ported device",
++		 sdev->e_addr.dev_index);
++
++	/*
++	 * The ported device owns the audio ports, so it is the one that gets
++	 * to be a codec as far as ASoC is concerned.
++	 *
++	 * Registered right here, before the chip has said a word. This used to
++	 * be preceded by a blocking wait for the logical address
++	 * (WCN_LADDR_TRIES * WCN_LADDR_POLL_MS, twenty seconds of it), because
++	 * the bus core asks for the address the moment this function returns
++	 * and used to defer the probe when it was missing - unwinding every
++	 * devm resource, this component among them. That made an endless
++	 * cycle: probe, register, tear down, repeat, with the sound card
++	 * waiting forever on a codec that kept being deleted.
++	 *
++	 * The driver now sets .laddr_optional, so the core leaves it bound
++	 * without an address. The component is registered from the moment the
++	 * module loads, the sound card can finish building whether or not the
++	 * Bluetooth chip ever wakes up, and the address is picked up in the
++	 * background by laddr_work and reported through device_status().
++	 */
++	if (sdev->e_addr.dev_index == WCN_DEV_INDEX_PGD) {
++		int cret = devm_snd_soc_register_component(&sdev->dev,
++					&wcn_bt_slim_component,
++					wcn_bt_slim_dais,
++					ARRAY_SIZE(wcn_bt_slim_dais));
++		if (cret)
++			dev_err(&sdev->dev, "cannot register codec: %d\n", cret);
++	}
++
++	/* Start polling once both halves are here. */
++	if (wcn_bt->ifd && wcn_bt->pgd) {
++		wcn_bt->tries = 0;
++		schedule_delayed_work(&wcn_bt->laddr_work,
++				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
++	}
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static void wcn_bt_slim_remove(struct slim_device *sdev)
++{
++	cancel_delayed_work_sync(&wcn_bt->laddr_work);
++	pm_runtime_put(sdev->dev.parent);
++
++	mutex_lock(&wcn_bt_lock);
++	if (wcn_bt->ifd == sdev)
++		wcn_bt->ifd = NULL;
++	if (wcn_bt->pgd == sdev)
++		wcn_bt->pgd = NULL;
++	wcn_bt->ready = false;
++	mutex_unlock(&wcn_bt_lock);
++}
++
++static int wcn_bt_slim_status(struct slim_device *sdev,
++			      enum slim_device_status status)
++{
++	dev_info(&sdev->dev, "status %d laddr 0x%02x\n", status, sdev->laddr);
++	return 0;
++}
++
++/*
++ * Exposed for now so the SCO ports can be brought up by hand while the DSP
++ * side (the SLIMBUS_7 AFE port and its voice routes) is still being written.
++ * This goes away once an ASoC DAI drives it from the audio path.
++ */
++static int wcn_bt_slim_sco_set(const char *val, const struct kernel_param *kp)
++{
++	bool on;
++	int ret;
++
++	ret = kstrtobool(val, &on);
++	if (ret)
++		return ret;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ready) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	if (on) {
++		ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_RX_SCO, true, 0);
++		if (!ret)
++			ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_TX_SCO,
++						      false, 1);
++	} else {
++		wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_RX_SCO, true);
++		ret = wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_TX_SCO, false);
++	}
++
++	dev_info(&wcn_bt->pgd->dev, "SCO ports %s: %d\n", on ? "on" : "off", ret);
++	mutex_unlock(&wcn_bt_lock);
++
++	return ret;
++}
++
++/*
++ * Ask the bus manager for a channel. This is the discriminator we need: the
++ * request goes to the manager (which does answer us), not to the chip (which
++ * does not), so if it succeeds the master is granting our NGD bandwidth and
++ * the silence really is the chip's. If it fails, the problem is on our side
++ * of the bus.
++ */
++static int wcn_bt_slim_stream_set(const char *val, const struct kernel_param *kp)
++{
++	struct slim_stream_runtime *rt;
++	unsigned int ch = WCN_SLIM_CH_RX_SCO;
++	struct slim_stream_config cfg = {
++		.rate = 8000,
++		.bps = 16,
++		.ch_count = 1,
++		.chs = &ch,
++		.port_mask = BIT(WCN_PGD_PORT_RX_SCO),
++		.direction = SNDRV_PCM_STREAM_PLAYBACK,
++	};
++	int ret;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->pgd || !wcn_bt->pgd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	rt = slim_stream_allocate(wcn_bt->pgd, "SCO-test");
++	if (IS_ERR(rt)) {
++		dev_err(&wcn_bt->pgd->dev, "stream allocate failed: %ld\n",
++			PTR_ERR(rt));
++		mutex_unlock(&wcn_bt_lock);
++		return PTR_ERR(rt);
++	}
++
++	ret = slim_stream_prepare(rt, &cfg);
++	dev_info(&wcn_bt->pgd->dev, "stream prepare (ch %u, port %u): %d\n",
++		 ch, WCN_PGD_PORT_RX_SCO, ret);
++	if (!ret) {
++		ret = slim_stream_enable(rt);
++		dev_info(&wcn_bt->pgd->dev, "stream enable: %d\n", ret);
++		if (!ret) {
++			/*
++			 * With a channel active the master has reconfigured
++			 * the bus. If the chip only answers register traffic
++			 * once that has happened, this is where it shows.
++			 */
++			int r_ifd = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++			int r_pgd = slim_readb(wcn_bt->pgd, WCN_SB_SLAVE_HW_REV_MSB);
++
++			dev_info(&wcn_bt->pgd->dev,
++				 "with stream active: reg via IFD -> %d, via PGD -> %d\n",
++				 r_ifd, r_pgd);
++			slim_stream_disable(rt);
++		}
++		slim_stream_unprepare(rt);
++	}
++	slim_stream_free(rt);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++/* Read the revision registers on demand, to see how reliable access really is. */
++static int wcn_bt_slim_probe_regs(const char *val, const struct kernel_param *kp)
++{
++	int i, ok = 0;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	for (i = 0; i < 10; i++) {
++		int r = wcn_bt_slim_readb_via(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++
++		if (r >= 0)
++			ok++;
++		dev_info(&wcn_bt->ifd->dev, "read %d/10 -> %d\n", i + 1, r);
++		msleep(200);
++	}
++
++	dev_info(&wcn_bt->ifd->dev, "regs readable: %d of 10\n", ok);
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++/*
++ * Dump a range of the chip's registers.
++ *
++ * Reads succeed now, but the revision they return is all zeros, which is
++ * either the real value or a sign of reading something that is not the chip.
++ * A spread of addresses settles it: a device that is really answering has no
++ * reason to hold zero everywhere, while a read that is going nowhere useful
++ * has every reason to look uniform.
++ *
++ * Both devices are dumped, because they answer separately: the interface
++ * device is where the revision lives and the ported device owns the ports.
++ */
++static int dump_from = 0x0000;
++static int dump_count = 16;
++module_param(dump_from, int, 0644);
++MODULE_PARM_DESC(dump_from, "first register address to dump");
++module_param(dump_count, int, 0644);
++MODULE_PARM_DESC(dump_count, "how many registers to dump");
++
++static int wcn_bt_slim_dump(const char *val, const struct kernel_param *kp)
++{
++	int i;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->pgd ||
++	    !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	for (i = 0; i < dump_count; i++) {
++		u32 addr = dump_from + i;
++		int v_ifd = wcn_bt_slim_readb_via(wcn_bt->ifd, addr);
++		int v_pgd = wcn_bt_slim_readb_via(wcn_bt->pgd, addr);
++
++		pr_info("WCNDUMP 0x%04x  ifd=%s0x%02x  pgd=%s0x%02x\n", addr,
++			v_ifd < 0 ? "err " : "", v_ifd < 0 ? -v_ifd : v_ifd,
++			v_pgd < 0 ? "err " : "", v_pgd < 0 ? -v_pgd : v_pgd);
++	}
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_dump_ops = {
++	.set = wcn_bt_slim_dump,
++};
++module_param_cb(dump, &wcn_bt_slim_dump_ops, NULL, 0200);
++MODULE_PARM_DESC(dump, "write 1 to dump registers from both devices");
++
++/*
++ * How long does the quiet cost?
++ *
++ * The chip answers while the bus is driven without pause and stops as soon
++ * as there is one. This measures the price of a pause: stay quiet for a
++ * given time, then drive the bus flat out and count how many attempts and
++ * how many milliseconds it takes to get an answer back.
++ */
++static int wake_idle_ms = 100;
++module_param(wake_idle_ms, int, 0644);
++MODULE_PARM_DESC(wake_idle_ms, "how long to stay quiet before measuring the wake-up");
++
++static int wcn_bt_slim_wake_test(const char *val, const struct kernel_param *kp)
++{
++	u64 t0;
++	int i, ret = -1;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	/* First make sure it is answering, so the pause starts from a known state. */
++	for (i = 0; i < 400; i++) {
++		if (slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB) >= 0)
++			break;
++		cond_resched();
++	}
++	if (i == 400) {
++		pr_info("WCNWAKE could not get it answering first\n");
++		mutex_unlock(&wcn_bt_lock);
++		return 0;
++	}
++
++	msleep(wake_idle_ms);
++
++	t0 = ktime_to_ms(ktime_get_boottime());
++	for (i = 0; i < 2000; i++) {
++		ret = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++		if (ret >= 0)
++			break;
++		cond_resched();
++	}
++
++	pr_info("WCNWAKE quiet=%d ms -> %s after %d attempts, %llu ms\n",
++		wake_idle_ms, ret >= 0 ? "answered" : "GAVE UP", i,
++		ktime_to_ms(ktime_get_boottime()) - t0);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_wake_ops = {
++	.set = wcn_bt_slim_wake_test,
++};
++module_param_cb(wake_test, &wcn_bt_slim_wake_ops, NULL, 0200);
++MODULE_PARM_DESC(wake_test, "write 1 to measure what a pause costs");
++
++/*
++ * Hunt for the moment the chip answers.
++ *
++ * Reads succeed about three times in a thousand, and nothing tried so far
++ * provokes one. What makes this practical is that a rejected message now
++ * fails in about twenty milliseconds instead of timing out for a second, so
++ * attempts can be made fifty times faster than before - thousands in the time
++ * that used to buy a handful.
++ *
++ * NGD_STATUS carries the message code of the last thing the bus acknowledged
++ * and of the last thing it refused, so each attempt can be judged from the
++ * hardware itself rather than from whether a reply turned up. Only the hits
++ * and a periodic tally are logged; printing every attempt would drown the
++ * ring buffer long before anything interesting happened.
++ */
++#define NGD_PHYS_BASE	0x62e41000	/* controller base + 0x1000 */
++#define NGD_REG_CFG	0x0
++#define NGD_REG_STATUS	0x4
++#define NGD_REG_LADDR	BIT(1)
++
++#define NGD_ACKED_MC_MASK	0xFE000		/* bits 13-19 */
++#define NGD_NACKED_MC_MASK	0x7F00000	/* bits 20-26 */
++
++static int hunt_attempts = 2000;
++module_param(hunt_attempts, int, 0644);
++MODULE_PARM_DESC(hunt_attempts, "how many attempts a hunt makes");
++
++static int wcn_bt_slim_hunt(const char *val, const struct kernel_param *kp)
++{
++	void __iomem *base;
++	u64 t_start;
++	int i, hits = 0, last_acked = -1, last_ok = -1;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	base = ioremap(NGD_PHYS_BASE, 0x100);
++	if (!base) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENOMEM;
++	}
++
++	t_start = ktime_to_ms(ktime_get_boottime());
++	pr_info("WCNHUNT start attempts=%d\n", hunt_attempts);
++
++	for (i = 0; i < hunt_attempts; i++) {
++		u32 st;
++		int acked, ret;
++
++		ret = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++		st = readl_relaxed(base + NGD_REG_STATUS);
++		acked = (st & NGD_ACKED_MC_MASK) >> 13;
++
++		if (ret >= 0)
++			hits++;
++
++		/*
++		 * Only the edges are interesting. Printing every attempt
++		 * floods the ring buffer and loses the very beginning, which
++		 * is the part worth seeing.
++		 */
++		if ((ret >= 0) != (last_ok > 0)) {
++			pr_info("WCNHUNT %s i=%d t=%llu ms acked=0x%02x nacked=0x%02x ngd=0x%08x\n",
++				ret >= 0 ? "DESPIERTA" : "se duerme",
++				i, ktime_to_ms(ktime_get_boottime()) - t_start,
++				acked, (st & NGD_NACKED_MC_MASK) >> 20, st);
++			last_ok = (ret >= 0);
++		}
++		last_acked = acked;
++
++		if ((i % 500) == 499)
++			pr_info("WCNHUNT ... %d/%d, %d hits, %llu ms\n",
++				i + 1, hunt_attempts, hits,
++				ktime_to_ms(ktime_get_boottime()) - t_start);
++
++		/* Let anything else that wants the bus get a turn. */
++		if ((i % 50) == 49)
++			usleep_range(1000, 2000);
++		cond_resched();
++	}
++
++	pr_info("WCNHUNT done %d hits of %d in %llu ms\n", hits, hunt_attempts,
++		ktime_to_ms(ktime_get_boottime()) - t_start);
++
++	iounmap(base);
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_hunt_ops = {
++	.set = wcn_bt_slim_hunt,
++};
++module_param_cb(hunt, &wcn_bt_slim_hunt_ops, NULL, 0200);
++MODULE_PARM_DESC(hunt, "write 1 to hunt for the moment the chip answers");
++
++/*
++ * Write to a logical address, rather than read from one.
++ *
++ * A read that goes unanswered is ambiguous: it could be a destination that
++ * never heard the message, or one that heard it and had nothing to say. A
++ * write settles that, because it expects no reply at all - the only thing
++ * that can come back is the bus-level acknowledgement. If a write is NACKed
++ * too, nothing on the bus is acknowledging us, and the missing reply was
++ * never the point.
++ */
++static int wcn_bt_slim_probe_write(const char *val, const struct kernel_param *kp)
++{
++	u8 saved;
++	int la, ret;
++
++	if (kstrtoint(val, 0, &la) || la < 0 || la > 0xff)
++		return -EINVAL;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	saved = wcn_bt->ifd->laddr;
++	wcn_bt->ifd->laddr = la;
++	/* A harmless register: the port interrupt enables, written as they are. */
++	ret = slim_writeb(wcn_bt->ifd, WCN_SB_PGD_PORT_INT_EN_RX_0, 0);
++	wcn_bt->ifd->laddr = saved;
++
++	pr_info("WCNWRITE la=0x%02x ret=%d\n", la, ret);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_probe_write_ops = {
++	.set = wcn_bt_slim_probe_write,
++};
++module_param_cb(probe_write, &wcn_bt_slim_probe_write_ops, NULL, 0200);
++MODULE_PARM_DESC(probe_write, "write to a logical address, which expects no reply");
++
++/*
++ * Ask the manager for the chip's logical address again, on demand.
++ *
++ * The manager hands out 0xce for the chip's enumeration address, which would
++ * normally mean it has enumerated a live device. But nothing addressed to
++ * 0xce is ever acknowledged. So: is that address a device that is really
++ * there, or just the manager's bookkeeping?
++ *
++ * Powering the chip down and asking again separates the two. If the answer
++ * survives the chip being off, it never meant anything.
++ */
++static int wcn_bt_slim_requery(const char *val, const struct kernel_param *kp)
++{
++	int ret_ifd, ret_pgd;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->pgd) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	/* Drop the cached answer so the query really goes out again. */
++	wcn_bt->ifd->is_laddr_valid = false;
++	wcn_bt->pgd->is_laddr_valid = false;
++
++	ret_ifd = slim_get_logical_addr(wcn_bt->ifd);
++	ret_pgd = slim_get_logical_addr(wcn_bt->pgd);
++
++	pr_info("WCNQUERY ifd ret=%d laddr=0x%02x valid=%d | pgd ret=%d laddr=0x%02x valid=%d\n",
++		ret_ifd, wcn_bt->ifd->laddr, wcn_bt->ifd->is_laddr_valid,
++		ret_pgd, wcn_bt->pgd->laddr, wcn_bt->pgd->is_laddr_valid);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_requery_ops = {
++	.set = wcn_bt_slim_requery,
++};
++module_param_cb(requery, &wcn_bt_slim_requery_ops, NULL, 0200);
++MODULE_PARM_DESC(requery, "ask the manager for the chip's address again");
++
++/*
++ * Send the same read to an arbitrary logical address.
++ *
++ * Every failing read is preceded by an NGD error interrupt with
++ * NGD_INT_TX_NACKED_2 set: the message goes out and is NACKed, which in
++ * SLIMBus is what happens when no device on the bus claims that logical
++ * address. So the question is whether 0xce is really claimed by anything.
++ *
++ * Comparing against an address nobody could possibly own answers it: if a
++ * made-up address behaves exactly like the chip's, then as far as the bus is
++ * concerned the chip is not there at all, and the address the manager handed
++ * us is bookkeeping rather than a device that answers.
++ */
++static int probe_la = -1;
++
++static int wcn_bt_slim_probe_la(const char *val, const struct kernel_param *kp)
++{
++	u8 saved;
++	int la, ret;
++
++	if (kstrtoint(val, 0, &la) || la < 0 || la > 0xff)
++		return -EINVAL;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	/* Borrow the enumerated device and point it elsewhere for one read. */
++	saved = wcn_bt->ifd->laddr;
++	wcn_bt->ifd->laddr = la;
++	ret = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++	wcn_bt->ifd->laddr = saved;
++
++	pr_info("WCNLA la=0x%02x ret=%d\n", la, ret);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_probe_la_ops = {
++	.set = wcn_bt_slim_probe_la,
++};
++module_param_cb(probe_la, &wcn_bt_slim_probe_la_ops, NULL, 0200);
++MODULE_PARM_DESC(probe_la, "read from an arbitrary logical address, to compare");
++
++/*
++ * Per-transaction instrumentation.
++ *
++ * The retrying reader above hides what is actually going on: each of its
++ * calls is ten transactions, so a "failed read" costs eleven seconds and
++ * reports one bit. Worse, it turns out the retries never rescue anything -
++ * a read either works on the first try or all ten time out - so the retry
++ * loop is pure cost when measuring.
++ *
++ * This does one transaction per sample and prints a line per sample, so the
++ * question "what distinguishes a working moment from a broken one" can be
++ * asked at the granularity it actually varies at.
++ *
++ * Output is one line per sample, greppable and column-stable:
++ *   WCNSEQ i=<n> up=<ms> gap=<ms> ret=<v> lat=<ms> ngd=<0x...> cfg=<0x...>
++ */
++static int seq_count = 20;
++static int seq_gap_ms = 1000;
++static char seq_tag[32] = "-";
++
++module_param(seq_count, int, 0644);
++MODULE_PARM_DESC(seq_count, "samples per sequence run");
++module_param(seq_gap_ms, int, 0644);
++MODULE_PARM_DESC(seq_gap_ms, "idle gap between samples, milliseconds");
++module_param_string(seq_tag, seq_tag, sizeof(seq_tag), 0644);
++MODULE_PARM_DESC(seq_tag, "label echoed in each line, to tag a condition");
++
++static int wcn_bt_slim_seq(const char *val, const struct kernel_param *kp)
++{
++	void __iomem *base;
++	int i, ok = 0;
++
++	mutex_lock(&wcn_bt_lock);
++	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
++		mutex_unlock(&wcn_bt_lock);
++		return -ENODEV;
++	}
++
++	base = ioremap(NGD_PHYS_BASE, 0x100);
++
++	for (i = 0; i < seq_count; i++) {
++		ktime_t t0;
++		s64 lat_us;
++		u32 cfg = 0, status = 0;
++		int ret;
++
++		if (i && seq_gap_ms)
++			msleep(seq_gap_ms);
++
++		if (base) {
++			cfg = readl_relaxed(base + NGD_REG_CFG);
++			status = readl_relaxed(base + NGD_REG_STATUS);
++		}
++
++		t0 = ktime_get();
++		/* One transaction. No retries: they have never once helped. */
++		ret = slim_readb(wcn_bt->ifd, WCN_SB_SLAVE_HW_REV_MSB);
++		lat_us = ktime_us_delta(ktime_get(), t0);
++
++		if (ret >= 0)
++			ok++;
++
++		pr_info("WCNSEQ tag=%s i=%d up=%llu gap=%d ret=%d lat=%lld ngd=0x%08x cfg=0x%08x\n",
++			seq_tag, i, ktime_to_ms(ktime_get_boottime()),
++			seq_gap_ms, ret, lat_us / 1000, status, cfg);
++	}
++
++	if (base)
++		iounmap(base);
++
++	pr_info("WCNSEQ-SUMMARY tag=%s ok=%d of %d gap=%d\n",
++		seq_tag, ok, seq_count, seq_gap_ms);
++
++	mutex_unlock(&wcn_bt_lock);
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_seq_ops = {
++	.set = wcn_bt_slim_seq,
++};
++module_param_cb(seq, &wcn_bt_slim_seq_ops, NULL, 0200);
++MODULE_PARM_DESC(seq, "write 1 to run a measurement sequence");
++
++/*
++ * Read the NGD's own status. A satellite still has to be enumerated on the bus
++ * to address other devices: if NGD_LADDR is clear we have no logical address
++ * of our own, which would explain why the manager answers us (that traffic is
++ * user-level, routed through the master) while nothing addressed to another
++ * device ever gets a reply.
++ */
++static int wcn_bt_slim_ngd_status(const char *val, const struct kernel_param *kp)
++{
++	void __iomem *base;
++	u32 cfg, status;
++
++	base = ioremap(NGD_PHYS_BASE, 0x100);
++	if (!base)
++		return -ENOMEM;
++
++	cfg = readl_relaxed(base + NGD_REG_CFG);
++	status = readl_relaxed(base + NGD_REG_STATUS);
++	iounmap(base);
++
++	pr_info("wcn-bt-slim: NGD_CFG=0x%08x NGD_STATUS=0x%08x -> our laddr %s\n",
++		cfg, status,
++		(status & NGD_REG_LADDR) ? "ASSIGNED" : "NOT assigned");
++
++	return 0;
++}
++
++static const struct kernel_param_ops wcn_bt_slim_ngd_status_ops = {
++	.set = wcn_bt_slim_ngd_status,
++};
++module_param_cb(ngd_status, &wcn_bt_slim_ngd_status_ops, NULL, 0200);
++MODULE_PARM_DESC(ngd_status, "write 1 to dump the NGD's own bus status");
++
++static const struct kernel_param_ops wcn_bt_slim_probe_regs_ops = {
++	.set = wcn_bt_slim_probe_regs,
++};
++module_param_cb(probe_regs, &wcn_bt_slim_probe_regs_ops, NULL, 0200);
++MODULE_PARM_DESC(probe_regs, "write 1 to read a register ten times and report reliability");
++
++static const struct kernel_param_ops wcn_bt_slim_stream_ops = {
++	.set = wcn_bt_slim_stream_set,
++};
++module_param_cb(stream_test, &wcn_bt_slim_stream_ops, NULL, 0200);
++MODULE_PARM_DESC(stream_test, "write 1 to try claiming a SCO channel from the bus manager");
++
++static const struct kernel_param_ops wcn_bt_slim_sco_ops = {
++	.set = wcn_bt_slim_sco_set,
++};
++module_param_cb(sco, &wcn_bt_slim_sco_ops, NULL, 0200);
++MODULE_PARM_DESC(sco, "write 1/0 to enable/disable the chip's SCO ports");
++
++/*
++ * A live register window for a userspace tuner (debugfs).
++ *
++ * The existing module-param hooks above all report through dmesg, which a
++ * program then has to scrape. These files instead return the value straight
++ * from read(), so a tuner can write a register, read it back, and decide what
++ * to do next without parsing the kernel log.
++ *
++ * Everything here is volatile - it exists only while the module is loaded, and
++ * the module is blacklisted from autoload - so nothing survives a reboot. That
++ * is deliberate: the dangerous bring-up can be poked at from userspace, and if
++ * it wedges the bus the recovery is a plain reboot back to a safe default, not
++ * the u-boot mass-storage surgery a persisted change would need.
++ *
++ *   target       "ifd"/0 or "pgd"/1: which of the chip's two devices to reach
++ *   addr         register address (the 0x800 offset is added for you)
++ *   tries        retries per access; 1 is a single honestly-measured transaction
++ *   laddr        raw logical-address override; write > 0xff to use the enumerated one
++ *   value        read -> one register read (byte in hex, or a read error);
++ *                write -> one register write of the given byte
++ *   ngd_cfg      NGD controller CFG register (MMIO, read-only)
++ *   ngd_status   NGD controller STATUS register (MMIO, read-only)
++ */
++static struct dentry *wcn_bt_debugfs;
++static u32 dbg_addr = WCN_SB_SLAVE_HW_REV_MSB;
++static u32 dbg_tries = 1;
++static u32 dbg_target;		/* 0 = ifd, 1 = pgd */
++static int dbg_laddr = -1;	/* -1 = use the enumerated address */
++
++static struct slim_device *wcn_dbg_target_dev(void)
++{
++	if (!wcn_bt)
++		return NULL;
++	return dbg_target ? wcn_bt->pgd : wcn_bt->ifd;
++}
++
++static int wcn_dbg_value_get(void *data, u64 *val)
++{
++	struct slim_device *sdev;
++	int ret = -ENODEV, i;
++	u8 saved = 0;
++	bool over = false;
++
++	mutex_lock(&wcn_bt_lock);
++	sdev = wcn_dbg_target_dev();
++	if (!sdev || !sdev->is_laddr_valid)
++		goto out;
++
++	if (dbg_laddr >= 0) {
++		saved = sdev->laddr;
++		sdev->laddr = dbg_laddr;
++		over = true;
++	}
++	for (i = 0; i < max_t(u32, dbg_tries, 1); i++) {
++		ret = slim_readb(sdev, WCN_SB_REG_OFFSET + dbg_addr);
++		if (ret >= 0)
++			break;
++		cond_resched();
++	}
++	if (over)
++		sdev->laddr = saved;
++out:
++	mutex_unlock(&wcn_bt_lock);
++	if (ret < 0)
++		return ret;
++	*val = ret;
++	return 0;
++}
++
++static int wcn_dbg_value_set(void *data, u64 val)
++{
++	struct slim_device *sdev;
++	int ret = -ENODEV, i;
++	u8 saved = 0;
++	bool over = false;
++
++	mutex_lock(&wcn_bt_lock);
++	sdev = wcn_dbg_target_dev();
++	if (!sdev || !sdev->is_laddr_valid)
++		goto out;
++
++	if (dbg_laddr >= 0) {
++		saved = sdev->laddr;
++		sdev->laddr = dbg_laddr;
++		over = true;
++	}
++	for (i = 0; i < max_t(u32, dbg_tries, 1); i++) {
++		ret = slim_writeb(sdev, WCN_SB_REG_OFFSET + dbg_addr, val);
++		if (!ret)
++			break;
++		cond_resched();
++	}
++	if (over)
++		sdev->laddr = saved;
++out:
++	mutex_unlock(&wcn_bt_lock);
++	return ret;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(wcn_dbg_value_fops, wcn_dbg_value_get,
++			 wcn_dbg_value_set, "0x%02llx\n");
++
++static int wcn_dbg_target_get(void *data, u64 *val)
++{
++	*val = dbg_target;
++	return 0;
++}
++static int wcn_dbg_target_set(void *data, u64 val)
++{
++	dbg_target = val ? 1 : 0;
++	return 0;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(wcn_dbg_target_fops, wcn_dbg_target_get,
++			 wcn_dbg_target_set, "%llu\n");
++
++static int wcn_dbg_laddr_get(void *data, u64 *val)
++{
++	*val = (dbg_laddr < 0) ? 0x100 : dbg_laddr;
++	return 0;
++}
++static int wcn_dbg_laddr_set(void *data, u64 val)
++{
++	dbg_laddr = (val > 0xff) ? -1 : (int)val;
++	return 0;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(wcn_dbg_laddr_fops, wcn_dbg_laddr_get,
++			 wcn_dbg_laddr_set, "0x%llx\n");
++
++static int wcn_dbg_ngd_read(u64 *val, u32 off)
++{
++	void __iomem *base = ioremap(NGD_PHYS_BASE, 0x100);
++
++	if (!base)
++		return -ENOMEM;
++	*val = readl_relaxed(base + off);
++	iounmap(base);
++	return 0;
++}
++static int wcn_dbg_ngd_cfg_get(void *data, u64 *val)
++{
++	return wcn_dbg_ngd_read(val, NGD_REG_CFG);
++}
++DEFINE_DEBUGFS_ATTRIBUTE(wcn_dbg_ngd_cfg_fops, wcn_dbg_ngd_cfg_get, NULL,
++			 "0x%08llx\n");
++static int wcn_dbg_ngd_status_get(void *data, u64 *val)
++{
++	return wcn_dbg_ngd_read(val, NGD_REG_STATUS);
++}
++DEFINE_DEBUGFS_ATTRIBUTE(wcn_dbg_ngd_status_fops, wcn_dbg_ngd_status_get, NULL,
++			 "0x%08llx\n");
++
++static void wcn_bt_slim_debugfs_init(void)
++{
++	wcn_bt_debugfs = debugfs_create_dir("wcn-bt-slim", NULL);
++	debugfs_create_x32("addr", 0644, wcn_bt_debugfs, &dbg_addr);
++	debugfs_create_u32("tries", 0644, wcn_bt_debugfs, &dbg_tries);
++	debugfs_create_file_unsafe("target", 0644, wcn_bt_debugfs, NULL,
++				   &wcn_dbg_target_fops);
++	debugfs_create_file_unsafe("laddr", 0644, wcn_bt_debugfs, NULL,
++				   &wcn_dbg_laddr_fops);
++	debugfs_create_file_unsafe("value", 0644, wcn_bt_debugfs, NULL,
++				   &wcn_dbg_value_fops);
++	debugfs_create_file_unsafe("ngd_cfg", 0444, wcn_bt_debugfs, NULL,
++				   &wcn_dbg_ngd_cfg_fops);
++	debugfs_create_file_unsafe("ngd_status", 0444, wcn_bt_debugfs, NULL,
++				   &wcn_dbg_ngd_status_fops);
++}
++
++static const struct slim_device_id wcn_bt_slim_id[] = {
++	{ 0x217, 0x220, 0x0, 0x0 },	/* interface device */
++	{ 0x217, 0x220, 0x1, 0x0 },	/* ported generic device */
++	{}
++};
++MODULE_DEVICE_TABLE(slimbus, wcn_bt_slim_id);
++
++static struct slim_driver wcn_bt_slim_driver = {
++	.driver = {
++		.name = "wcn-bt-slim",
++	},
++	.probe = wcn_bt_slim_probe,
++	.remove = wcn_bt_slim_remove,
++	.device_status = wcn_bt_slim_status,
++	.id_table = wcn_bt_slim_id,
++	/*
++	 * This chip only answers on the bus once its Bluetooth firmware is
++	 * loaded, seconds after this driver binds - and sometimes never, if
++	 * the chip is wedged. Stay bound anyway, so the ASoC component below
++	 * is registered from the moment the module loads and the sound card
++	 * never waits on a codec that keeps being torn down and rebuilt.
++	 * Every bus access here checks is_laddr_valid first.
++	 */
++	.laddr_optional = true,
++};
++
++static int __init wcn_bt_slim_init(void)
++{
++	wcn_bt_slim_debugfs_init();
++	return slim_driver_register(&wcn_bt_slim_driver);
++}
++module_init(wcn_bt_slim_init);
++
++static void __exit wcn_bt_slim_exit(void)
++{
++	slim_driver_unregister(&wcn_bt_slim_driver);
++	debugfs_remove_recursive(wcn_bt_debugfs);
++}
++module_exit(wcn_bt_slim_exit);
++
++MODULE_DESCRIPTION("SLIMBus driver for WCN399x Bluetooth audio");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,33 @@
+# El despertar del UART del Bluetooth aborta TODAS las suspensiones del sistema.
+#
+# gpio41 es la linea RX del UART del BT (88c000.serial) y lleva su interrupcion de
+# despertar dedicada, irq 158, flanco descendente, enrutada por el PDC ({41,101} en el
+# mapa del sm7150). Medido: se entrega ~500 us DESPUES de msm_gpio_irq_set_wake(), o sea
+# al ARMARLA, y el kernel encuentra pm_wakeup_pending() ya cierto nada mas terminar
+# dpm_suspend_noirq -> sale con -EBUSY sin dormir ni un microsegundo. La fase
+# machine_suspend no llega a existir.
+#
+# Demostrado con A/B y tramo de control, suspensiones de 60 s:
+#     con despertar   ->   2 s
+#     sin despertar   ->  61 s     (y 602 s en una prueba de 10 minutos)
+#     control, con    ->   1 s
+#
+# ✅ DECISION DEL USUARIO (2026-08-16): esta es la SOLUCION ADOPTADA, no un apano temporal.
+#    Preguntado por el coste, respondio: "me da igual que el bluetooth no despierte el
+#    movil, si lo necesito aprieto el boton". Asi que no hay que volver a plantearlo.
+#
+# ⚠️ Aun asi la CAUSA sigue sin identificar. La causa de que el flanco se entregue al armar
+#    sigue sin identificar. Dos hipotesis ya refutadas midiendo:
+#      - flanco por remultiplexado: NO hay remultiplexado (msm_pinmux_set_mux: 0 llamadas)
+#      - enclavamiento rancio por trafico del BT: el UART pasa 20 s con 0 interrupciones
+#        y la suspension falla igual, el 100 % de las veces
+#    Queda por mirar la configuracion del disparo (polaridad / tipo de flanco) en el TLMM
+#    y en el PDC, que exige leer registros.
+#
+# ⚠️ COSTE: el Bluetooth no puede despertar al movil dormido (p. ej. un boton del casco).
+#    Las llamadas entrantes NO se pierden: esas despiertan por el modem, otro camino.
+#    Revertir es inmediato:
+#        echo enabled > /sys/devices/platform/soc@0/8c0000.geniqup/88c000.serial/power/wakeup
+
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/wakeup}="disabled"
+ACTION=="add",  SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/wakeup}="disabled"

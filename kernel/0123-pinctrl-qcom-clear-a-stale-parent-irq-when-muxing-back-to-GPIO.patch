@@ -1,0 +1,106 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 16 Aug 2026 12:10:00 +0200
+Subject: [PATCH] pinctrl: qcom: clear a stale parent irq when muxing a pin back
+ to GPIO
+
+msm_pinmux_set_mux() already knows that muxing a pin away from GPIO and
+back can leave a bogus edge latched: the detection logic keeps watching
+the pad while the pin is doing something else. It masks the interrupt on
+the way out and, on the way back in, clears whatever got latched and
+unmasks again.
+
+The clearing is gated on having done the masking:
+
+	if (d && i == gpio_func &&
+	    test_and_clear_bit(d->hwirq, pctrl->disabled_for_mux)) {
+
+and that gate never opens for a pin that was muxed away *before* its
+interrupt existed. pinctrl_bind_pins() runs from really_probe() before
+drv->probe(), so a driver that maps its wakeup interrupt inside probe()
+- qcom_geni_serial does exactly this, via platform_get_irq_optional()
+and dev_pm_set_dedicated_wake_irq() - gets its default pinctrl state
+applied while irq_find_mapping() still returns 0. d is NULL, nothing is
+masked, disabled_for_mux stays clear, and from then on every mux back to
+GPIO skips the clear.
+
+On SoCs where the pin is a PDC wakeup GPIO that is not a cosmetic
+problem, because the latch lives in the PDC and survives everything the
+TLMM does. Measured on an SM7150 phone (Xiaomi POCO X3 NFC), where GPIO
+41 is the Bluetooth UART RX line, is listed in the SoC PDC map as
+{41, 101}, and carries the UART's dedicated wake interrupt:
+
+    interrupts-extended = <&intc GIC_SPI 604 IRQ_TYPE_LEVEL_HIGH>,
+                          <&tlmm 41 IRQ_TYPE_EDGE_FALLING>;
+
+    qup-uart3-default-state: rx-pins  function = "qup03"  bias-pull-up
+    qup-uart3-sleep-state:   rx-pins  function = "gpio"   bias-pull-up
+
+Every system suspend muxes that pin to GPIO and arms the wake interrupt
+at the same time, the stale PDC latch fires immediately, and the machine
+never sleeps:
+
+    pmirq: (pm_system_irq_wakeup+0x0/0xbc) irq=158
+    irq 158 -> msmgpio 41 Edge  88c000.serial:wakeup
+
+    1604.990895  pm_system_irq_wakeup(158)     <- 151 us before
+    1604.991046  dpm_suspend_noirq begin
+    1604.996430  dpm_suspend_noirq end
+    1604.996435  dpm_resume_noirq begin
+
+There is no machine_suspend phase at all: suspend_enter() finds
+pm_wakeup_pending() already true after dpm_suspend_noirq() and unwinds
+with -EBUSY. The device never sleeps for a microsecond. It is not a race
+with real UART traffic either - the port sees 0.4 interrupts/s and the
+controller sends one HCI event per ten seconds, yet sixteen consecutive
+suspend attempts failed the same way.
+
+Clearing the latch does not depend on having masked the interrupt, so
+stop gating it. Any edge latched while the pin was not a GPIO is bogus
+by construction, which is what the existing comment already says. Only
+the unmask needs to stay paired with the mask.
+
+With this, the same phone suspends for the full requested interval, and
+re-enabling the wake path puts it back to one second - so the mechanism
+is confirmed from both sides.
+
+Signed-off-by: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+---
+ drivers/pinctrl/qcom/pinctrl-msm.c | 18 +++++++++++++-----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+--- a/drivers/pinctrl/qcom/pinctrl-msm.c
++++ b/drivers/pinctrl/qcom/pinctrl-msm.c
+@@ -244,18 +244,30 @@
+ 
+ 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
+ 
+-	if (d && i == gpio_func &&
+-	    test_and_clear_bit(d->hwirq, pctrl->disabled_for_mux)) {
++	if (d && i == gpio_func) {
++		bool was_masked = test_and_clear_bit(d->hwirq,
++						     pctrl->disabled_for_mux);
++
+ 		/*
+ 		 * Clear interrupts detected while not GPIO since we only
+ 		 * masked things.
++		 *
++		 * This has to happen even when we never masked anything
++		 * ourselves. A pin can be muxed away before its interrupt is
++		 * mapped at all -- pinctrl_bind_pins() runs before probe(), so
++		 * a driver that maps a wakeup interrupt in probe() misses the
++		 * mask above and disabled_for_mux never gets set. Where the pin
++		 * is a PDC wakeup GPIO the bogus edge is latched in the PDC and
++		 * nothing else will ever clear it.
+ 		 */
+ 		if (d->parent_data && test_bit(d->hwirq, pctrl->skip_wake_irqs))
+ 			irq_chip_set_parent_state(d, IRQCHIP_STATE_PENDING, false);
+ 		else
+ 			msm_ack_intr_status(pctrl, g);
+ 
+-		enable_irq(irq);
++		/* only the unmask has to stay paired with the mask */
++		if (was_masked)
++			enable_irq(irq);
+ 	}
+ 
+ 	return 0;

@@ -1,0 +1,14 @@
+[Unit]
+Description=Servidor VNC (solo loopback; se llega por tunel SSH)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/usr/bin/wayvnc --render-cursor 127.0.0.1 5900
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

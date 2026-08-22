@@ -1,0 +1,74 @@
+From a8113dd8395964ec76f32846102c543ccd10d977 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Wed, 12 Aug 2026 10:39:01 +0200
+Subject: [PATCH 2/2] arm64: dts: qcom: sm7150-xiaomi-common: drop the OCV
+ table, the battery changed
+
+The ocv-capacity-table in this node was measured on this phone's original
+battery. That battery has been replaced, and such a table is only ever valid
+for the cell it was measured on: its percentage axis is anchored to that
+cell's real measured capacity, not to anything general.
+
+Left in place it is worse than nothing, because it reports a
+calibrated-looking percentage that is wrong for the new cell.
+
+Without a table qcom_qg_get_capacity() falls back to linear interpolation of
+voltage_now between the design minimum and maximum, which is what it did
+before the table existed. Crude and jumpy under load, but honestly crude
+rather than confidently wrong -- and the right thing to be running while a
+new calibration is measured.
+
+The driver-side fallback added alongside the original table is untouched: a
+new table can be dropped back in here when it has been measured.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7150-xiaomi-common.dtsi   | 33 ++++++++-----------
+ 1 file changed, 13 insertions(+), 20 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index d42867d..3f565ae 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -49,27 +49,20 @@ battery: battery {
+ 		voltage-max-design-microvolt = <4400000>;
+ 
+ 		/*
+-		 * Empirically measured on this specific unit (2026-07-12):
+-		 * logged voltage_now/current_now from a clean 100% (Full,
+-		 * near-zero current) anchor through a real full discharge to
+-		 * the battery physically dying, coulomb-counted the actual
+-		 * usable capacity (~1.42Ah - well below the gauge's own
+-		 * "learned" charge_full of 5.216Ah, so this battery is
+-		 * significantly more degraded than the driver assumes), then
+-		 * binned rest-current (<=260mA) voltage samples against that
+-		 * real capacity scale. No samples landed between 65% and 25%
+-		 * (the discharge moved through that range quickly) - relying
+-		 * on power_supply_ocv2cap_simple()'s linear interpolation
+-		 * there, which should be reasonably accurate since that's the
+-		 * flattest part of a typical Li-ion discharge curve anyway.
+-		 * Replaces qcom_qg_get_capacity()'s previous plain linear
+-		 * voltage_now interpolation between voltage-min/max-design.
++		 * There was an ocv-capacity-table here, measured on this
++		 * phone's original battery in July 2026. The battery has since
++		 * been replaced, and a table is only ever valid for the cell it
++		 * was measured on: its percentage axis is anchored to that
++		 * cell's real measured capacity. Keeping it would report a
++		 * calibrated-looking percentage that is wrong for the new cell.
++		 *
++		 * Without a table qcom_qg_get_capacity() falls back to plain
++		 * linear interpolation of voltage_now between the design
++		 * minimum and maximum. That is crude and jumps around under
++		 * load, but it is honestly crude rather than confidently wrong,
++		 * and it is the right thing to run while a new calibration is
++		 * being measured.
+ 		 */
+-		ocv-capacity-celsius = <25>;
+-		ocv-capacity-table-0 = <4320317 100>, <4193998 95>, <4086309 90>,
+-				       <3998561 85>, <3904597 80>, <3835627 75>,
+-				       <3754318 70>, <3727354 20>, <3703980 15>,
+-				       <3664265 10>, <3617286 5>, <3539833 0>;
+ 	};
+ 
+ 	chosen {

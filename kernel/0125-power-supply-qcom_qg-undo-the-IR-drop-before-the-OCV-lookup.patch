@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 18 Aug 2026 00:30:00 +0200
+Subject: [PATCH] power: supply: qcom_qg: undo the IR drop before the OCV lookup
+
+The capacity is obtained by binning a voltage against an OCV table, and that
+table is calibrated -- as the comment right above it says -- against voltage
+seen "during real low-current rest periods". But the lookup is fed
+voltage_now no matter what current is flowing, so any load or charge current
+shifts the terminal voltage and the reported capacity moves with it, without
+a single coulomb having gone anywhere.
+
+Measured on a Xiaomi POCO X3 NFC (sm7150), one minute apart:
+
+  4363956 uV,   -610 uA  ->  100%     (charge terminated, at rest)
+  4326001 uV, -194244 uA  ->   96%     (unplugged, idle)
+
+Four points of capacity lost by plugging the charger out. It is worse while
+charging: 38% -> 58% in one minute, because the terminal voltage rose 13 mV.
+
+Subtract the IR drop first. The averaged current lives in the register right
+next to the averaged voltage and comes from the same S2 window, so the two
+samples describe the same instant and the subtraction is meaningful:
+
+  ocv = QG_S2_NORMAL_AVG_V - QG_S2_NORMAL_AVG_I * esr
+
+The resistance is expressed against the current this gauge *reports*, not
+against amps: it therefore absorbs whatever scale error that current carries,
+which is what makes the correction usable on a board whose current has not
+been calibrated. It was measured by four independent routes that agree within
+7% -- charge-termination step 197 mOhm, unplug step 196 mOhm, and two CPU load
+steps 199 and 208 mOhm -- and is a writable module parameter so a board can be
+trimmed without a rebuild. Setting it to 0 restores the previous behaviour.
+
+While here, report that estimate as VOLTAGE_OCV. The SDAM word currently read
+for it is maintained by the vendor QG algorithm, which does not run here, so
+the property reads back as 0 on every device using this driver.
+
+Signed-off-by: Eduardo García-Mádico Portabella <woodyst@gmail.com>
+---
+diff --git a/drivers/power/supply/qcom_qg.c b/drivers/power/supply/qcom_qg.c
+index 00d0364fb..f75473c59 100644
+--- a/drivers/power/supply/qcom_qg.c
++++ b/drivers/power/supply/qcom_qg.c
+@@ -14,6 +14,22 @@
+ #include <linux/power_supply.h>
+ #include <linux/regmap.h>
+ 
++/*
++ * Effective internal resistance used to undo the IR drop before the OCV lookup,
++ * in microohms, expressed against the current this gauge *reports*. It is not the
++ * cell's physical ESR: it also absorbs whatever scale error the reported current
++ * carries, which is exactly what makes it usable without first calibrating that
++ * current.
++ *
++ * Measured on a Xiaomi POCO X3 NFC (sm7150) by four independent routes, all
++ * agreeing within 7%: charge termination step 197 mOhm, unplug step 196 mOhm, and
++ * CPU load steps 199/208 mOhm. Writable at runtime so a board can be trimmed
++ * without a rebuild.
++ */
++static unsigned int esr_uohm = 200000;
++module_param(esr_uohm, uint, 0644);
++MODULE_PARM_DESC(esr_uohm, "battery internal resistance in microohms for IR compensation (0 disables)");
++
+ /* BATT offsets */
+ #define QG_S2_NORMAL_AVG_V_DATA0_REG	0x80 /* 2-byte 0x80-0x81 */
+ #define QG_S2_NORMAL_AVG_I_DATA0_REG	0x82 /* 2-byte 0x82-0x83 */
+@@ -87,11 +103,9 @@ static int qcom_qg_get_voltage(struct qcom_qg_chip *chip, u8 offset, int *val)
+  * Falls back to the old linear interpolation for any board using this driver
+  * without such a table (e.g. not yet calibrated).
+  */
+-static int qcom_qg_get_capacity(struct qcom_qg_chip *chip, int *val)
++static int qcom_qg_get_ocv(struct qcom_qg_chip *chip, int *val)
+ {
+-	int ret, voltage_now;
+-	int voltage_min = chip->batt_info->voltage_min_design_uv;
+-	int voltage_max = chip->batt_info->voltage_max_design_uv;
++	int ret, voltage_now, current_avg;
+ 
+ 	ret = qcom_qg_get_voltage(chip,
+ 				QG_S2_NORMAL_AVG_V_DATA0_REG, &voltage_now);
+@@ -100,6 +114,39 @@ static int qcom_qg_get_capacity(struct qcom_qg_chip *chip, int *val)
+ 		return ret;
+ 	}
+ 
++	if (!esr_uohm) {
++		*val = voltage_now;
++		return 0;
++	}
++
++	/*
++	 * Same S2 window as the voltage above, so the two samples describe the
++	 * same instant and the subtraction is meaningful.
++	 */
++	ret = qcom_qg_get_current(chip,
++				QG_S2_NORMAL_AVG_I_DATA0_REG, &current_avg);
++	if (ret) {
++		dev_err(chip->dev, "Failed to get average current: %d\n", ret);
++		*val = voltage_now;
++		return 0;
++	}
++
++	/* Current is positive while charging, so this lowers the estimate then. */
++	*val = voltage_now - (int)div_s64((s64)current_avg * esr_uohm, 1000000);
++
++	return 0;
++}
++
++static int qcom_qg_get_capacity(struct qcom_qg_chip *chip, int *val)
++{
++	int ret, voltage_now;
++	int voltage_min = chip->batt_info->voltage_min_design_uv;
++	int voltage_max = chip->batt_info->voltage_max_design_uv;
++
++	ret = qcom_qg_get_ocv(chip, &voltage_now);
++	if (ret)
++		return ret;
++
+ 	if (chip->batt_info->ocv_table[0]) {
+ 		*val = power_supply_ocv2cap_simple(chip->batt_info->ocv_table[0],
+ 						   chip->batt_info->ocv_table_size[0],
+@@ -167,6 +214,14 @@ static int qcom_qg_get_property(struct power_supply *psy,
+ 			return ret;
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
++		/*
++		 * The SDAM word is maintained by the vendor QG algorithm, which
++		 * does not run here: it reads back as 0. Report the IR-compensated
++		 * estimate instead, and only fall back to the SDAM when the
++		 * compensation is disabled.
++		 */
++		if (esr_uohm)
++			return qcom_qg_get_ocv(chip, &val->intval);
+ 		ret = nvmem_device_read(chip->sdam, QG_SDAM_OCV_OFFSET, 4, &val->intval);
+ 		if (ret < 0)
+ 			return ret;
+-- 
+2.51.0

@@ -1,0 +1,44 @@
+#!/bin/sh
+# Rearrancar el servicio de sensores del ADSP tras despertar.
+#
+# POR QUE: la unidad hexagonrpcd-adsp-sensorspd.service declara
+#     Conflicts=suspend.target
+#     Before=suspend.target
+# asi que systemd la PARA sola antes de suspender -- correcto y deseable, porque el
+# proceso de sensores dentro del ADSP se estrella si sigue vivo al suspender:
+#     err_qdi.c:1040:EX:sensor_process:0x1:frpc_dsp:0xc8
+#
+# Pero NADIE la vuelve a arrancar al despertar. Comprobado: tras una suspension por
+# systemd queda "inactive" indefinidamente, y con ella se van los sensores del ADSP
+# (acelerometro, proximidad, luz). Este enganche cierra ese hueco.
+#
+# ⚠️ SOLO la parte "post". Parar antes de dormir NO hace falta: ya lo hace systemd por la
+#    declaracion de la unidad. Un enganche "pre" seria redundante.
+#
+# ⚠️ El "sleep 3" NO es adorno: sin el, el arranque se emite mientras suspend.target
+#    todavia esta desactivandose y la relacion Conflicts lo tumba en el acto. Con el
+#    enganche original, sin espera, el log decia "rearrancados" y el servicio seguia muerto.
+#
+# ⚠️⚠️ Y una leccion de metodo que costo caro: `rtcwake -m mem` escribe directo en
+#    /sys/power/state y SE SALTA SYSTEMD ENTERO, asi que ni corren los enganches de
+#    system-sleep ni se aplica el Conflicts de las unidades. Suspender asi estrella el ADSP
+#    y se lleva el audio por delante -- pero eso es un artefacto del metodo de prueba, no
+#    del camino real. Para probar la suspension como ocurre de verdad:
+#        echo 0 > /sys/class/rtc/rtc0/wakealarm
+#        echo $(( $(cat /sys/class/rtc/rtc0/since_epoch) + 40 )) > /sys/class/rtc/rtc0/wakealarm
+#        systemctl suspend -i
+
+case "$1" in
+  post)
+    # ⚠️ NO vale llamar a `systemctl start` aqui directamente: los enganches de
+    #    system-sleep corren DENTRO de la transaccion de suspension de systemd, y el
+    #    arranque queda bloqueado por ella. Probado: el log decia "rearrancados" y el
+    #    servicio seguia inactive, incluso metiendo un sleep antes.
+    #    Hay que lanzarlo FUERA, con un temporizador transitorio.
+    systemd-run --on-active=5 --unit=rearmar-sensores-adsp --collect \
+        /bin/sh -c 'systemctl start hexagonrpcd-adsp-sensorspd; \
+                    logger -t sensores-adsp "rearmado: $(systemctl is-active hexagonrpcd-adsp-sensorspd)"' \
+        >/dev/null 2>&1
+    ;;
+esac
+exit 0

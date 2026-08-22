@@ -1,0 +1,235 @@
+From 445e512330fb0565defcae5fbee57e15b21a4576 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 8 Aug 2026 21:03:07 +0200
+Subject: [PATCH] shared-qmi: synthesise the GSV traces the modem leaves out
+
+Qualcomm modems generate their own NMEA, and some of them only ever emit
+$GPGSV and $GLGSV no matter how many constellations they are actually
+tracking. On a SM7150 the very same session reports Galileo and BeiDou
+satellites over the GNSS satellite info indication -- 31 satellites across
+four constellations -- while its NMEA lists neither. NMEA is what
+applications read, so those satellites simply never reach them.
+
+Register for the satellite info event and build the missing sentences from
+it. Only the constellations the modem leaves out are synthesised; GPS and
+GLONASS keep coming from the modem itself, untouched. The traces go through
+mm_iface_modem_location_gps_update() like any other, so they land in the
+same NMEA block, and the existing sequence handling picks them up because
+its regex already matches any talker.
+
+Satellite numbers are mapped to what NMEA expects: QMI reports Galileo as
+301-336 and BeiDou as 201-237, which become 1-36 and 1-37 under the GA and
+GB talkers. A satellite in view but not tracked gets an empty ratio field,
+as receivers do, rather than a zero that would read as a real measurement.
+
+BeiDou's system value is spelled out rather than named, so this keeps
+building against libqmi releases whose QmiLocSystem does not carry it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/mm-shared-qmi.c | 150 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 150 insertions(+)
+
+diff --git a/src/mm-shared-qmi.c b/src/mm-shared-qmi.c
+index d93698a..57084b8 100644
+--- a/src/mm-shared-qmi.c
++++ b/src/mm-shared-qmi.c
+@@ -88,6 +88,7 @@ typedef struct {
+     gulong                          pds_location_event_report_indication_id;
+     QmiClient                      *loc_client;
+     gulong                          loc_location_nmea_indication_id;
++    gulong                          loc_location_gnss_sv_info_indication_id;
+     gchar                         **loc_assistance_data_servers;
+     guint32                         loc_assistance_data_max_file_size;
+     guint32                         loc_assistance_data_max_part_size;
+@@ -126,6 +127,8 @@ private_free (Private *priv)
+         g_object_unref (priv->pds_client);
+     if (priv->loc_location_nmea_indication_id)
+         g_signal_handler_disconnect (priv->loc_client, priv->loc_location_nmea_indication_id);
++    if (priv->loc_location_gnss_sv_info_indication_id)
++        g_signal_handler_disconnect (priv->loc_client, priv->loc_location_gnss_sv_info_indication_id);
+     if (priv->loc_assistance_inject_time_req_indication_id)
+         g_signal_handler_disconnect (priv->loc_client, priv->loc_assistance_inject_time_req_indication_id);
+     if (priv->loc_assistance_inject_position_req_indication_id)
+@@ -5161,6 +5164,10 @@ loc_stop_ready (QmiClientLoc *client,
+             g_signal_handler_disconnect (priv->loc_client, priv->loc_location_nmea_indication_id);
+             priv->loc_location_nmea_indication_id = 0;
+         }
++        if (priv->loc_location_gnss_sv_info_indication_id != 0) {
++            g_signal_handler_disconnect (priv->loc_client, priv->loc_location_gnss_sv_info_indication_id);
++            priv->loc_location_gnss_sv_info_indication_id = 0;
++        }
+         g_clear_object (&priv->loc_client);
+     }
+ 
+@@ -5269,6 +5276,142 @@ loc_location_nmea_indication_cb (QmiClientLoc               *client,
+     mm_location_cache_update_from_nmea (priv->location_cache, nmea);
+ }
+ 
++/*****************************************************************************/
++/* Location: GNSS satellite info -> synthesised GSV traces
++ *
++ * Qualcomm modems generate their own NMEA, and some of them only ever emit
++ * $GPGSV and $GLGSV, no matter how many constellations they are actually
++ * tracking. On a SM7150 the very same session reports Galileo and BeiDou
++ * satellites over the GNSS satellite info indication while its NMEA lists
++ * neither, and NMEA is what applications read.
++ *
++ * So the missing sentences are built here from that indication. Only the
++ * constellations the modem leaves out are synthesised: GPS and GLONASS keep
++ * coming from the modem itself, untouched.
++ */
++
++typedef struct {
++    guint        system;      /* QmiLocSystem */
++    const gchar *talker;      /* NMEA talker id */
++    guint        id_offset;   /* QMI satellite id - offset = NMEA satellite number */
++} SynthesisedConstellation;
++
++/* BeiDou is 6 here. It is spelled out rather than named because older libqmi
++ * releases do not carry the value in QmiLocSystem. */
++#define LOC_SYSTEM_BDS 6
++
++static const SynthesisedConstellation synthesised_constellations[] = {
++    { QMI_LOC_SYSTEM_GALILEO, "GA", 300 },
++    { LOC_SYSTEM_BDS,         "GB", 200 },
++};
++
++static void
++nmea_append_checksum (GString *sentence)
++{
++    guint8 checksum = 0;
++    guint  i;
++
++    /* XOR of everything between the leading '$' and the '*' */
++    for (i = 1; i < sentence->len; i++)
++        checksum ^= (guint8) sentence->str[i];
++    g_string_append_printf (sentence, "*%02X", checksum);
++}
++
++static void
++synthesise_gsv_traces (MMSharedQmi                    *self,
++                       GArray                         *infos,
++                       const SynthesisedConstellation *constellation)
++{
++    g_autoptr(GPtrArray) satellites = NULL;
++    guint                i;
++    guint                n_messages;
++    guint                message;
++
++    satellites = g_ptr_array_new ();
++    for (i = 0; i < infos->len; i++) {
++        QmiIndicationLocGnssSvInfoOutputListElement *element;
++
++        element = &g_array_index (infos, QmiIndicationLocGnssSvInfoOutputListElement, i);
++        if (!(element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_SYSTEM) ||
++            !(element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_GNSS_SATELLITE_ID))
++            continue;
++        if ((guint) element->system != constellation->system)
++            continue;
++        g_ptr_array_add (satellites, element);
++    }
++
++    if (!satellites->len)
++        return;
++
++    /* GSV carries up to four satellites per sentence */
++    n_messages = (satellites->len + 3) / 4;
++    for (message = 0; message < n_messages; message++) {
++        g_autoptr(GString) sentence = NULL;
++        guint              j;
++
++        sentence = g_string_new (NULL);
++        g_string_append_printf (sentence, "$%sGSV,%u,%u,%02u",
++                                constellation->talker, n_messages, message + 1, satellites->len);
++
++        for (j = 0; j < 4; j++) {
++            QmiIndicationLocGnssSvInfoOutputListElement *element;
++            guint                                        index;
++            guint                                        number;
++
++            index = (message * 4) + j;
++            if (index >= satellites->len)
++                break;
++
++            element = g_ptr_array_index (satellites, index);
++            number = element->gnss_satellite_id > constellation->id_offset ?
++                     element->gnss_satellite_id - constellation->id_offset :
++                     element->gnss_satellite_id;
++            g_string_append_printf (sentence, ",%02u", number);
++
++            if (element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_ELEVATION)
++                g_string_append_printf (sentence, ",%02.0f", (gdouble) element->elevation_degrees);
++            else
++                g_string_append (sentence, ",");
++
++            if (element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_AZIMUTH)
++                g_string_append_printf (sentence, ",%03.0f", (gdouble) element->azimuth_degrees);
++            else
++                g_string_append (sentence, ",");
++
++            /* A satellite in view but not being tracked has no usable ratio;
++             * the field is left empty, which is what receivers do. */
++            if ((element->valid_information & QMI_LOC_SATELLITE_VALID_INFORMATION_SIGNAL_TO_NOISE_RATIO) &&
++                element->signal_to_noise_ratio_bhz > 0)
++                g_string_append_printf (sentence, ",%02.0f", (gdouble) element->signal_to_noise_ratio_bhz);
++            else
++                g_string_append (sentence, ",");
++        }
++
++        /* Signal id, as the modem's own GSV sentences carry: 1 is the primary
++         * band of every constellation synthesised here. */
++        g_string_append (sentence, ",1");
++        nmea_append_checksum (sentence);
++
++        mm_obj_dbg (self, "[NMEA] %s (synthesised)", sentence->str);
++        mm_iface_modem_location_gps_update (MM_IFACE_MODEM_LOCATION (self), sentence->str);
++    }
++}
++
++static void
++loc_location_gnss_sv_info_indication_cb (QmiClientLoc                     *client,
++                                         QmiIndicationLocGnssSvInfoOutput *output,
++                                         MMSharedQmi                      *self)
++{
++    GArray *infos = NULL;
++    guint   i;
++
++    if (!qmi_indication_loc_gnss_sv_info_output_get_list (output, &infos, NULL) || !infos)
++        return;
++
++    for (i = 0; i < G_N_ELEMENTS (synthesised_constellations); i++)
++        synthesise_gsv_traces (self, infos, &synthesised_constellations[i]);
++}
++
+ /*****************************************************************************/
+ /* Location: internal helper: setup minimum required NMEA traces */
+ 
+@@ -5679,12 +5822,18 @@ loc_register_events_ready (QmiClientLoc *client,
+ 
+     g_assert (!priv->loc_client);
+     g_assert (!priv->loc_location_nmea_indication_id);
++    g_assert (!priv->loc_location_gnss_sv_info_indication_id);
+     priv->loc_client = QMI_CLIENT (g_object_ref (client));
+     priv->loc_location_nmea_indication_id =
+         g_signal_connect (client,
+                           "nmea",
+                           G_CALLBACK (loc_location_nmea_indication_cb),
+                           self);
++    priv->loc_location_gnss_sv_info_indication_id =
++        g_signal_connect (client,
++                          "gnss-sv-info",
++                          G_CALLBACK (loc_location_gnss_sv_info_indication_cb),
++                          self);
+ 
+     g_task_return_boolean (task, TRUE);
+     g_object_unref (task);
+@@ -5720,6 +5869,7 @@ loc_start_ready (QmiClientLoc *client,
+ 
+     input = qmi_message_loc_register_events_input_new ();
+     event_mask = QMI_LOC_EVENT_REGISTRATION_FLAG_NMEA |
++                 QMI_LOC_EVENT_REGISTRATION_FLAG_GNSS_SATELLITE_INFO |
+                  QMI_LOC_EVENT_REGISTRATION_FLAG_INJECT_TIME_REQUEST |
+                  QMI_LOC_EVENT_REGISTRATION_FLAG_INJECT_POSITION_REQUEST;
+     qmi_message_loc_register_events_input_set_event_registration_mask (

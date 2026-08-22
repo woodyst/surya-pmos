@@ -2,7 +2,7 @@ From 24ed9108df7775425eaad8bbd1588e6bdb14fdf6 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
  <woodyst@gmail.com>
 Date: Sat, 8 Aug 2026 19:08:11 +0200
-Subject: [PATCH 2/2] qmicli,loc: expose the constellation control messages
+Subject: [PATCH 2/3] qmicli,loc: expose the constellation control messages
 
   --loc-get-constellation-control
   --loc-set-constellation-control=[reset|disabled-mask[,enabled-mask]]

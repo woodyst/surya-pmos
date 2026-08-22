@@ -1,0 +1,32 @@
+#!/bin/sh
+# Anotar QUE desperto al movil, en cada despertar.
+#
+# Pedido por el usuario el 2026-08-16: al despertar, mostrar la interrupcion; y cuando
+# salte, poder buscar el subsistema que la maneja. Este enganche hace las dos cosas: lee
+# /sys/power/pm_wakeup_irq y lo anota YA RESUELTO a nombre y dispositivo.
+#
+# Requiere el kernel r75 (CONFIG_PM_SLEEP_DEBUG=y): antes ese fichero NO EXISTIA en este
+# kernel -- y su ausencia llego a leerse como dato, que costo una conclusion falsa.
+#
+# pm_wakeup_irq solo se rellena si el despertar fue por una interrupcion armada
+# (pm_system_irq_wakeup). Si el despertar fue por una fuente de despertar de dispositivo,
+# sale vacio y se anotan las fuentes activadas como respaldo.
+#
+# Ver el historial:   journalctl -t despertar
+
+case "$1" in
+  post)
+    IRQ=$(cat /sys/power/pm_wakeup_irq 2>/dev/null)
+    if [ -n "$IRQ" ]; then
+      # nombre y dispositivo, de /proc/interrupts (campos tras las 8 columnas de CPU)
+      DESC=$(awk -v n="$IRQ:" '$1 == n { d=""; for (i=10; i<=NF; i++) d = d " " $i; print d }' /proc/interrupts)
+      # y el subsistema: que driver registro esa IRQ, via las acciones en sysfs si existe
+      logger -t despertar "irq=$IRQ:$DESC"
+    else
+      # sin IRQ anotada: fue una fuente de despertar de dispositivo
+      FUENTES=$(awk 'NR>1 && $6+0 > 0 { print $1 }' /sys/kernel/debug/wakeup_sources 2>/dev/null | head -3 | tr '\n' ' ')
+      logger -t despertar "sin irq armada; fuentes activas:${FUENTES:- (ninguna legible)}"
+    fi
+    ;;
+esac
+exit 0

@@ -1,0 +1,34 @@
+# Permitir que el controlador USB entre en bajo consumo cuando no hay nada
+# conectado.
+#
+# ---------------------------------------------------------------------------
+# Por que hace falta
+# ---------------------------------------------------------------------------
+# `dwc3-qcom-legacy.c` termina su probe asi:
+#
+#     pm_runtime_set_active(dev);
+#     pm_runtime_enable(dev);
+#     pm_runtime_forbid(dev);      <- deja power/control = "on"
+#
+# y el `pm_runtime_allow()` correspondiente esta SOLO en remove(). Es decir: el
+# driver habilita la gestion de energia y acto seguido la prohibe, dejando la
+# decision al espacio de usuario. Es comportamiento de mainline, no un fallo --
+# pero en pmOS nadie la habilita, asi que el USB NO DUERME NUNCA.
+#
+# Medido en surya el 2026-08-14, con el cable desenchufado y la pantalla
+# apagada:
+#
+#     power/control            on
+#     runtime_suspended_time   0 ms       (en 2 h de marcha)
+#     interrupciones dwc3      229/s
+#
+# Al escribir "auto" en esos dos dispositivos, ambos pasan a `suspended` y las
+# interrupciones totales caen de ~2580/s a ~1300/s: desaparecen las 229/s del
+# dwc3 y con ellas la mayor parte de las llamadas entre nucleos (616 -> 110/s) y
+# de los votos de RPMh (264 -> 19/s) que arrastraban.
+#
+# ⚠️ RIESGO A VIGILAR: hay que comprobar que el movil SIGUE DETECTANDO EL CABLE
+# al enchufarlo. Si el PHY no despertara al conectar, dejaria de cargar -- un
+# remedio peor que la enfermedad. Verificado enchufando y desenchufando.
+ACTION=="add", SUBSYSTEM=="platform", DRIVER=="dwc3-qcom-legacy", ATTR{power/control}="auto"
+ACTION=="add", SUBSYSTEM=="platform", DRIVER=="dwc3", ATTR{power/control}="auto"

@@ -31,3 +31,15 @@ A few of these cost days, and none of them are specific to a POCO X3:
 - **Read the row stride from `bytesused / height`, never from the width.** Padding turns a correct
   photo into a banding pattern that looks exactly like a broken sensor.
 - **The absence of an error message is not success.** Check the precondition ran at all.
+
+## Added 2026-08-22
+
+| document | what it covers |
+|---|---|
+| [`suspend.es.md`](suspend.es.md) | ★ **Suspend and power votes**: why the phone never slept, `sync_state` that never ran, and the one problem still open. Written to be readable on its own by someone with a different device |
+| [`sleep-fix.es.md`](sleep-fix.es.md) | the full diagnosis behind it: the Bluetooth UART wakeup line that aborted every suspend |
+| [`camss.es.md`](camss.es.md) | everything about `qcom_camss` in one place: boot hang, power votes and camera |
+| [`muted-calls.es.md`](muted-calls.es.md) | intermittent calls where the other side heard nothing: the mic's SoundWire stream registered with **zero ports** |
+| [`call-routing.es.md`](call-routing.es.md) | call routing, per-mode volume and the mute button |
+
+⚠️ These five are in Spanish (`.es.md`) and have no English version yet.

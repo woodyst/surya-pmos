@@ -1,0 +1,68 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Thu, 13 Aug 2026 17:35:00 +0200
+Subject: [PATCH] ASoC: wcn-bt-slim: stop pinning the SLIMBus controller awake
+
+The probe held a runtime PM reference on the parent controller, and it
+runs once per half of the chip -- interface device and ported device --
+so it took two, and only dropped them in remove(). The module stays
+loaded for the life of the system, so in practice the SLIMBus NGD never
+suspended at all:
+
+    qcom,slim-ngd.1   runtime_status        active
+                      runtime_suspended_time   1885 ms   (68 min uptime)
+
+Releasing both references makes it suspend immediately and stay there
+(188888 ms suspended over the next 180 s), with the chip still
+enumerating and reading registers normally afterwards.
+
+It was never needed: qcom_slim_ngd_xfer_msg() already takes and drops a
+runtime PM reference around every transfer, so the bus wakes up on its
+own whenever it is spoken to.
+
+Nor did it ever do what it was added for. Its own comment said so --
+"this has NOT been shown to help: register access measured 0/10 both
+with and without it" -- and it was kept anyway on the grounds that
+holding the parent resumed was "correct regardless". It was not free:
+it cost an always-on bus controller.
+
+Note this does not fix the ADSP staying awake, which is what led here.
+Measured: with the references dropped and the NGD suspended for three
+minutes, the ADSP sleep count stayed at zero. This is a power fix on its
+own merits, nothing more.
+--- a/sound/soc/codecs/wcn-bt-slim.c	2026-08-13 17:31:21.016466968 +0200
++++ b/sound/soc/codecs/wcn-bt-slim.c	2026-08-13 17:31:21.059799881 +0200
+@@ -26,7 +26,6 @@
+ #include <sound/soc.h>
+ #include <sound/soc-dai.h>
+ #include <linux/io.h>
+-#include <linux/pm_runtime.h>
+ #include <linux/debugfs.h>
+ 
+ /*
+@@ -613,18 +612,6 @@
+ 	else
+ 		wcn_bt->pgd = sdev;
+ 
+-	/*
+-	 * Hold the controller awake, on the theory that its runtime suspend
+-	 * drops the NGD's enumeration on the bus.
+-	 *
+-	 * Note this has NOT been shown to help: register access measured
+-	 * 0/10 both with and without it. The one run that ever read
+-	 * registers successfully (8/10) predates this call. Kept because
+-	 * holding the parent resumed is correct regardless, but do not
+-	 * mistake it for the fix.
+-	 */
+-	pm_runtime_get_sync(sdev->dev.parent);
+-
+ 	dev_info(&sdev->dev, "bound %s (dev_index %u)\n",
+ 		 sdev->e_addr.dev_index == WCN_DEV_INDEX_IFD ? "interface device"
+ 							     : "ported device",
+@@ -673,7 +660,6 @@
+ static void wcn_bt_slim_remove(struct slim_device *sdev)
+ {
+ 	cancel_delayed_work_sync(&wcn_bt->laddr_work);
+-	pm_runtime_put(sdev->dev.parent);
+ 
+ 	mutex_lock(&wcn_bt_lock);
+ 	if (wcn_bt->ifd == sdev)

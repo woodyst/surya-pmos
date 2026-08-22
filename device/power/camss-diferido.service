@@ -1,0 +1,29 @@
+[Unit]
+Description=Cargar qcom_camss tras el arranque (sincroniza la interconexion: ~22 mA menos)
+# POR QUE EXISTE:
+#   Hasta que ace0000.camss sonda, cuatro proveedores de interconexion no ejecutan
+#   sync_state y la DDR y los NoC se quedan con el voto INICIAL 0x7FFFFFFF de por vida.
+#   Medido el 2026-08-17: cargarlo baja el reposo de -74,8/-69,4 a -60,7 mA de gauge,
+#   ~22 mA reales. Ver parches/energia/CAPA2-CONJUNTO-DE-SUENO.md
+#
+# POR QUE DIFERIDO:
+#   qcom_camss esta en lista negra (99-carga-diferida.conf) porque cargarlo por udev en
+#   el arranque temprano cuelga el movil. Con el sistema asentado entra siempre.
+After=multi-user.target armar-audio.service
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 10
+ExecStart=/sbin/modprobe -q qcom_camss
+# NO se cargan los sensores ni dw9807_vcm: el VCM rompe la suspension (su suspend
+# devuelve -EIO al apagar dos veces el regulador y aborta el ciclo entero).
+# Arreglado por el parche 0124 (kernel r76, VERIFICADO: 3/3 suspensiones con el VCM
+# cargado y enlazado). Aun asi no se cargan aqui: solo hace falta que camss sonde para
+# que sync_state corra, y cuanto menos se toque en el arranque, mejor.
+ExecStartPost=/bin/sh -c "sleep 3; logger -t camss-diferido \"proveedores sincronizados: $(cat /sys/devices/platform/soc@0/*interconnect/state_synced | grep -c 1)/10\""
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

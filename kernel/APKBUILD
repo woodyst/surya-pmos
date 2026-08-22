@@ -4,7 +4,7 @@ maintainer="Danila Tikhonov <danila@jiaxyga.com>"
 _flavor="postmarketos-qcom-sm7150"
 pkgname=linux-$_flavor
 pkgver=7.1_rc3
-pkgrel=67
+pkgrel=78
 pkgdesc="Mainline Kernel fork for SM7150 devices"
 arch="aarch64"
 _carch="arm64"
@@ -149,6 +149,17 @@ source="
 	0113-media-i2c-imx682-knobs-for-the-mounting-rotation-and.patch
 	0114-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-main-.patch
 	0115-media-dw9807-vcm-regulator-support-and-non-fatal-I2C.patch
+	0116-remoteproc-qcom_q6v5-report-repeated-handover-once.patch
+	0117-arm64-dts-sm7150-xiaomi-common-drop-stale-ocv-table.patch
+	0118-revert-0028-modem-proxy-power-vote.patch
+	0119-ASoC-codecs-add-the-WCN399x-Bluetooth-SLIMBus-audio-driver.patch
+	0120-ASoC-lpass-macro-let-runtime-PM-own-macro-and-dcodec-votes.patch
+	0121-ASoC-wcn-bt-slim-stop-pinning-the-SLIMBus-controller-awake.patch
+	0122-net-qrtr-ns-report-a-stuck-del-client-only-once.patch
+	0123-pinctrl-qcom-clear-a-stale-parent-irq-when-muxing-back-to-GPIO.patch
+	0124-media-dw9807-vcm-dont-disable-the-regulator-twice-on-system-suspend.patch
+	0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
+	0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
 "
 builddir="$srcdir/linux-$_tag"
 
@@ -185,7 +196,7 @@ package() {
 
 sha512sums="
 bb837959e337c66ff374d8f3aac6593723c4f4eb69fb18f9ff25c5c096c6656fd71149e105255c0f97c83e0bf547b0b0e94ca23eabde7b5f88308e9ecd784e3d  linux-postmarketos-qcom-sm7150-v7.1_rc3.tar.gz
-fa874e4459737a618faffbee36b9d8271211ce52840ab296ba9ccdb599d0bb51243754486a51cd9daff96cf2c6746d7c1974114f0893bb32c6277beeac230c2a  config-$_flavor.$arch
+2704dca4fdb2cf6e0657835f2bf5ea6ebe7231bb642242fe5791e1b5fd8d6e15c81f4e702c54cc4a1a4e6d0f607701256b5e4346d6a2aa4c6466eb0c5335f80d  config-postmarketos-qcom-sm7150.aarch64
 78f0c13f84a10aad84cce37a08d851ef13c4cdd10f1db0f1447d295db48e49a1310d57dc1beb862099c9c6c3096a177d5c02aaca8b48b800dac5babc96c815b3  0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
 93bb7e4dce5131240dffc73fa63c94e9f9c2cdbcb9f9cb36b94f61e603dae3d2f933b3c6da36285b21dbafe0f95b4080af51ed0bf8988d2a711cbdc9ca57ca16  0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
 d66b9f6f8cd6b8c6c168313471f10a86f050e634557b236a330b2c860f33efc9c5b01da42576819537008daac37a1fbcab5ccc0e80b3eb2bc2e0da815d104226  0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
@@ -301,4 +312,15 @@ cf081299f537d26d655f5f3edcd4a6d1245df97e6874018ecc26075debb541206363b5f1aa8f3efd
 0956e6af2cbed6c9eaf2d01566a91b578888bd8c1bd4ba4b61d9ef515d101baf4683a97f1965979627d74b5a13d58104ba4e5c60b6ce86f94dc28ee4c1ce0136  0113-media-i2c-imx682-knobs-for-the-mounting-rotation-and.patch
 12b7cab68219c3bcdcb49ccf3221b3ca217d7918dfe9f69080ba3f52bc55245186a3a18fab2361ac8cf620ca12dc906be3f59dfed74a421210d2339436a1d583  0114-arm64-dts-qcom-sm7150-xiaomi-surya-wire-up-the-main-.patch
 bcaea7d5f911caf73d7eabd1985aa59ed98a5cfbaff07a55a36b6a3696dbd0824588acd40774075a3fb34ab25e33c207196e621760f6dfddcc6981ae8b5733d2  0115-media-dw9807-vcm-regulator-support-and-non-fatal-I2C.patch
+d74a10e391db6153018c39695c915df1e654de50cf8c5c68264b6a0acf3f37298cf4fe934c80619f4c0f7209ca28034f5b9830c679ed7f844adcd62e299887da  0116-remoteproc-qcom_q6v5-report-repeated-handover-once.patch
+b19108f987242bde82329e28055df0ad570ea47029f56754c23f51b03c2f49384954f8229cef64651f0e41bbfcc9f12c4e02c3805015a5161592adaa501c5304  0117-arm64-dts-sm7150-xiaomi-common-drop-stale-ocv-table.patch
+7bf1875aec6db61e0f25a7505a612122e5210283416be78ace1bc95192513a452a3bc9f2ba40f22c4ec7a234366f390343696568f9266f47c7cf14d2ed617cc7  0118-revert-0028-modem-proxy-power-vote.patch
+583ffa0fb29201cda5a2f1814413e37ebacbff62e6bf8c122196414708870d0bccd6df596bf2c28c6095078ff4afb2ef982dbbe3478806cbad613d8b163a60a5  0119-ASoC-codecs-add-the-WCN399x-Bluetooth-SLIMBus-audio-driver.patch
+8185e3af9befa4f11bd68f7cb1ddff122030a0f10f3e1460f0bda044d522bfeee166950c4011b86aa7610c16be1854fd6d9fd2d6c4e492c87e1f514312d15afc  0120-ASoC-lpass-macro-let-runtime-PM-own-macro-and-dcodec-votes.patch
+8313366bd7b43aae738d6d749f61e887ef5bd1ad2440bbc677da626d2a3f3051dff0f331fc40abe5708eba21efdeb2bfc82a088fa05825c16c65779eb6812c9b  0121-ASoC-wcn-bt-slim-stop-pinning-the-SLIMBus-controller-awake.patch
+c1184fc908fe7d59db834b83e76c6405d5f4b366a04d074450f962f9047be98b7347a8cd4fc3ffeb486ec2c36d59d27d4880be496057be9a87d79999ac3460d3  0122-net-qrtr-ns-report-a-stuck-del-client-only-once.patch
+c50c81082017f26a6a2ee707657d9385b57dddbf9a58ae8e12e24e4f6f28d04d74c986b627f2a7b0a8aeaa6568c0eaa13ab4e9f1c8f4dfcbeeba42d0459fb6fd  0123-pinctrl-qcom-clear-a-stale-parent-irq-when-muxing-back-to-GPIO.patch
+2766b0642582b7616656ee00a4853a545ac7fe2cc69dc50b87460fc69157c24be23e7d9cfa69aadab8b94b7fe0beb6e16965053dbcadb68c2d4e73d3d8cdcea1  0124-media-dw9807-vcm-dont-disable-the-regulator-twice-on-system-suspend.patch
+cd0dfa645e6dc7d53278a45193dc97505c061524eb9ecfc2a3884d11db3d3f0ad6b6723b0105a9ebdfe201cd9ce621885518075abdd6fedefe5b9f997a0b3ef8  0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
+c44c07c1f045ef40d5215230380b80c5fcbac72618086022dffaac1da5356ec629f09f689f880a79f4a9c980bc4a62d69ff6ecd9d88a73cf62b00be3d792e0a1  0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
 "
