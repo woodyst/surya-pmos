@@ -1,6 +1,6 @@
 [Unit]
 Description=Apuntar la sesion del modem a la ranura donde este la SIM
-Documentation=file:///home/edi/claude/postmarketos/parches/modem/RANURA-SIM.md
+Documentation=https://github.com/woodyst/surya-pmos
 # ANTES que ModemManager: si MM arranca con la sesion apuntando a una ranura vacia,
 # se queda en bucle de reintentos (locked -> failed) y ya no sale solo.
 Before=ModemManager.service

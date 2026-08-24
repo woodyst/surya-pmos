@@ -59,10 +59,18 @@ ExecStartPre=/bin/sleep 10
 ExecStart=/sbin/modprobe -q qcom_camss
 ```
 
-⚠️⚠️ **Carga camss y NADA MÁS.** Nada de sensores (`imx682`, `s5k3t2`) ni del VCM
-(`dw9807_vcm`). El VCM **rompía la suspensión**: su `suspend` apagaba el regulador por segunda
-vez, devolvía `-EIO` y **abortaba el ciclo entero**. Lo arregla el parche **0124**, pero el
-servicio sigue sin cargarlos porque no los necesita para lo que está aquí: sincronizar los votos.
+### ★ Y también carga los sensores (corregido el 2026-08-24)
+
+Al principio cargaba **solo** camss, porque el VCM rompía la suspensión: su `suspend` apagaba el
+regulador por segunda vez, devolvía `-EIO` y **abortaba el ciclo entero**. Lo arregla el parche
+**0124**, que ya está en el kernel r78.
+
+⚠️⚠️ **Y hacía falta**: de los sensores se encargaba `audio-diferido.service`, que se desactivó
+el 2026-08-22 por estar superado **para el audio** — sin caer en que también cargaba la cámara.
+Resultado: `qcom_camss` cargado, 10 nodos de vídeo, y **libcamera sin ninguna cámara**.
+
+Ahora `camss-diferido.service` carga `qcom_camss`, luego `imx682`, `s5k3t2` y `dw9807_vcm`, con
+esperas entre medias. 📌 **Si tocas uno de los dos servicios, mira el otro.**
 
 ✅ **Verificado**: con camss cargado a solas, **5 de 5 suspensiones entraron** (15-20 s), 0 fallos.
 

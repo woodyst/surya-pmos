@@ -1,0 +1,23 @@
+[Unit]
+Description=Perro guardian por hardware con prueba de vida real
+Documentation=https://github.com/woodyst/surya-pmos/blob/main/docs/watchdog.es.md
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/perro-vivo.sh
+Restart=always
+RestartSec=5
+# ⚠️ Si este servicio muere y NO vuelve, el perro muerde. Es lo que se quiere en un
+#    congelado, pero significa que un fallo del propio guion tambien reinicia. Por
+#    eso Restart=always y una prueba de vida barata.
+Environment=PLAZO=30 CADA=5 FALLOS=2 ESPERA_PRUEBA=8
+# Que no lo maten al apagar antes de tiempo: el trap escribe 'V' y lo desarma.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=sysinit.target

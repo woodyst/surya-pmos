@@ -17,11 +17,29 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/bin/sleep 10
 ExecStart=/sbin/modprobe -q qcom_camss
-# NO se cargan los sensores ni dw9807_vcm: el VCM rompe la suspension (su suspend
-# devuelve -EIO al apagar dos veces el regulador y aborta el ciclo entero).
-# Arreglado por el parche 0124 (kernel r76, VERIFICADO: 3/3 suspensiones con el VCM
-# cargado y enlazado). Aun asi no se cargan aqui: solo hace falta que camss sonde para
-# que sync_state corra, y cuanto menos se toque en el arranque, mejor.
+# ⚠️⚠️ Y LOS SENSORES. Antes los cargaba audio-diferido.service, que se desactivo
+#    el 2026-08-22 por estar SUPERADO para el audio -- sin caer en que tambien
+#    cargaba la camara. Resultado: qcom_camss cargado, 10 nodos de video, y
+#    libcamera SIN NINGUNA camara. Estan en lista negra (99-carga-diferida.conf)
+#    porque por udev en el arranque temprano cuelgan el movil.
+ExecStart=/bin/sleep 3
+ExecStart=/sbin/modprobe -q imx682
+ExecStart=/bin/sleep 2
+ExecStart=/sbin/modprobe -q s5k3t2
+# El VCM del enfoque. Ya es seguro: el parche 0124 arreglo que su suspend apagara
+# el regulador por segunda vez y abortara TODAS las suspensiones del sistema.
+ExecStart=/bin/sleep 1
+ExecStart=/sbin/modprobe -q dw9807_vcm
+
+# ⚠️⚠️ Y AVISAR A PIPEWIRE: wireplumber enumera las camaras AL ARRANCAR, asi que
+#    si los sensores aparecen despues las tiene pero no las ve. Sin este paso el
+#    arreglo de arriba NO basta: `cam -l` las lista y la aplicacion sigue sin
+#    camara. Va en un guion aparte porque systemd se come los escapes.
+ExecStartPost=/usr/local/sbin/avisar-camaras.sh
+# ⚠️ Historia del VCM: su suspend devolvia -EIO al apagar dos veces el regulador y
+# abortaba el ciclo entero, asi que durante un tiempo NO se cargaba aqui. Lo arreglo
+# el parche 0124 (kernel r76, verificado 3/3 suspensiones con el VCM cargado), y
+# desde el 2026-08-24 si se carga: hace falta para el enfoque.
 ExecStartPost=/bin/sh -c "sleep 3; logger -t camss-diferido \"proveedores sincronizados: $(cat /sys/devices/platform/soc@0/*interconnect/state_synced | grep -c 1)/10\""
 TimeoutStartSec=90
 

@@ -42,13 +42,24 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
   all**, not even the rear one.
 - **Vibration is weak**, even at maximum. The actuator is a linear motor and only performs at its
   resonant frequency; the driver may not calibrate it.
-- **The phone reboots on its own** under heavy modem use. This used to hang silently with no
-  trace; it is now instrumented (`hung_task_panic`), which turned the hang into a panic that
-  leaves a full stack behind — and that named the cause: **IPA's runtime suspend blocks forever**
-  in `gsi_channel_trans_quiesce()`, an untimed `wait_for_completion()` on the modem's last GSI
-  transaction (`drivers/net/ipa/gsi.c`). `irq/172-ipa`, which shows up in every signature, is a
-  *victim*: its `pm_runtime_get_sync()` waits for the suspend that never ends. **No fix yet** —
-  see [`docs/suspend.es.md`](docs/suspend.es.md).
+- **The phone hangs or reboots on its own.** These turned out to be **two different faults**,
+  and telling them apart took a while:
+  - **The freeze** is the storage: a deadlock between `ufshcd_exception_event_handler` — which
+    waits on a device query holding the rwsem as a **reader** — and `ufshcd_devfreq_scale`, which
+    wants it as a **writer**. Since the rootfs lives on UFS, everything that touches disk stops
+    while the kernel stays **alive and idle**. **Mitigated** by disabling UFS clock scaling
+    (`device/power/99-ufs-sin-escalado.rules`); the query still never returns.
+  - **The panic** is IPA: `gsi_channel_trans_quiesce()` waits with **no timeout** for the modem's
+    last GSI transaction (`drivers/net/ipa/gsi.c`). `irq/172-ipa`, which shows up in every
+    signature, is a **victim**. ⛔ **Four different reproduction attempts, none of them work** —
+    with a dead network the modem applies **backpressure** rather than stalling, so filling the
+    queue is not enough.
+
+  Either way the phone now **recovers by itself and leaves a full dump**: three panic detectors,
+  all-CPU backtraces, and a **watchdog that demands the phone actually works** rather than just
+  that PID 1 is breathing. See [`docs/watchdog.es.md`](docs/watchdog.es.md) and
+  [`docs/ufs-freeze.es.md`](docs/ufs-freeze.es.md).
+
 - **Image quality is uncalibrated**: the software ISP has no tuning file for this sensor, so photos
   look washed out with dark corners.
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.

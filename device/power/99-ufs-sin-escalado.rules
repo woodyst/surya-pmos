@@ -1,0 +1,27 @@
+# Desactivar el escalado de frecuencia del UFS.
+#
+# POR QUE
+#   El 2026-08-23 capturamos un congelado con la pila entera y resulto ser un
+#   ABRAZO MORTAL en el almacenamiento, no en IPA:
+#
+#     kworker devfreq_monitor -> ufshcd_devfreq_scale -> down_write
+#         ↑ quiere el semaforo para ESCRIBIR
+#     ...bloqueado en un rw-semaphore que tiene, como LECTOR:
+#     kworker events -> ufshcd_exception_event_handler -> ufshcd_query_attr
+#                    -> blk_execute_rq -> wait_for_completion_io_timeout
+#         ↑ esperando una consulta al chip que no vuelve
+#
+#   Y como la raiz del sistema vive en el UFS, todo lo que toque disco se para:
+#   el espacio de usuario entero se congela con el kernel vivo y OCIOSO.
+#
+#   Sin escalado no hay escritor que pida el semaforo, asi que la consulta
+#   atascada deja de arrastrar al resto del sistema.
+#
+# ⚠️ Es una MITIGACION, no el arreglo: la consulta al chip sigue sin volver. Lo
+#    que evita es que eso congele el movil entero.
+# ⚠️ Comprobado que NO clava el reloj arriba: se queda en el minimo (50 MHz) y el
+#    disco sigue escribiendo a 604 MB/s. No deberia costar bateria, pero conviene
+#    vigilarlo unos dias.
+# Revertir: echo 1 > /sys/devices/platform/soc@0/1d84000.ufshc/clkscale_enable
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="1d84000.ufshc", ATTR{clkscale_enable}="0"
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="1d84000.ufshc", ATTR{clkscale_enable}="0"

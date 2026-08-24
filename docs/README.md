@@ -43,3 +43,11 @@ A few of these cost days, and none of them are specific to a POCO X3:
 | [`call-routing.es.md`](call-routing.es.md) | call routing, per-mode volume and the mute button |
 
 ⚠️ These five are in Spanish (`.es.md`) and have no English version yet.
+
+## Added 2026-08-24
+
+| document | what it covers |
+|---|---|
+| [`ufs-freeze.es.md`](ufs-freeze.es.md) | ★ the freeze is the **storage**, not the modem: a reader/writer deadlock in the UFS driver, and how it was caught |
+| [`watchdog.es.md`](watchdog.es.md) | a hardware watchdog that demands the phone **works**, not just that PID 1 lives. ⚠️ it cannot be handed over at runtime — only at boot |
+| [`camss.es.md`](camss.es.md) | everything about `qcom_camss` in one place, now including **who loads the sensors** and why PipeWire has to be told |
