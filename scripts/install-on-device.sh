@@ -41,12 +41,13 @@ ssh "$HOST" 'set -e
   mkdir -p ~/.local/bin ~/.config/systemd/user
   install -m755 /tmp/armar-audio-usuario.sh /tmp/llamada-al-bluetooth.sh ~/.local/bin/
   install -m644 /tmp/armar-audio-usuario.service /tmp/llamada-al-bluetooth.service \
-                /tmp/goa-keyring-fix.service ~/.config/systemd/user/
-  sudo install -m755 /tmp/armar-audio-sistema.sh /usr/local/bin/
+                /tmp/hfp-registrado.service /tmp/goa-keyring-fix.service \
+                ~/.config/systemd/user/
+  sudo install -m755 /tmp/armar-audio-sistema.sh /tmp/hfp-registrado.sh /usr/local/bin/
   sudo install -m644 /tmp/armar-audio.service /tmp/gnss-engine-unlock.service \
                      /etc/systemd/system/
   systemctl --user daemon-reload
-  systemctl --user enable armar-audio-usuario llamada-al-bluetooth goa-keyring-fix
+  systemctl --user enable armar-audio-usuario llamada-al-bluetooth hfp-registrado goa-keyring-fix
   sudo systemctl daemon-reload
   sudo systemctl enable armar-audio gnss-engine-unlock'
 

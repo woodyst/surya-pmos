@@ -12,6 +12,15 @@
 #
 # ⚠️⚠️ NUNCA con una llamada en curso: reiniciar wireplumber la deja sin audio.
 #    Si hay llamada, no se hace nada -- ya se hara al siguiente arranque.
+#
+# ⚠️⚠️ ESTE REINICIO TIENE UN EFECTO COLATERAL: el backend nativo de HFP solo
+#    puede tenerlo UNA instancia de wireplumber (socket RFCOMM + los UUID
+#    0000111e/0000111f en BlueZ). Cada reinicio vuelve a echar esa carrera, y si
+#    la gana una instancia que luego muere, NADIE sirve el HFP: el casco conecta
+#    solo en A2DP y TODA llamada por casco sale MUDA el arranque entero.
+#    Por eso existe hfp-registrado.service, que comprueba el pid vivo 90 s
+#    despues y reinicia una vez si hace falta. Si tocas los tiempos de aqui,
+#    mira aquel. Historia: bluetooth-call/HFP-REGISTRO-PERDIDO.md
 set -u
 sleep 5
 

@@ -63,11 +63,15 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 - **Image quality is uncalibrated**: the software ISP has no tuning file for this sensor, so photos
   look washed out with dark corners.
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
-- Bluetooth: returning to the headset mid-call stays silent, and consecutive calls degrade until
-  Bluetooth is power-cycled. **Muting the microphone does not work on a headset either**: the mic
-  is the headset's, it comes in over SLIMBus and no gain control is exposed on that path. Giving
-  the profile a source so the button had something to act on left the call with **no audio at
-  all**, so it was reverted. Workaround: switch to speaker and mute there.
+- Bluetooth: **three causes of mute headset calls were found and fixed** on 2026-08-24/25 — a
+  race for the HFP profile registration that only one WirePlumber instance can win, an SCO
+  handshake that gave up one second too early, and the fact that eSCO is negotiated on the
+  *profile transition*, not by sitting in the profile. See
+  [`docs/hfp-race.es.md`](docs/hfp-race.es.md). What is still open is that consecutive calls
+  degrade until Bluetooth is power-cycled. **Muting the microphone does not work on a headset
+  either**: the mic is the headset's, it comes in over SLIMBus and no gain control is exposed on
+  that path. Giving the profile a source so the button had something to act on left the call with
+  **no audio at all**, so it was reverted. Workaround: switch to speaker and mute there.
 - **No A-GPS assistance.** Galileo and BeiDou now *do* reach applications (see above), but there
   is still no assistance data, so a cold fix takes its time. See
   [`packages/libqmi`](packages/libqmi) and [`tools/qmi-loc-idl`](tools/qmi-loc-idl).

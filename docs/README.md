@@ -51,3 +51,11 @@ A few of these cost days, and none of them are specific to a POCO X3:
 | [`ufs-freeze.es.md`](ufs-freeze.es.md) | ★ the freeze is the **storage**, not the modem: a reader/writer deadlock in the UFS driver, and how it was caught |
 | [`watchdog.es.md`](watchdog.es.md) | a hardware watchdog that demands the phone **works**, not just that PID 1 lives. ⚠️ it cannot be handed over at runtime — only at boot |
 | [`camss.es.md`](camss.es.md) | everything about `qcom_camss` in one place, now including **who loads the sensors** and why PipeWire has to be told |
+
+## Added 2026-08-25
+
+| document | what it covers |
+|---|---|
+| [`hfp-race.es.md`](hfp-race.es.md) | ★ **Bluetooth calls that come out mute** — three distinct causes with one symptom: a race for the HFP profile registration that only one WirePlumber instance can win; an SCO handshake that gave up one second too early; and the fact that **eSCO is negotiated on the profile transition, not by sitting in the profile**. Not specific to this phone: the registration race can happen anywhere WirePlumber restarts more than once during boot |
+
+⚠️ In Spanish, no English version yet.
