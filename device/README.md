@@ -54,6 +54,7 @@ Where: the `.conf` files in `~/.config/wireplumber/wireplumber.conf.d/`, and the
 | `armar-audio.service` + `armar-audio-sistema.sh` | system | Loads the audio and Bluetooth chain in the right order after boot |
 | `armar-audio-usuario.service` + `armar-audio-usuario.sh` | user | Arms PipeWire and the call daemons afterwards |
 | `llamada-al-bluetooth.service` + `.sh` | user | Holds the SCO link up during a call with a headset. Waits until the call is actually *routed* to the headset before reaching for the link, and retries for 25 s — see [`hfp-race.es.md`](../docs/hfp-race.es.md) |
+| `aviso-bt-caido.service` + `.sh` | user | Watches the kernel log and warns when the Bluetooth controller is wedged: reboot, and **do not touch Bluetooth** — every reconnect attempt against a dead controller has hung or reset this phone. ⚠️ It never queries the adapter; that hangs too. See [`bt-chip-wedged.es.md`](../docs/bt-chip-wedged.es.md) |
 | `hfp-registrado.service` + `.sh` | user | Watches that the **live** WirePlumber is the one holding the HFP profile registration, and restarts it if it lost the boot race. Without this, every headset call can come out mute for a whole boot — and rebooting does not fix it |
 | `gnss-engine-unlock.service` | system | The GNSS engine ships **locked in NV**; Android unlocks it on every boot, this does the same |
 | `goa-keyring-fix.service` | user | `goa-daemon` starts before the keyring and never recovers; this restarts it |

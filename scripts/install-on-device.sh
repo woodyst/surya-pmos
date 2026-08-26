@@ -35,19 +35,31 @@ ssh "$HOST" 'sudo install -Dm644 /tmp/73-surya-vibra.rules /etc/udev/rules.d/73-
              sudo udevadm control --reload-rules && sudo udevadm trigger -s input
              pkill -x feedbackd || true'
 
+say "pstore writable by the user (so the warning survives a reboot)"
+# /dev/pmsg0 is pstore's userspace channel: what is written there reappears in
+# /var/lib/systemd/pstore/pmsg-ramoops-0 after a reboot. It ships root:root, so a
+# user service cannot leave a trace that outlives a crash -- which is exactly when
+# it matters. aviso-bt-caido needs it.
+scp -q "$HERE"/device/power/99-pmsg-escribible.rules "$HOST":/tmp/
+ssh "$HOST" 'sudo install -Dm644 /tmp/99-pmsg-escribible.rules /etc/udev/rules.d/99-pmsg-escribible.rules
+             sudo udevadm control --reload && sudo udevadm trigger --name-match=pmsg0'
+
 say "services"
 scp -q "$HERE"/device/services/* "$HOST":/tmp/
 ssh "$HOST" 'set -e
   mkdir -p ~/.local/bin ~/.config/systemd/user
   install -m755 /tmp/armar-audio-usuario.sh /tmp/llamada-al-bluetooth.sh ~/.local/bin/
   install -m644 /tmp/armar-audio-usuario.service /tmp/llamada-al-bluetooth.service \
-                /tmp/hfp-registrado.service /tmp/goa-keyring-fix.service \
+                /tmp/hfp-registrado.service /tmp/aviso-bt-caido.service \
+                /tmp/goa-keyring-fix.service \
                 ~/.config/systemd/user/
-  sudo install -m755 /tmp/armar-audio-sistema.sh /tmp/hfp-registrado.sh /usr/local/bin/
+  sudo install -m755 /tmp/armar-audio-sistema.sh /tmp/hfp-registrado.sh \
+                     /tmp/aviso-bt-caido.sh /usr/local/bin/
   sudo install -m644 /tmp/armar-audio.service /tmp/gnss-engine-unlock.service \
                      /etc/systemd/system/
   systemctl --user daemon-reload
-  systemctl --user enable armar-audio-usuario llamada-al-bluetooth hfp-registrado goa-keyring-fix
+  systemctl --user enable armar-audio-usuario llamada-al-bluetooth hfp-registrado \
+                          aviso-bt-caido goa-keyring-fix
   sudo systemctl daemon-reload
   sudo systemctl enable armar-audio gnss-engine-unlock'
 

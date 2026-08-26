@@ -1,0 +1,78 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Wed, 26 Aug 2026 12:00:00 +0200
+Subject: [PATCH] Bluetooth: hci_qca: let the rails fall before retrying a power
+ on
+
+When the controller crashes -- which this driver does on purpose, sending a
+crash buffer to collect a memory dump -- qca_setup() retries the power-on up
+to MAX_INIT_RETRIES times. Each retry calls qca_power_off(), closes and
+reopens the serdev, and powers the chip back on.
+
+On WCN399x boards that have no bt_en GPIO, the whole of qca_power_off() is a
+power pulse plus qca_regulator_disable(). The regulators going away are the
+*only* thing that resets the controller. And the retry re-enabled them
+immediately: microseconds later, with the rails still charged. From the
+controller's point of view that is not a power cycle at all.
+
+Measured on a Xiaomi POCO X3 NFC (sm7150, WCN3990), three separate incidents:
+after the forced crash the chip never came back, with the same sequence every
+time --
+
+  Bluetooth: hci0: setting up wcn399x
+  Bluetooth: hci0: Frame reassembly failed (-84)
+  Bluetooth: hci0: Reading QCA version information failed (-110)
+  Bluetooth: hci0: Retry BT power ON:0
+  ... :1, :2, and then
+  Bluetooth: hci0: Opcode 0x0c03 failed: -110
+
+The adapter stayed dead until the machine was rebooted. Worse, on this phone
+touching Bluetooth afterwards -- a reconnect attempt from the desktop, or an
+rfkill block -- hung or reset the whole machine, so a dead controller was not
+merely a missing adapter.
+
+Give the rails 250 ms to discharge before retrying. It only affects the
+failure path, which already spends about ten seconds per attempt timing out,
+so the added delay is not measurable next to it.
+
+Note this is not a fix for the crash itself, only for the recovery from it:
+the controller should come back after being deliberately crashed, and now it
+gets a real power cycle in which to do so.
+---
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -52,6 +52,13 @@
+ #define IBS_HOST_TX_IDLE_TIMEOUT_MS	2000
+ #define CMD_TRANS_TIMEOUT_MS		100
+ #define MEMDUMP_TIMEOUT_MS		8000
++/* Time to let the SoC rails actually discharge before powering it back on.
++ * On boards where the WCN399x has no bt_en GPIO -- its only reset is the
++ * regulators going away -- the retry path toggled them back on within
++ * microseconds, which is not a power cycle from the controller's point of
++ * view.
++ */
++#define POWER_OFF_SETTLE_MS		250
+ #define IBS_DISABLE_SSR_TIMEOUT_MS \
+ 	(MEMDUMP_TIMEOUT_MS + FW_DOWNLOAD_TIMEOUT_MS)
+ #define FW_DOWNLOAD_TIMEOUT_MS		3000
+@@ -2106,6 +2113,21 @@
+ 
+ 		if (retries < MAX_INIT_RETRIES) {
+ 			bt_dev_warn(hdev, "Retry BT power ON:%d", retries);
++
++			/* qca_power_off() just dropped the regulators and
++			 * returned; on WCN399x boards without a bt_en GPIO
++			 * that is the *only* way the controller is reset, and
++			 * we were re-enabling them immediately. Give the rails
++			 * time to fall so the retry starts from a controller
++			 * that really did power down. Without this, every
++			 * retry after a controller crash came back with
++			 * "Frame reassembly failed (-84)" and then -110 on
++			 * every read of the version information -- the chip
++			 * never returned, and the adapter stayed dead until
++			 * the machine was rebooted.
++			 */
++			msleep(POWER_OFF_SETTLE_MS);
++
+ 			if (hu->serdev) {
+ 				serdev_device_close(hu->serdev);
+ 				ret = serdev_device_open(hu->serdev);

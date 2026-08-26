@@ -1,0 +1,10 @@
+# /dev/pmsg0 es el canal de pstore para el ESPACIO DE USUARIO: lo que se escribe
+# ahi sobrevive al reinicio y reaparece en /var/lib/systemd/pstore/pmsg-ramoops-0.
+#
+# De serie es root:root, asi que un servicio de usuario no puede dejar rastro que
+# sobreviva a un cuelgue -- y es justo cuando mas falta hace. `aviso-bt-caido`
+# lo necesita para que, tras una muerte subita, se sepa si al usuario se le habia
+# avisado de que el Bluetooth estaba encallado.
+#
+# Se abre al grupo `wheel` (el del usuario del movil), no a todo el mundo.
+KERNEL=="pmsg0", GROUP="wheel", MODE="0660"

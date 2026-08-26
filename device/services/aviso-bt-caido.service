@@ -1,0 +1,16 @@
+[Unit]
+Description=Avisar cuando el chip Bluetooth se queda encallado
+Documentation=https://github.com/woodyst/surya-pmos
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+# Solo lee el diario del kernel. ⚠️ NUNCA consultar el adaptador: con el chip
+# encallado, hciconfig y compania SE CUELGAN (y colgaron el movil el 2026-08-26).
+Type=simple
+ExecStart=/usr/local/bin/aviso-bt-caido.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=graphical-session.target

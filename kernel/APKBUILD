@@ -4,7 +4,7 @@ maintainer="Danila Tikhonov <danila@jiaxyga.com>"
 _flavor="postmarketos-qcom-sm7150"
 pkgname=linux-$_flavor
 pkgver=7.1_rc3
-pkgrel=78
+pkgrel=79
 pkgdesc="Mainline Kernel fork for SM7150 devices"
 arch="aarch64"
 _carch="arm64"
@@ -160,6 +160,7 @@ source="
 	0124-media-dw9807-vcm-dont-disable-the-regulator-twice-on-system-suspend.patch
 	0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
 	0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
+	0127-Bluetooth-hci_qca-let-the-rails-fall-before-retrying-a-power-on.patch
 "
 builddir="$srcdir/linux-$_tag"
 
@@ -196,7 +197,7 @@ package() {
 
 sha512sums="
 bb837959e337c66ff374d8f3aac6593723c4f4eb69fb18f9ff25c5c096c6656fd71149e105255c0f97c83e0bf547b0b0e94ca23eabde7b5f88308e9ecd784e3d  linux-postmarketos-qcom-sm7150-v7.1_rc3.tar.gz
-2704dca4fdb2cf6e0657835f2bf5ea6ebe7231bb642242fe5791e1b5fd8d6e15c81f4e702c54cc4a1a4e6d0f607701256b5e4346d6a2aa4c6466eb0c5335f80d  config-postmarketos-qcom-sm7150.aarch64
+e388cc4a1f474cd8d2df66d61365edd72378d0ba87800923ffeed8c3d0b2ae753db253df8fc16869ed83c0a8cb3221e9b06fe3b817ceee6b8386d75f31121f89  config-postmarketos-qcom-sm7150.aarch64
 78f0c13f84a10aad84cce37a08d851ef13c4cdd10f1db0f1447d295db48e49a1310d57dc1beb862099c9c6c3096a177d5c02aaca8b48b800dac5babc96c815b3  0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
 93bb7e4dce5131240dffc73fa63c94e9f9c2cdbcb9f9cb36b94f61e603dae3d2f933b3c6da36285b21dbafe0f95b4080af51ed0bf8988d2a711cbdc9ca57ca16  0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
 d66b9f6f8cd6b8c6c168313471f10a86f050e634557b236a330b2c860f33efc9c5b01da42576819537008daac37a1fbcab5ccc0e80b3eb2bc2e0da815d104226  0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
@@ -323,4 +324,5 @@ c50c81082017f26a6a2ee707657d9385b57dddbf9a58ae8e12e24e4f6f28d04d74c986b627f2a7b0
 2766b0642582b7616656ee00a4853a545ac7fe2cc69dc50b87460fc69157c24be23e7d9cfa69aadab8b94b7fe0beb6e16965053dbcadb68c2d4e73d3d8cdcea1  0124-media-dw9807-vcm-dont-disable-the-regulator-twice-on-system-suspend.patch
 cd0dfa645e6dc7d53278a45193dc97505c061524eb9ecfc2a3884d11db3d3f0ad6b6723b0105a9ebdfe201cd9ce621885518075abdd6fedefe5b9f997a0b3ef8  0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
 c44c07c1f045ef40d5215230380b80c5fcbac72618086022dffaac1da5356ec629f09f689f880a79f4a9c980bc4a62d69ff6ecd9d88a73cf62b00be3d792e0a1  0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
+3570004ffc928f60ea1df8d6701b1770d6f12dab2e1bcca394d7fe089ba4bac74b6b89febc65ad4a82fa235304151c85582bb83eacf94f1361c69da5455241aa  0127-Bluetooth-hci_qca-let-the-rails-fall-before-retrying-a-power-on.patch
 "

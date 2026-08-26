@@ -67,8 +67,14 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
   race for the HFP profile registration that only one WirePlumber instance can win, an SCO
   handshake that gave up one second too early, and the fact that eSCO is negotiated on the
   *profile transition*, not by sitting in the profile. See
-  [`docs/hfp-race.es.md`](docs/hfp-race.es.md). What is still open is that consecutive calls
-  degrade until Bluetooth is power-cycled. **Muting the microphone does not work on a headset
+  [`docs/hfp-race.es.md`](docs/hfp-race.es.md). Since then a **fourth** one, with a different
+  shape: when the link stalls the driver **crashes the controller on purpose** to collect a dump
+  and on this board it never comes back — and what actually kills the phone is touching Bluetooth
+  afterwards. Kernel patch 0127 gives the rails time to discharge before retrying, and a service
+  now warns instead of letting you tap a dead adapter. See
+  [`docs/bt-chip-wedged.es.md`](docs/bt-chip-wedged.es.md), worth a look on **any NMI-less ARM64
+  board** for the part about freezes that leave no trace at all. What is still open is why
+  `rfkill block` hangs the machine over a wedged controller. **Muting the microphone does not work on a headset
   either**: the mic is the headset's, it comes in over SLIMBus and no gain control is exposed on
   that path. Giving the profile a source so the button had something to act on left the call with
   **no audio at all**, so it was reverted. Workaround: switch to speaker and mute there.

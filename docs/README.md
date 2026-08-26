@@ -59,3 +59,13 @@ A few of these cost days, and none of them are specific to a POCO X3:
 | [`hfp-race.es.md`](hfp-race.es.md) | ★ **Bluetooth calls that come out mute** — three distinct causes with one symptom: a race for the HFP profile registration that only one WirePlumber instance can win; an SCO handshake that gave up one second too early; and the fact that **eSCO is negotiated on the profile transition, not by sitting in the profile**. Not specific to this phone: the registration race can happen anywhere WirePlumber restarts more than once during boot |
 
 ⚠️ In Spanish, no English version yet.
+
+## Added 2026-08-26
+
+| document | what it covers |
+|---|---|
+| [`bt-chip-wedged.es.md`](bt-chip-wedged.es.md) | ★ The driver **crashes the Bluetooth controller on purpose** to collect a dump, and on this board it never comes back. What actually kills the machine is touching Bluetooth afterwards. Includes kernel patch 0127 (let the rails discharge before retrying) and — worth reading on any NMI-less ARM64 box — **why freezes here left no trace at all**, and the hardlockup detector that fixes that |
+| [`headset-le-only.es.md`](headset-le-only.es.md) | The headset connects and no card shows up in PipeWire: it attached over **BLE only**, and A2DP/HFP exist solely on BR/EDR. How to tell in two glances, and why the obvious suspect is *not* the cause |
+
+⚠️ In Spanish, no English version yet.
+
