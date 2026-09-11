@@ -1,0 +1,80 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Thu, 27 Aug 2026 12:00:00 +0200
+Subject: [PATCH] net: ipa: bound the wait for a transaction to quiesce
+
+gsi_channel_trans_quiesce() waits for the last underway transaction with
+wait_for_completion(), with no timeout. If the transaction is never going to
+complete -- which is what happens when the modem goes down underneath us --
+that wait never returns, and it is held on the runtime PM suspend path.
+
+The result is a deadlock between the suspend and the device's own interrupt
+thread. Both stacks, captured on a Xiaomi POCO X3 NFC (sm7150) running 7.1:
+
+  kworker/u32:5           irq/172-ipa
+  (Workqueue: pm pm_runtime_work)
+   ipa_runtime_suspend     ipa_isr_thread
+    ipa_endpoint_suspend    __pm_runtime_resume
+     ipa_modem_suspend       rpm_resume
+      gsi_channel_suspend     schedule        <- blocked
+       __gsi_channel_stop
+        gsi_channel_trans_quiesce
+         wait_for_completion  <- never returns
+
+The suspend waits for a completion that can only be delivered by processing
+the channel; the interrupt thread that would do that is blocked waiting for
+the in-flight runtime PM transition to finish. Neither side yields.
+
+With hung_task_panic enabled this shows up as:
+
+  INFO: task kworker/u32:5:100 blocked for more than 122 seconds.
+  INFO: task irq/172-ipa:874 blocked for more than 123 seconds.
+  Kernel panic - not syncing: hung_task: blocked tasks
+
+and, because the trigger persists while the modem stays down, as a reboot
+loop: the machine came back, tried to suspend IPA again, and panicked again
+about two minutes later, over and over, until the network returned.
+
+Give the wait a bound. A transaction that is making progress completes in
+milliseconds, so two seconds is generous; past that the far end is not going
+to answer. On timeout we log and carry on to gsi_channel_stop_retry(), which
+already knows how to report failure to stop a channel, so an eternal hang
+becomes a recoverable error.
+
+The reference taken by gsi_channel_trans_last() is dropped either way.
+Transactions are refcounted, so releasing ours is safe even if hardware
+completes the transaction afterwards.
+---
+--- a/drivers/net/ipa/gsi.c
++++ b/drivers/net/ipa/gsi.c
+@@ -807,6 +807,13 @@
+ }
+ 
+ /* Wait for transaction activity on a channel to complete */
++/* How long to wait for an underway transaction to complete before giving up.
++ * A transaction that is making progress completes in milliseconds; anything
++ * beyond this means the far end is not going to answer -- typically because
++ * the modem went down underneath us.
++ */
++#define TRANS_QUIESCE_TIMEOUT_MS	2000
++
+ static void gsi_channel_trans_quiesce(struct gsi_channel *channel)
+ {
+ 	struct gsi_trans *trans;
+@@ -814,7 +821,16 @@
+ 	/* Get the last transaction, and wait for it to complete */
+ 	trans = gsi_channel_trans_last(channel);
+ 	if (trans) {
+-		wait_for_completion(&trans->completion);
++		if (!wait_for_completion_timeout(&trans->completion,
++						 msecs_to_jiffies(TRANS_QUIESCE_TIMEOUT_MS)))
++			dev_err(channel->gsi->dev,
++				"channel %u: timed out waiting for transaction to complete\n",
++				gsi_channel_id(channel));
++
++		/* Drop our reference either way; the transaction is
++		 * refcounted, so releasing it here is safe even if hardware
++		 * completes it later.
++		 */
+ 		gsi_trans_free(trans);
+ 	}
+ }

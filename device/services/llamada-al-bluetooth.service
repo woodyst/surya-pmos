@@ -1,12 +1,20 @@
 [Unit]
-Description=Sostiene el enlace SCO mientras hay llamada con auricular Bluetooth
-After=pipewire.service wireplumber.service
+Description=Supervisor de la cadena de llamada por casco Bluetooth (monta, vigila, desmonta y avisa)
+Documentation=https://github.com/woodyst/surya-pmos
+After=pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/llamada-al-bluetooth.sh
+# Hasta el 2026-09-10 esta unidad arrancaba llamada-al-bluetooth.sh
+# (ahora en bluetooth-call/historico/). Se conserva el NOMBRE de la unidad
+# porque armar-audio-usuario.sh la reinicia al final del arranque del audio.
+ExecStart=/usr/bin/python3 -u %h/.local/bin/supervisor-llamada-bt.py
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# actuar | observar (observar: solo anota lo que haria, no toca nada)
+Environment=SUPERVISOR_MODO=actuar
 Restart=always
 RestartSec=5
+SyslogIdentifier=supervisor-llamada-bt
 
 [Install]
 WantedBy=default.target

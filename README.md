@@ -17,10 +17,10 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 
 | | |
 |---|---|
-| **Calls** | Outgoing and incoming, **audio both ways**, earpiece ⇄ speaker switching with independent volume |
+| **Calls** | Outgoing and incoming, **audio both ways**, earpiece ⇄ speaker ⇄ Bluetooth headset switching mid-call, with independent volume. **Stable** — only echo cancellation is missing (see below) |
 | **Mobile data / SMS** | LTE, data and SMS |
 | **Audio** | Stereo speakers with correct L/R, earpiece, headset, per-amplifier trim |
-| **Bluetooth** | A2DP music, automatic switching, **calls through a headset** with SCO offloaded to the chip |
+| **Bluetooth** | A2DP music, automatic switching, **calls through a headset** with SCO offloaded to the chip, **including moving the call to the speaker and back** (kernel patch 0130 — see [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)) |
 | **Rear camera** | Photos and video, correct orientation, **working autofocus** |
 | **Sensors** | Accelerometer, light, proximity and magnetometer |
 | **GPS** | The engine ships locked in NV from the factory; unlocked persistently here |
@@ -31,10 +31,15 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 | **Battery gauge** | The percentage used to be voltage on a straight line and was **19 points off** near empty; now IR-compensated against a measured OCV table |
 | **GNSS constellations** | **Galileo and BeiDou reach applications**: ModemManager synthesises the NMEA the modem never emits |
 | **Muting a call** | The mute button in the dialer actually mutes — on earpiece and speaker |
-| **Remote screen** | VNC into the running phone (patched ) |
+| **Remote screen** | VNC into the running phone (patched wayvnc) |
+| **Stability** | The phone **no longer hangs or reboots on its own**. The storage freeze is mitigated by disabling UFS clock scaling, and kernel patch 0128 bounds an IPA wait that could deadlock suspend forever. If something does go wrong it recovers by itself and leaves a full dump — see [`docs/watchdog.es.md`](docs/watchdog.es.md) and [`docs/ufs-freeze.es.md`](docs/ufs-freeze.es.md) |
 
 ## What does not work
 
+- **Echo cancellation in calls.** On the earpiece or the speaker, the other side hears themselves.
+  The DSP's echo canceller (`TX_SM_ECNS`) outputs pure silence without its ACDB calibration, which
+  mainline cannot load, so the uplink topology is passthrough (patch 0057). Bluetooth headsets
+  usually cancel echo themselves. Calls are otherwise stable.
 - **Front camera.** The sensor reports that it is streaming and the receiver is configured to
   match, yet not a single packet arrives. Several hypotheses have been closed with measurements
   (it is D-PHY, not C-PHY; lane count, lane assignment and mux polarity all match the factory
@@ -42,24 +47,6 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
   all**, not even the rear one.
 - **Vibration is weak**, even at maximum. The actuator is a linear motor and only performs at its
   resonant frequency; the driver may not calibrate it.
-- **The phone hangs or reboots on its own.** These turned out to be **two different faults**,
-  and telling them apart took a while:
-  - **The freeze** is the storage: a deadlock between `ufshcd_exception_event_handler` — which
-    waits on a device query holding the rwsem as a **reader** — and `ufshcd_devfreq_scale`, which
-    wants it as a **writer**. Since the rootfs lives on UFS, everything that touches disk stops
-    while the kernel stays **alive and idle**. **Mitigated** by disabling UFS clock scaling
-    (`device/power/99-ufs-sin-escalado.rules`); the query still never returns.
-  - **The panic** is IPA: `gsi_channel_trans_quiesce()` waits with **no timeout** for the modem's
-    last GSI transaction (`drivers/net/ipa/gsi.c`). `irq/172-ipa`, which shows up in every
-    signature, is a **victim**. ⛔ **Four different reproduction attempts, none of them work** —
-    with a dead network the modem applies **backpressure** rather than stalling, so filling the
-    queue is not enough.
-
-  Either way the phone now **recovers by itself and leaves a full dump**: three panic detectors,
-  all-CPU backtraces, and a **watchdog that demands the phone actually works** rather than just
-  that PID 1 is breathing. See [`docs/watchdog.es.md`](docs/watchdog.es.md) and
-  [`docs/ufs-freeze.es.md`](docs/ufs-freeze.es.md).
-
 - **Image quality is uncalibrated**: the software ISP has no tuning file for this sensor, so photos
   look washed out with dark corners.
 - **Zoom**: the sensor driver exposes a single mode; the factory firmware has five.
@@ -73,7 +60,10 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
   afterwards. Kernel patch 0127 gives the rails time to discharge before retrying, and a service
   now warns instead of letting you tap a dead adapter. See
   [`docs/bt-chip-wedged.es.md`](docs/bt-chip-wedged.es.md), worth a look on **any NMI-less ARM64
-  board** for the part about freezes that leave no trace at all. What is still open is why
+  board** for the part about freezes that leave no trace at all. **Moving a call from the speaker
+  back to the headset** used to come back mute both ways; fixed on 2026-09-11 — the SLIMbus
+  controller never told the DSP to remove the channels (kernel patch 0130, see
+  [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)). What is still open is why
   `rfkill block` hangs the machine over a wedged controller. **Muting the microphone does not work on a headset
   either**: the mic is the headset's, it comes in over SLIMBus and no gain control is exposed on
   that path. Giving the profile a source so the button had something to act on left the call with
@@ -89,7 +79,6 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 
 - [`pmbootstrap`](https://wiki.postmarketos.org/wiki/Pmbootstrap) with a `pmaports` checkout.
 - A POCO X3 NFC (`surya`) with an unlocked bootloader.
-- Patience with a device that reboots itself occasionally.
 
 ## Building an image
 
@@ -100,7 +89,7 @@ usual:
 git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
-# 1. Kernel: 115 patches, the recipe and the config
+# 1. Kernel: 130 patches, the recipe and the config
 PMAPORTS=$(pmbootstrap config aports)
 cp kernel/*.patch kernel/APKBUILD kernel/config-* \
    "$PMAPORTS/device/testing/linux-postmarketos-qcom-sm7150/"

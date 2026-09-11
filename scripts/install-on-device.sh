@@ -20,10 +20,21 @@ ssh "$HOST" 'sudo mv /tmp/POCO-X3.conf /tmp/HiFi.conf /tmp/VoiceCall.conf \
 
 say "wireplumber (Bluetooth calls)"
 ssh "$HOST" 'mkdir -p ~/.config/wireplumber/wireplumber.conf.d \
-                      ~/.local/share/wireplumber/scripts/device'
+                      ~/.local/share/wireplumber/scripts/device \
+                      ~/.local/share/wireplumber/scripts/node'
 scp -q "$HERE"/device/wireplumber/*.conf "$HOST":'~/.config/wireplumber/wireplumber.conf.d/'
 # The Lua files MUST go here: anywhere else and wireplumber refuses to start.
 scp -q "$HERE"/device/wireplumber/*.lua "$HOST":'~/.local/share/wireplumber/scripts/device/'
+scp -q "$HERE"/device/wireplumber/node/*.lua "$HOST":'~/.local/share/wireplumber/scripts/node/'
+
+say "kernel module options (SLIMbus channel removal, voice session)"
+# slimbus.conf turns on patch 0130: without it, moving a call from the speaker back to a
+# Bluetooth headset leaves it mute both ways. The SLIMbus controller is loaded by
+# armar-audio-sistema.sh with `modprobe --ignore-install`, which does read `options`.
+scp -q "$HERE"/device/modprobe/*.conf "$HOST":/tmp/
+ssh "$HOST" 'sudo install -m644 /tmp/slimbus.conf /tmp/q6voice.conf /etc/modprobe.d/
+             P=/sys/module/slim_qcom_ngd_ctrl/parameters/remove_channels
+             [ -f $P ] && echo Y | sudo tee $P >/dev/null || true'
 
 say "notifications (sound and vibration)"
 scp -q "$HERE"/device/notifications/73-surya-vibra.rules "$HOST":/tmp/
@@ -48,7 +59,8 @@ say "services"
 scp -q "$HERE"/device/services/* "$HOST":/tmp/
 ssh "$HOST" 'set -e
   mkdir -p ~/.local/bin ~/.config/systemd/user
-  install -m755 /tmp/armar-audio-usuario.sh /tmp/llamada-al-bluetooth.sh ~/.local/bin/
+  # the headset call supervisor (needs py3-gobject3); its unit keeps the old name
+  install -m755 /tmp/armar-audio-usuario.sh /tmp/supervisor-llamada-bt.py ~/.local/bin/
   install -m644 /tmp/armar-audio-usuario.service /tmp/llamada-al-bluetooth.service \
                 /tmp/hfp-registrado.service /tmp/aviso-bt-caido.service \
                 /tmp/goa-keyring-fix.service \

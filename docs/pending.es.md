@@ -2,6 +2,12 @@
      regenerada desde git). Equivalencias en kernel/EQUIVALENCIAS.md -->
 # PENDIENTES / roadmap — surya (POCO X3 NFC, SM7150)
 
+> **Al 2026-09-11:** las **llamadas ya son estables** —auricular, altavoz y casco Bluetooth, también
+> cambiando de salida a mitad de llamada ([`bt-return-to-headset.es.md`](bt-return-to-headset.es.md))—
+> y **solo les falta la cancelación de eco**. Queda también la **cámara frontal**. El móvil **ya no
+> se cuelga ni se reinicia solo** ([`ufs-freeze.es.md`](ufs-freeze.es.md), parche 0128). Lo que
+> sigue en este documento es anterior y se conserva como registro.
+
 Prioridad fijada por el usuario (2026-07-16): **0) TERMINAR TELEFONÍA (micro + audio de
 llamada) — ✅ HECHO (2026-07-18) · 1) Cámara · 2) Sensores que faltan · 3) Carga rápida Xiaomi**.
 Huella = posible en el futuro. Descartados por hardware: carga inalámbrica (sin bobina

@@ -4,7 +4,7 @@ maintainer="Danila Tikhonov <danila@jiaxyga.com>"
 _flavor="postmarketos-qcom-sm7150"
 pkgname=linux-$_flavor
 pkgver=7.1_rc3
-pkgrel=79
+pkgrel=82
 pkgdesc="Mainline Kernel fork for SM7150 devices"
 arch="aarch64"
 _carch="arm64"
@@ -161,6 +161,9 @@ source="
 	0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
 	0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
 	0127-Bluetooth-hci_qca-let-the-rails-fall-before-retrying-a-power-on.patch
+	0128-net-ipa-bound-the-wait-for-a-transaction-to-quiesce.patch
+	0129-ASoC-qdsp6-q6voice-rebuild-the-whole-voice-session-on-a-device-move.patch
+	0130-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-from-the-manager.patch
 "
 builddir="$srcdir/linux-$_tag"
 
@@ -197,7 +200,7 @@ package() {
 
 sha512sums="
 bb837959e337c66ff374d8f3aac6593723c4f4eb69fb18f9ff25c5c096c6656fd71149e105255c0f97c83e0bf547b0b0e94ca23eabde7b5f88308e9ecd784e3d  linux-postmarketos-qcom-sm7150-v7.1_rc3.tar.gz
-e388cc4a1f474cd8d2df66d61365edd72378d0ba87800923ffeed8c3d0b2ae753db253df8fc16869ed83c0a8cb3221e9b06fe3b817ceee6b8386d75f31121f89  config-postmarketos-qcom-sm7150.aarch64
+3e3e74278d6028a5efb6f6fe2d480fcf6d5461deff8da9087deb7c4122838ee0c04fcd9674f65b51745303c2b18c5ace16a4c9d7ed16f89c38b88c9cb5577d48  config-postmarketos-qcom-sm7150.aarch64
 78f0c13f84a10aad84cce37a08d851ef13c4cdd10f1db0f1447d295db48e49a1310d57dc1beb862099c9c6c3096a177d5c02aaca8b48b800dac5babc96c815b3  0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
 93bb7e4dce5131240dffc73fa63c94e9f9c2cdbcb9f9cb36b94f61e603dae3d2f933b3c6da36285b21dbafe0f95b4080af51ed0bf8988d2a711cbdc9ca57ca16  0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
 d66b9f6f8cd6b8c6c168313471f10a86f050e634557b236a330b2c860f33efc9c5b01da42576819537008daac37a1fbcab5ccc0e80b3eb2bc2e0da815d104226  0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
@@ -325,4 +328,7 @@ c50c81082017f26a6a2ee707657d9385b57dddbf9a58ae8e12e24e4f6f28d04d74c986b627f2a7b0
 cd0dfa645e6dc7d53278a45193dc97505c061524eb9ecfc2a3884d11db3d3f0ad6b6723b0105a9ebdfe201cd9ce621885518075abdd6fedefe5b9f997a0b3ef8  0125-power-supply-qcom_qg-undo-the-IR-drop-before-the-OCV-lookup.patch
 c44c07c1f045ef40d5215230380b80c5fcbac72618086022dffaac1da5356ec629f09f689f880a79f4a9c980bc4a62d69ff6ecd9d88a73cf62b00be3d792e0a1  0126-arm64-dts-qcom-sm7150-xiaomi-surya-add-a-measured-OCV-capacity-table.patch
 3570004ffc928f60ea1df8d6701b1770d6f12dab2e1bcca394d7fe089ba4bac74b6b89febc65ad4a82fa235304151c85582bb83eacf94f1361c69da5455241aa  0127-Bluetooth-hci_qca-let-the-rails-fall-before-retrying-a-power-on.patch
+7b7732d0897783034c61cee9751e1541cc3e4492a7b0e882941f862c34cc147200e5b0a072aa66d559a6c9204348d643cfa70a512cbde0d27f6e82f7cb72c34a  0128-net-ipa-bound-the-wait-for-a-transaction-to-quiesce.patch
+0c47132e9dc708cd30db350d7c8bb1ebe8b5105bbd158c04baa11f3d5779251d7be34fb69dc372dd3c569e18cf14cb3122df91f736dd8f97073822f0ee0a02c8  0129-ASoC-qdsp6-q6voice-rebuild-the-whole-voice-session-on-a-device-move.patch
+a40f47eb5733add28dd69c2ec6891a64fd0c3099b3936179886faa7cd153ef64dad8a23f56bf15cee2a7466acaf0d4602a70a0ba8ccab41e149dc199cf22d542  0130-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-from-the-manager.patch
 "

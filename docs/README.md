@@ -69,3 +69,11 @@ A few of these cost days, and none of them are specific to a POCO X3:
 
 ⚠️ In Spanish, no English version yet.
 
+
+## Added 2026-09-11
+
+| document | what it covers |
+|---|---|
+| [`bt-return-to-headset.es.md`](bt-return-to-headset.es.md) | ★ **Moving a call from the speaker back to a Bluetooth headset came back mute both ways.** The SLIMbus satellite controller (`qcom-ngd-ctrl`) drops the channel-removal messages, so the DSP's bus manager never learns the channels are gone and, inside a call, the DSP↔chip link stays dead. Kernel patch 0130 removes them the way the vendor kernel does. Not specific to this phone: any Qualcomm board with `qcom-ngd-ctrl`. Also how it was narrowed down with a two-phone test bench, and the new event-driven headset call supervisor |
+
+⚠️ In Spanish, no English version yet.

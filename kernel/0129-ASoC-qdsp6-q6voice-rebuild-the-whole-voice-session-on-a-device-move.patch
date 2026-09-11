@@ -1,0 +1,217 @@
+From d2e8e48da7f671b9155dbec9c0512238a8ea2d50 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Thu, 10 Sep 2026 16:14:39 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: rebuild the whole voice session on a
+ device move, and survive a failed one
+
+Two problems in moving a running call to another device.
+
+A failed move could crash the kernel. When the vocproc rebuild fails -
+seen on a Xiaomi POCO X3 NFC (sm7150) right after the ADSP crashed in the
+middle of a switch - the path is left without a vocproc. The call is still
+torn down later, when userspace closes the voice PCM, and
+q6voice_path_stop() handed that NULL vocproc to q6mvm_attach(), which
+dereferences it:
+
+  Unable to handle kernel NULL pointer dereference at virtual address 0000000000000016
+  pc : q6mvm_attach+0x40/0x80 [q6mvm]
+  lr : q6voice_path_stop+0x50/0xf4 [q6voice]
+   q6voice_stop+0x64/0xd8 [q6voice]
+   q6voice_dai_shutdown+0x30/0xd0 [q6voice_dai]
+
+Skip the commands for whichever session is missing.
+
+And a vocproc-only move is not enough to go back to a Bluetooth headset on
+this phone. The first move onto the headset ports in a call carries audio;
+any later one - after the call went to the speaker and back - comes out
+silent or with the uplink only, with every command acknowledged. That was
+measured over many real calls and did not depend on anything done with the
+SCO link (kept up, dropped, or rebuilt after the move). A call start does
+one thing a move does not: it creates the passive MVM and CVS sessions from
+scratch, not just the vocproc.
+
+Add switch_full_session (default on, writable at run time): a move then
+stops the AP side of the call as its end does, releases the vocproc, CVS
+and MVM, and builds them again with q6voice_path_start() against the new
+ports. The modem keeps its own full-control session throughout, and the
+new passive session pairs with it by name exactly as at call start. The
+unprompted repeat of a move stays a vocproc-only rebuild. A full move is
+also allowed when a previous rebuild left the vocproc missing, which is
+what can bring such a call back.
+
+The "moving call:" message keeps its format and gains the mode at the end.
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 107 +++++++++++++++++++++++++++------
+ 1 file changed, 89 insertions(+), 18 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index dddada656..282b9b0ef 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -25,6 +25,25 @@ static int rx_volume_step = 4;
+ module_param(rx_volume_step, int, 0644);
+ MODULE_PARM_DESC(rx_volume_step, "CVP RX volume step for voice calls");
+ 
++/*
++ * How a call that is already running moves to another device.
++ *
++ * Rebuilding only the vocproc (see q6voice_switch_device()) is what the vendor
++ * driver does, and on this phone it is not enough to go BACK to a Bluetooth
++ * headset: the first move onto the headset ports in a call carries audio, any
++ * later one comes back silent or with the uplink only, with every command
++ * acknowledged. That was measured on real calls, and it did not depend on
++ * what was done with the SCO link. The one thing a call start does that a
++ * move does not is create the whole passive session - MVM, CVS and vocproc -
++ * from scratch. With this set, a move tears the three sessions down and builds
++ * them again against the new ports. Writable, so that both ways can be
++ * compared between calls: /sys/module/q6voice/parameters/switch_full_session
++ */
++static bool switch_full_session = true;
++module_param(switch_full_session, bool, 0644);
++MODULE_PARM_DESC(switch_full_session,
++		 "rebuild MVM, CVS and vocproc (not only the vocproc) when a call changes device");
++
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
+@@ -414,17 +433,30 @@ static void q6voice_path_stop(struct q6voice_path *p)
+ 
+ 	dev_dbg(dev, "stop path %d\n", p->type);
+ 
+-	ret = q6mvm_start(mvm, false);
+-	if (ret)
+-		dev_err(dev, "failed to stop voice: %d\n", ret);
++	/*
++	 * Either session can be missing here: a device move whose rebuild
++	 * failed - the DSP had just crashed underneath it - leaves the path
++	 * without a vocproc, and the call is still torn down later, when
++	 * userspace closes the PCM. q6mvm_attach() dereferencing that NULL
++	 * vocproc was a kernel oops, and with the panic after it a hung phone.
++	 */
++	if (mvm) {
++		ret = q6mvm_start(mvm, false);
++		if (ret)
++			dev_err(dev, "failed to stop voice: %d\n", ret);
++	}
+ 
+-	ret = q6mvm_attach(mvm, cvp, false);
+-	if (ret)
+-		dev_err(dev, "failed to detach cvp from mvm: %d\n", ret);
++	if (mvm && cvp) {
++		ret = q6mvm_attach(mvm, cvp, false);
++		if (ret)
++			dev_err(dev, "failed to detach cvp from mvm: %d\n", ret);
++	}
+ 
+-	ret = q6cvp_enable(cvp, false);
+-	if (ret)
+-		dev_err(dev, "failed to disable cvp: %d\n", ret);
++	if (cvp) {
++		ret = q6cvp_enable(cvp, false);
++		if (ret)
++			dev_err(dev, "failed to disable cvp: %d\n", ret);
++	}
+ }
+ 
+ static void q6voice_path_destroy(struct q6voice_path *p)
+@@ -552,18 +584,35 @@ EXPORT_SYMBOL_GPL(q6voice_get_port);
+  * userspace has no way to guarantee that: wireplumber picks the voice-call
+  * profile *after* the session has started.
+  *
+- * So do what the vendor driver does on a device switch: pause the call, throw
+- * the vocproc away, build a new one against the new ports, and start again.
+- * The MVM and CVS sessions survive untouched, so the call itself is never
+- * torn down - the far end hears a short gap, nothing more.
++ * Two ways to move it, chosen by switch_full_session:
++ *  - vocproc only, what the vendor driver does: pause the call, throw the
++ *    vocproc away, build a new one against the new ports, and start again.
++ *    The MVM and CVS sessions survive untouched.
++ *  - new voice session: tear the AP side of the call down exactly as its end
++ *    does, and build it again exactly as its start does. The modem keeps its
++ *    own full-control session through this, and the AP's passive one pairs
++ *    with it again by name (see q6voice-common.c).
++ * Either way the call itself is never torn down - the far end hears a short
++ * gap, nothing more.
+  */
++static void q6voice_drop_session(struct q6voice_path *p,
++				 enum q6voice_service_type svc)
++{
++	struct q6voice_session *s = p->runtime->sessions[svc];
++
++	if (s) {
++		q6voice_session_release(s);
++		p->runtime->sessions[svc] = NULL;
++	}
++}
++
+ static void q6voice_switch_device(struct work_struct *work)
+ {
+ 	struct q6voice_path *p = container_of(to_delayed_work(work),
+ 					      struct q6voice_path, switch_work);
+ 	struct device *dev = p->v->dev;
+ 	struct q6voice_session *mvm, *cvp;
+-	bool force;
++	bool force, full;
+ 	int ret;
+ 
+ 	mutex_lock(&p->lock);
+@@ -573,22 +622,43 @@ static void q6voice_switch_device(struct work_struct *work)
+ 
+ 	force = p->runtime->rekick;
+ 	p->runtime->rekick = false;
++	/* The unprompted repeat (see below) stays a vocproc-only rebuild. */
++	full = switch_full_session && !force;
+ 
+ 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
+-	if (!cvp || !mvm)
++	/*
++	 * A vocproc-only move needs both sessions. A full one does not, and it
++	 * is also what brings back a call whose previous rebuild failed half way.
++	 */
++	if (!full && (!cvp || !mvm))
+ 		goto out;
+ 
+ 	/* Both ends have to be somewhere real, and somewhere else. */
+ 	if (!p->tx_port || !p->rx_port)
+ 		goto out;
+-	if (p->tx_port == p->runtime->cvp_tx_port &&
++	if (cvp && p->tx_port == p->runtime->cvp_tx_port &&
+ 	    p->rx_port == p->runtime->cvp_rx_port && !force)
+ 		goto out;
+ 
+-	dev_info(dev, "moving call: tx_port %d -> %d, rx_port %d -> %d\n",
++	dev_info(dev, "moving call: tx_port %d -> %d, rx_port %d -> %d (%s)\n",
+ 		 p->runtime->cvp_tx_port, p->tx_port,
+-		 p->runtime->cvp_rx_port, p->rx_port);
++		 p->runtime->cvp_rx_port, p->rx_port,
++		 full ? "new voice session" : "vocproc only");
++
++	if (full) {
++		q6voice_path_stop(p);
++		q6voice_drop_session(p, Q6VOICE_SERVICE_CVP);
++		q6voice_drop_session(p, Q6VOICE_SERVICE_CVS);
++		q6voice_drop_session(p, Q6VOICE_SERVICE_MVM);
++
++		ret = q6voice_path_start(p);
++		if (ret) {
++			dev_err(dev, "failed to rebuild the voice session: %d\n", ret);
++			goto out;
++		}
++		goto rekick;
++	}
+ 
+ 	ret = q6mvm_start(mvm, false);
+ 	if (ret)
+@@ -633,6 +703,7 @@ static void q6voice_switch_device(struct work_struct *work)
+ 	if (ret)
+ 		dev_err(dev, "failed to resume voice after the switch: %d\n", ret);
+ 
++rekick:
+ 	/*
+ 	 * Rekick: repeat this rebuild once, unprompted.
+ 	 *
+-- 
+2.43.0
+

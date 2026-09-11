@@ -18,19 +18,29 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 
 | | |
 |---|---|
-| **Llamadas** | Salientes y entrantes, **con audio en ambos sentidos**, conmutación auricular ⇄ altavoz y volumen propio de cada modo |
+| **Llamadas** | Salientes y entrantes, **con audio en ambos sentidos**, conmutación auricular ⇄ altavoz ⇄ casco Bluetooth a mitad de llamada y volumen propio de cada modo. **Estables**: solo falta la cancelación de eco (ver abajo) |
 | **Datos móviles / SMS** | LTE, datos y SMS |
 | **Audio** | Altavoces estéreo con canales correctos, auricular, cascos, ajuste por amplificador |
-| **Bluetooth** | Música A2DP, conmutación automática y **llamadas por auricular**, con el SCO descargado al chip |
+| **Bluetooth** | Música A2DP, conmutación automática y **llamadas por auricular** con el SCO descargado al chip, **también pasando la llamada al altavoz y volviendo** (parche 0130 — ver [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)) |
 | **Cámara trasera** | Fotos y vídeo, orientación correcta y **autoenfoque funcionando** |
 | **Sensores** | Acelerómetro, luz, proximidad y magnetómetro |
 | **GPS** | El motor viene **bloqueado de fábrica** en la NV; aquí se desbloquea de forma persistente |
 | **USB OTG** | Modo anfitrión, verificado con una cámara web |
 | **Notificaciones** | Sonido **y vibración**, más respuesta háptica al pulsar |
 | **Carga** | La batería carga e informa de su nivel, con la bomba de carga BQ25970 en marcha y el límite de corriente subido |
+| **Autonomía** | El móvil **suspende de verdad**: una línea de despertar abortaba cada suspensión. **−46 %** de consumo en reposo (~34 h → ~64 h) |
+| **Indicador de batería** | El porcentaje era la tensión sobre una recta y se desviaba **19 puntos** cerca de vacío; ahora compensa la caída óhmica contra una tabla OCV medida |
+| **Constelaciones GNSS** | **Galileo y BeiDou llegan a las aplicaciones**: ModemManager sintetiza el NMEA que el módem no emite |
+| **Silenciar la llamada** | El botón de silencio de la app de llamadas silencia de verdad, con auricular y con altavoz |
+| **Pantalla en remoto** | VNC al móvil en marcha (wayvnc parcheado) |
+| **Estabilidad** | El móvil **ya no se cuelga ni se reinicia solo**. El congelado del almacenamiento se evita quitando el escalado de reloj del UFS, y el parche 0128 acota una espera de IPA que podía bloquear la suspensión para siempre. Si algo falla, se recupera solo y deja un volcado completo — ver [`docs/watchdog.es.md`](docs/watchdog.es.md) y [`docs/ufs-freeze.es.md`](docs/ufs-freeze.es.md) |
 
 ## Lo que no funciona
 
+- **La cancelación de eco en las llamadas.** Con el auricular o el altavoz, el otro lado se oye a
+  sí mismo. La canceladora del DSP (`TX_SM_ECNS`) saca silencio puro sin su calibración ACDB, que
+  mainline no sabe cargar, así que la subida va en paso directo (parche 0057). Los cascos
+  Bluetooth suelen cancelarlo por su cuenta. Por lo demás, las llamadas son estables.
 - **La cámara frontal.** El sensor dice que está emitiendo y el receptor está configurado igual,
   pero no llega ni un paquete. Varias hipótesis están cerradas con medidas (es D-PHY y no C-PHY; el
   número de carriles, su asignación física y la polaridad del multiplexor coinciden con el blob de
@@ -38,19 +48,27 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
   ninguna cámara**, ni siquiera la trasera.
 - **La vibración es floja**, incluso al máximo. El motor es lineal y solo rinde en su frecuencia de
   resonancia; es posible que el driver no la calibre.
-- **El móvil se cuelga solo de vez en cuando**, una o dos veces por noche, **sin dejar rastro
-  alguno** — la firma del perro guardián por hardware. Causa desconocida.
 - **La imagen no está calibrada**: el ISP por software no tiene fichero de ajuste para este sensor,
   así que las fotos salen lavadas y con las esquinas oscuras.
 - **Zoom**: el driver del sensor expone un solo modo; el firmware de fábrica tiene cinco.
-- Bluetooth: volver al auricular a mitad de llamada se queda mudo, y las llamadas seguidas se
-  degradan hasta que se apaga y enciende el Bluetooth.
-- **Galileo y BeiDou no llegan a las aplicaciones**, así que el cielo se ve solo con GPS y
-  GLONASS, y tampoco hay asistencia A-GPS. El módem sí los sigue —preguntándole por QMI
-  reporta 31 satélites de las cuatro constelaciones—, pero su NMEA solo lleva `$GPGSV` y
-  `$GLGSV`, y el NMEA es lo que leen las aplicaciones. Ver
-  [`packages/libqmi`](packages/libqmi) para cómo preguntar, y
-  [`tools/qmi-loc-idl`](tools/qmi-loc-idl) para cómo se recuperaron los mensajes.
+- Bluetooth: se encontraron y arreglaron **tres causas de llamadas mudas por casco** (2026-08-24/25):
+  una carrera por el registro del perfil HFP que solo puede ganar una instancia de WirePlumber, un
+  saludo SCO que se rendía un segundo antes de tiempo, y que el eSCO se negocia en la *transición*
+  de perfil, no por estar en él. Ver [`docs/hfp-race.es.md`](docs/hfp-race.es.md). Después, una
+  **cuarta**: cuando el enlace se atasca, el driver **estrella el controlador a propósito** para
+  sacar un volcado y en esta placa no vuelve; lo que mata al móvil es tocar el Bluetooth después.
+  El parche 0127 da tiempo a que se descarguen los raíles antes de reintentar, y un servicio avisa
+  en vez de dejarte tocar un adaptador muerto. Ver [`docs/bt-chip-wedged.es.md`](docs/bt-chip-wedged.es.md).
+  **Pasar la llamada al altavoz y volver al casco** salía mudo en los dos sentidos: arreglado el
+  2026-09-11, el controlador SLIMbus no le decía al DSP que retirara los canales (parche 0130, ver
+  [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)). Sigue abierto por qué
+  `rfkill block` cuelga la máquina con el controlador encallado. **Silenciar el micro tampoco
+  funciona con casco**: el micro es el del casco, entra por SLIMbus y esa ruta no expone control de
+  ganancia. Dar al perfil una fuente para que el botón tuviera sobre qué actuar dejó la llamada
+  **sin audio ninguno**, así que se deshizo. Alternativa: pasar a altavoz y silenciar ahí.
+- **Sin asistencia A-GPS.** Galileo y BeiDou ya llegan a las aplicaciones (ver arriba), pero sigue
+  sin haber datos de asistencia, así que el primer fijo tarda. Ver
+  [`packages/libqmi`](packages/libqmi) y [`tools/qmi-loc-idl`](tools/qmi-loc-idl).
 - **La carga rápida de 33 W de Xiaomi.** La bomba de carga funciona y el límite está subido, pero
   falta el protocolo propietario que desbloquea la potencia alta, así que un cargador de Xiaomi
   entrega solo el ritmo estándar.
@@ -59,7 +77,6 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 
 - [`pmbootstrap`](https://wiki.postmarketos.org/wiki/Pmbootstrap) con una copia de `pmaports`.
 - Un POCO X3 NFC (`surya`) con el gestor de arranque desbloqueado.
-- Paciencia con un móvil que se reinicia solo de vez en cuando.
 
 ## Generar una imagen
 
@@ -70,7 +87,7 @@ como siempre:
 git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
-# 1. Kernel: los 115 parches, la receta y la configuración
+# 1. Kernel: los 130 parches, la receta y la configuración
 PMAPORTS=$(pmbootstrap config aports)
 cp kernel/*.patch kernel/APKBUILD kernel/config-* \
    "$PMAPORTS/device/testing/linux-postmarketos-qcom-sm7150/"

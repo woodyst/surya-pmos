@@ -23,7 +23,8 @@ somewhere to land. Without it **the routing is never executed**. The `cset` line
 ## `wireplumber/` — Bluetooth and call policy
 
 Where: the `.conf` files in `~/.config/wireplumber/wireplumber.conf.d/`, and the **Lua scripts in
-`~/.local/share/wireplumber/scripts/device/`**.
+`~/.local/share/wireplumber/scripts/device/`** — except `node/suspend-node-surya.lua`, which goes in
+`~/.local/share/wireplumber/scripts/node/`.
 
 ⚠️ Putting the Lua files anywhere else makes **wireplumber refuse to start**.
 
@@ -34,6 +35,7 @@ Where: the `.conf` files in `~/.config/wireplumber/wireplumber.conf.d/`, and the
 | `56-mantener-voz-bt.conf` | Loads the Lua hook below |
 | `mantener-voz-bluetooth.lua` | Forces the hands-free profile during a call, from inside wireplumber |
 | `find-voice-call-profile.lua` | Finds the call profile for the card |
+| `57-suspender-en-llamada.conf` + `node/suspend-node-surya.lua` | Lets idle audio nodes suspend again — keeping them always running cost ~300 mA at idle — **except during a call**, when remounting the internal route used to crash the DSP. It is a full component because only one that declares `requires = [ support.modem-manager ]` actually receives the call notifications |
 
 ⚠️ Never mSBC: this chip's SCO rate is fixed at 8 kHz and mSBC gives silence.
 
@@ -53,11 +55,20 @@ Where: the `.conf` files in `~/.config/wireplumber/wireplumber.conf.d/`, and the
 |---|---|---|
 | `armar-audio.service` + `armar-audio-sistema.sh` | system | Loads the audio and Bluetooth chain in the right order after boot |
 | `armar-audio-usuario.service` + `armar-audio-usuario.sh` | user | Arms PipeWire and the call daemons afterwards |
-| `llamada-al-bluetooth.service` + `.sh` | user | Holds the SCO link up during a call with a headset. Waits until the call is actually *routed* to the headset before reaching for the link, and retries for 25 s — see [`hfp-race.es.md`](../docs/hfp-race.es.md) |
+| `llamada-al-bluetooth.service` + `supervisor-llamada-bt.py` | user | **Headset call supervisor**, replacing the old `llamada-al-bluetooth.sh` (the unit keeps its name). Event-driven over D-Bus (ModemManager and PipeWire), no polling: brings up the headset side when a call starts (voice profile, and the SCO link acquired through the device's `bluetoothOffloadActive`), tears it down when you switch to the speaker, rebuilds it when you come back, watches it and notifies. Needs `py3-gobject3`. See [`bt-return-to-headset.es.md`](../docs/bt-return-to-headset.es.md) and [`hfp-race.es.md`](../docs/hfp-race.es.md) |
 | `aviso-bt-caido.service` + `.sh` | user | Watches the kernel log and warns when the Bluetooth controller is wedged: reboot, and **do not touch Bluetooth** — every reconnect attempt against a dead controller has hung or reset this phone. ⚠️ It never queries the adapter; that hangs too. See [`bt-chip-wedged.es.md`](../docs/bt-chip-wedged.es.md) |
 | `hfp-registrado.service` + `.sh` | user | Watches that the **live** WirePlumber is the one holding the HFP profile registration, and restarts it if it lost the boot race. Without this, every headset call can come out mute for a whole boot — and rebooting does not fix it |
 | `gnss-engine-unlock.service` | system | The GNSS engine ships **locked in NV**; Android unlocks it on every boot, this does the same |
 | `goa-keyring-fix.service` | user | `goa-daemon` starts before the keyring and never recovers; this restarts it |
+
+## `modprobe/` — kernel module options
+
+Where: `/etc/modprobe.d/`
+
+| File | What it does |
+|---|---|
+| `slimbus.conf` | ★ `remove_channels=1` for the SLIMbus controller (kernel patch 0130). **Without it, moving a call from the speaker back to a Bluetooth headset comes back mute both ways.** The controller is loaded by `armar-audio-sistema.sh` with `modprobe --ignore-install`, which does read `options`. See [`bt-return-to-headset.es.md`](../docs/bt-return-to-headset.es.md) |
+| `q6voice.conf` | Keeps `switch_full_session` (patch 0129) **off**. Rebuilding the whole voice session on every move was tried for the same bug, did not fix it, and once coincided with a DSP crash |
 
 ## Load order matters
 

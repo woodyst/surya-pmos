@@ -30,8 +30,10 @@
 --
 --   1. Mientras la llamada este enrutada al Bluetooth, no dejar que la politica
 --      de autoconmutacion restaure A2DP.
---   2. Al entrar la llamada en el camino Bluetooth, poner el auricular en
---      manos libres.
+--   2. (RETIRADO el 2026-09-10) Poner el auricular en manos libres. Eso lo hace
+--      ahora SOLO el supervisor de la cadena (supervisor-llamada-bt.py), en
+--      orden y comprobando cada capa: con dos escritores sobre el perfil del
+--      casco no habia orden que garantizar.
 --
 -- ⚠️ SIEMPRE CVSD, NUNCA mSBC.  `bt_sco_rate` del modulo snd_soc_sm8250 esta
 -- fijado a 8000 (banda estrecha).  Con mSBC el enlace se negocia a 16 kHz
@@ -43,11 +45,40 @@
 cutils = require ("common-utils")
 log = Log.open_topic ("s-device")
 
--- El perfil de voz del auricular. Si algun dia `bt_sco_rate` deja de ser fijo
--- y sigue al codec negociado, aqui es donde hay que permitir mSBC.
-PERFIL_VOZ = "headset-head-unit-cvsd"
+-- El perfil de voz del casco (siempre CVSD) lo pone el supervisor de la cadena.
 
 en_llamada = false
+
+-- Bandera para el resto de wireplumber: mientras exista, hay llamada.
+--
+-- La lee `node/suspend-node.lua` (copia nuestra) para NO suspender la ruta de
+-- audio durante una llamada. Fuera de llamada se suspende normalmente, que es
+-- lo que permite al SoC entrar en reposo profundo: el apaño de no suspender
+-- NUNCA costaba ~300 mA en reposo (medido el 2026-08-13).
+--
+-- Un fichero y no una variable global porque cada guion de wireplumber es un
+-- componente aparte; el fichero vale ademas para mirar el estado desde fuera.
+BANDERA_LLAMADA = (os.getenv ("XDG_RUNTIME_DIR") or "/tmp") .. "/llamada-en-curso"
+
+-- ⚠️ El Lua de wireplumber esta RESTRINGIDO: `os.remove` no existe (da
+-- "attempt to call a nil value"). Por eso el fichero no se borra: se
+-- reescribe con "1" o "0". Y se lleva ademas una global, por si en alguna
+-- version `io` tampoco estuviera: los guiones comparten estado Lua, asi que
+-- suspend-node.lua puede leerla.
+SURYA_EN_LLAMADA = false
+
+function marcarLlamada (activa)
+  SURYA_EN_LLAMADA = activa
+  if io and io.open then
+    local f = io.open (BANDERA_LLAMADA, "w")
+    if f then
+      f:write (activa and "1\n" or "0\n")
+      f:close ()
+    else
+      log:warning ("no se pudo escribir " .. BANDERA_LLAMADA)
+    end
+  end
+end
 
 alsa_devs_om = ObjectManager {
   Interest {
@@ -89,39 +120,6 @@ function llamadaEnCasco ()
   return false
 end
 
-function perfilActual (device)
-  for p in device:iterate_params ("Profile") do
-    local profile = cutils.parseParam (p, "Profile")
-    if profile then
-      return profile
-    end
-  end
-  return nil
-end
-
-function ponerCascoEnVoz ()
-  for device in bt_devs_om:iterate () do
-    local actual = perfilActual (device)
-    if actual == nil or actual.name ~= PERFIL_VOZ then
-      for p in device:iterate_params ("EnumProfile") do
-        local profile = cutils.parseParam (p, "EnumProfile")
-        if profile and profile.name == PERFIL_VOZ and profile.available ~= "no" then
-          local pod = Pod.Object {
-            "Spa:Pod:Object:Param:Profile", "Profile",
-            index = profile.index,
-            save = false
-          }
-          log:info (device, "llamada en Bluetooth: perfil de voz '"
-                .. profile.name .. "' (venia de '"
-                .. tostring (actual and actual.name or "nada") .. "')")
-          device:set_params ("Profile", pod)
-          break
-        end
-      end
-    end
-  end
-end
-
 -- (1) No dejar que se restaure A2DP con la llamada puesta en el auricular.
 --
 -- Se ejecuta ANTES del enganche de la politica y le corta el paso. Sin esto,
@@ -135,30 +133,15 @@ no_restaurar_hook = SimpleEventHook {
     },
   },
   execute = function (event)
-    if llamadaEnCasco () then
-      log:info ("llamada enrutada al Bluetooth: no se restaura A2DP")
+    -- ⚠️ Durante TODA la llamada, no solo con la tarjeta en Bluetooth (2026-09-10).
+    -- Con el altavoz elegido, la politica devolvia el casco a A2DP a los pocos
+    -- segundos; al volver al casco no habia enlace y la llamada salia muda. El
+    -- casco tiene que seguir en voz con el SCO en pie para la vuelta.
+    -- (`en_llamada` se queda en falso si wireplumber se reinicia con la llamada
+    -- ya en curso; para ese caso queda llamadaEnCasco.)
+    if en_llamada or llamadaEnCasco () then
+      log:info ("llamada en curso: no se restaura A2DP")
       event:stop_processing ()
-    end
-  end
-}
-
--- (2) Al entrar la llamada en el camino Bluetooth, poner manos libres.
---
--- Se dispara con el cambio de perfil de la tarjeta del movil, que es el
--- instante en que la llamada pasa a ir por el auricular — tanto al descolgar
--- como al volver desde manos libres.
-perfil_movil_hook = SimpleEventHook {
-  name = "poner-voz-al-entrar-llamada@mantener-voz-bluetooth",
-  interests = {
-    EventInterest {
-      Constraint { "event.type", "=", "device-params-changed" },
-      Constraint { "event.subject.param-id", "=", "Profile" },
-      Constraint { "device.api", "=", "alsa" },
-    },
-  },
-  execute = function (event)
-    if llamadaEnCasco () then
-      ponerCascoEnVoz ()
     end
   end
 }
@@ -284,15 +267,12 @@ mm = Plugin.find ("modem-manager")
 if mm ~= nil then
   mm:connect ("voice-call-start", function ()
     en_llamada = true
+    marcarLlamada (true)
     log:info ("llamada iniciada")
-    -- El perfil de la tarjeta del movil aun puede no haber cambiado; el
-    -- enganche (2) lo rematara cuando cambie.
-    if llamadaEnCasco () then
-      ponerCascoEnVoz ()
-    end
   end)
   mm:connect ("voice-call-stop", function ()
     en_llamada = false
+    marcarLlamada (false)
     log:info ("llamada terminada: la politica normal vuelve a mandar")
   end)
 else
@@ -300,8 +280,11 @@ else
 end
 
 no_restaurar_hook:register ()
-perfil_movil_hook:register ()
 volumen_hook:register ()
+
+-- Una bandera huerfana (de un arranque anterior, o de un wireplumber que murio
+-- con la llamada puesta) impediria suspender para siempre. Se limpia al cargar.
+marcarLlamada (false)
 
 alsa_devs_om:activate ()
 bt_devs_om:activate ()
