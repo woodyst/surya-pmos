@@ -1,0 +1,121 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] rpcd: add -a to create a static PD (audiopd)
+
+The audio PD of the ADSP is a static PD: it is part of the DSP image, but
+it only gets its remote heap and a server for its file requests when the
+host creates it with FASTRPC_IOCTL_INIT_CREATE_STATIC, which is what the
+vendor's "adsprpcd audiopd" does. Without it the audio PD cannot load its
+dynamic AVS modules, so every topology that needs one (the SMECNS V2 echo
+canceller on a POCO X3 NFC) fails to come up.
+
+Add -a NAME to create the static PD NAME instead of attaching to the root
+PD, and -m BYTES for its remote heap (3 MiB by default, as the vendor
+daemon). The kernel side needs the channel's memory-region and qcom,vmids.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 8bf9a21..56bfc24 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -27,7 +27,9 @@
+ #include <unistd.h>
+ #include <signal.h>
+ #include <stdbool.h>
++#include <stdint.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+@@ -135,6 +137,7 @@ static void print_usage(const char *argv0)
+ 	printf("Usage: %s [options] -f DEVICE\n\n", argv0);
+ 	printf("Server for FastRPC remote procedure calls from Qualcomm DSPs\n\n"
+ 	       "Options:\n"
++	       "\t-a NAME\t\tCreate the static PD NAME (e.g. audiopd) and serve it\n"
+ 	       "\t-c SHELL\t\tCreate a new pd running the specified ELF\n"
+ 	       "\t-d DSP\t\tDSP name (default: "")\n"
+ 	       "\t-f DEVICE\tFastRPC device node to attach to\n"
+@@ -142,10 +145,37 @@ static void print_usage(const char *argv0)
+ 	       "\t-P DIR\t\tOverride the sensor registry directory with a real,\n"
+ 	       "\t\t\twritable one (default: read-only, fixed set of files\n"
+ 	       "\t\t\tunder -R)\n"
++	       "\t-m BYTES\tRemote heap size for -a (default: 3 MiB)\n"
+ 	       "\t-R DIR\t\tRoot directory of served files (default: /usr/share/qcom/)\n"
+ 	       "\t-s\t\tAttach to sensorspd\n");
+ }
+ 
++#ifndef FASTRPC_IOCTL_INIT_CREATE_STATIC
++struct fastrpc_init_create_static {
++	__u32 namelen;	/* length of pd process name */
++	__u32 memlen;
++	__u64 name;	/* pd process name */
++};
++#define FASTRPC_IOCTL_INIT_CREATE_STATIC _IOWR('R', 9, struct fastrpc_init_create_static)
++#endif
++
++/*
++ * Static PDs (audiopd on the ADSP) are part of the DSP image; creating one
++ * from here hands it a remote heap and makes this process the server for
++ * its file requests, which is what the vendor's "adsprpcd audiopd" does.
++ * The audio PD loads its dynamic AVS modules through those requests.
++ */
++static int create_static_pd(int fd, const char *name, unsigned long memlen)
++{
++	struct fastrpc_init_create_static init = {
++		.namelen = strlen(name) + 1,
++		.memlen = memlen,
++		.name = (__u64) (uintptr_t) name,
++	};
++
++	return ioctl(fd, FASTRPC_IOCTL_INIT_CREATE_STATIC, &init);
++}
++
+ static int create_shell_pd(int fd, const char *create_shell)
+ {
+ 	char *buf;
+@@ -417,6 +447,8 @@ int main(int argc, char* argv[])
+ 	const char *registry_dir = NULL;
+ 	const char *dsp = "";
+ 	const char *create_shell = NULL;
++	const char *static_pd = NULL;
++	unsigned long static_pd_memlen = 3 * 1024 * 1024;
+ 	const char *guessed_device_dir;
+ 	const char **progs;
+ 	pid_t *pids;
+@@ -440,8 +472,14 @@ int main(int argc, char* argv[])
+ 	if (guessed_device_dir != NULL)
+ 		device_dir = guessed_device_dir;
+ 
+-	while ((opt = getopt(argc, argv, "c:d:f:p:P:R:s")) != -1) {
++	while ((opt = getopt(argc, argv, "a:c:d:f:m:p:P:R:s")) != -1) {
+ 		switch (opt) {
++			case 'a':
++				static_pd = optarg;
++				break;
++			case 'm':
++				static_pd_memlen = strtoul(optarg, NULL, 0);
++				break;
+ 			case 'c':
+ 				create_shell = optarg;
+ 				break;
+@@ -475,7 +513,9 @@ int main(int argc, char* argv[])
+ 		goto err_free_pids;
+ 	}
+ 
+-	printf("Starting %s (%s) on %s\n", argv[0], attach_sns? "INIT_ATTACH_SNS": "INIT_ATTACH", fastrpc_node);
++	printf("Starting %s (%s%s) on %s\n", argv[0],
++	       attach_sns ? "INIT_ATTACH_SNS" : static_pd ? "INIT_CREATE_STATIC " : "INIT_ATTACH",
++	       static_pd ? static_pd : "", fastrpc_node);
+ 
+ 	fd = open(fastrpc_node, O_RDWR);
+ 	if (fd < 0) {
+@@ -485,6 +525,8 @@ int main(int argc, char* argv[])
+ 
+ 	if (attach_sns)
+ 		ret = ioctl(fd, FASTRPC_IOCTL_INIT_ATTACH_SNS, NULL);
++	else if (static_pd != NULL)
++		ret = create_static_pd(fd, static_pd, static_pd_memlen);
+ 	else if (create_shell != NULL)
+ 		ret = create_shell_pd(fd, create_shell);
+ 	else

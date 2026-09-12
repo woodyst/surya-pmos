@@ -1,0 +1,38 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] apps_mem: log map requests, pass remote heap ones to the kernel
+
+Once the ADSP's audio PD is created (-a audiopd) it asks apps_mem for
+memory with flags other than ADSP_MMAP_ADD_PAGES, and every such request
+was rejected as a "DMA buffer request" without saying what it was. Log
+the heap id, flags, address and length of every request, and hand
+ADSP_MMAP_REMOTE_HEAP_ADDR requests to FASTRPC_IOCTL_MMAP, which the
+kernel serves from the channel's remote heap.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/hexagonrpcd/apps_mem.c b/hexagonrpcd/apps_mem.c
+index f4d0bf9..442a4d2 100644
+--- a/hexagonrpcd/apps_mem.c
++++ b/hexagonrpcd/apps_mem.c
+@@ -60,7 +60,20 @@ static uint32_t apps_mem_request_map64(void *data,
+ 	struct fastrpc_req_mmap mmap;
+ 	int ret;
+ 
+-	if (!(first_in->rflags & ADSP_MMAP_ADD_PAGES)) {
++	/*
++	 * Say what the DSP asked for: the static audio PD makes requests this
++	 * daemon does not serve, and what to add depends on these values.
++	 */
++	fprintf(stderr, "apps_mem_request_map64: heap %u lflags 0x%x rflags 0x%x vin 0x%" PRIx64 " len 0x%" PRIx64 "\n",
++		first_in->heap_id, first_in->lflags, first_in->rflags,
++		first_in->vin, first_in->len);
++
++	/*
++	 * Memory for a static PD's remote heap: the kernel allocates it from
++	 * the channel's memory-region and assigns it to the DSP's VMs.
++	 */
++	if (first_in->rflags != ADSP_MMAP_REMOTE_HEAP_ADDR &&
++	    !(first_in->rflags & ADSP_MMAP_ADD_PAGES)) {
+ 		fprintf(stderr, "Unsupported mmap operation: DMA buffer request\n");
+ 		return AEE_EUNSUPPORTED;
+ 	}

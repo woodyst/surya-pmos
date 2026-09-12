@@ -1,0 +1,247 @@
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -270,6 +270,36 @@
+ 	return 0;
+ }
+ 
++static uint32_t apps_std_frename(void *data,
++				 const struct fastrpc_io_buffer *inbufs,
++				 struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	int ret;
++
++	// The old and new names must be NULL-terminated
++	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
++	 || ((const char *) inbufs[2].p)[inbufs[2].s - 1] != 0)
++		return AEE_EBADPARM;
++
++	ret = hexagonfs_rename(ctx->fds, ctx->rootfd, ctx->rootfd,
++			      inbufs[1].p, inbufs[2].p);
++	if (ret) {
++		fprintf(stderr, "Could not rename %s to %s: %s\n",
++				(const char *) inbufs[1].p,
++				(const char *) inbufs[2].p,
++				strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++#ifdef HEXAGONRPC_VERBOSE
++	printf("frename(%s, %s)\n", (const char *) inbufs[1].p,
++				    (const char *) inbufs[2].p);
++#endif
++
++	return 0;
++}
++
+ static uint32_t apps_std_opendir(void *data,
+ 				 const struct fastrpc_io_buffer *inbufs,
+ 				 struct fastrpc_io_buffer *outbufs)
+@@ -583,7 +613,10 @@
+ 		.impl = apps_std_stat,
+ 	},
+ 	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
++	{
++		.def = &apps_std_frename_def,
++		.impl = apps_std_frename,
++	},
+ 	{ .def = NULL, .impl = NULL, },
+ 	{
+ 		.def = &apps_std_fclose_fd_def,
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -200,6 +200,95 @@
+ 	return ret;
+ }
+ 
++/*
++ * Like hexagonfs_openat(), but stops one path segment short: instead of
++ * opening the final segment, it returns the directory it would have been
++ * opened in (out_dir) and its name (out_segment), so the caller can operate
++ * on it directly (e.g. to rename it) without hexagonfs needing a way to
++ * "open for rename".
++ */
++static int resolve_parent_dir(struct hexagonfs_fd **fds, int rootfd, int dirfd,
++			      const char *name,
++			      struct hexagonfs_fd **out_dir,
++			      char **out_segment)
++{
++	struct hexagonfs_fd *fd;
++	const char *curr = name;
++	char *segment;
++	bool expect_dir;
++	int selected = dirfd;
++	int ret = 0;
++
++	if (*curr == '/') {
++		selected = rootfd;
++
++		while (*curr == '/')
++			curr++;
++	}
++
++	fd = fds[selected];
++
++	for (;;) {
++		segment = copy_segment_and_advance(curr, &expect_dir, &curr);
++		if (segment == NULL)
++			return -ENOMEM;
++
++		if (*curr == '\0')
++			break;
++
++		if (!strcmp(segment, ".")) {
++			// no-op
++		} else if (!strcmp(segment, "..")) {
++			fd = pop_dir(fd, fds[rootfd]);
++		} else {
++			ret = fd->ops->openat(fd, segment, true, false, &fd);
++		}
++
++		free(segment);
++
++		if (ret) {
++			destroy_file_descriptor(fd);
++			return ret;
++		}
++	}
++
++	*out_dir = fd;
++	*out_segment = segment;
++
++	return 0;
++}
++
++int hexagonfs_rename(struct hexagonfs_fd **fds, int rootfd, int dirfd,
++		     const char *oldname, const char *newname)
++{
++	struct hexagonfs_fd *old_dir, *new_dir;
++	char *old_segment, *new_segment;
++	int ret;
++
++	ret = resolve_parent_dir(fds, rootfd, dirfd, oldname, &old_dir, &old_segment);
++	if (ret)
++		return ret;
++
++	ret = resolve_parent_dir(fds, rootfd, dirfd, newname, &new_dir, &new_segment);
++	if (ret) {
++		free(old_segment);
++		destroy_file_descriptor(old_dir);
++		return ret;
++	}
++
++	if (old_dir->ops != new_dir->ops || old_dir->ops->rename == NULL)
++		ret = -EXDEV;
++	else
++		ret = old_dir->ops->rename(old_dir, old_segment, new_dir, new_segment);
++
++	free(old_segment);
++	free(new_segment);
++	destroy_file_descriptor(old_dir);
++	destroy_file_descriptor(new_dir);
++
++	return ret;
++}
++
+ int hexagonfs_close(struct hexagonfs_fd **fds, int fileno)
+ {
+ 	struct hexagonfs_fd *fd;
+--- a/hexagonrpcd/hexagonfs.h
++++ b/hexagonrpcd/hexagonfs.h
+@@ -44,6 +44,8 @@
+ 	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
+ 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
+ 	int (*seek)(struct hexagonfs_fd *fd, off_t off, int whence);
++	int (*rename)(struct hexagonfs_fd *old_dir, const char *old_segment,
++		      struct hexagonfs_fd *new_dir, const char *new_segment);
+ };
+ 
+ struct hexagonfs_dirent {
+@@ -81,5 +83,7 @@
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t size, char *name);
+ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void *ptr);
+ ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
++int hexagonfs_rename(struct hexagonfs_fd **fds, int rootfd, int dirfd,
++		     const char *oldname, const char *newname);
+ 
+ #endif
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -22,6 +22,7 @@
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stdio.h>
+ #include <unistd.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+@@ -153,6 +154,20 @@
+ 	return ret;
+ }
+ 
++static int mapped_rename(struct hexagonfs_fd *old_dir, const char *old_segment,
++			 struct hexagonfs_fd *new_dir, const char *new_segment)
++{
++	struct mapped_ctx *old_ctx = old_dir->data;
++	struct mapped_ctx *new_ctx = new_dir->data;
++	int ret;
++
++	ret = renameat(old_ctx->fd, old_segment, new_ctx->fd, new_segment);
++	if (ret == -1)
++		return -errno;
++
++	return 0;
++}
++
+ static int mapped_readdir(struct hexagonfs_fd *fd, size_t size, char *out)
+ {
+ 	struct mapped_ctx *ctx = fd->data;
+@@ -278,6 +293,15 @@
+ 	return -EBADF;
+ }
+ 
++static int mapped_or_empty_rename(struct hexagonfs_fd *old_dir, const char *old_segment,
++				  struct hexagonfs_fd *new_dir, const char *new_segment)
++{
++	if (old_dir->data == NULL || new_dir->data == NULL)
++		return -ENOENT;
++
++	return mapped_rename(old_dir, old_segment, new_dir, new_segment);
++}
++
+ static int mapped_or_empty_readdir(struct hexagonfs_fd *fd,
+ 				   size_t size, char *out)
+ {
+@@ -356,6 +380,7 @@
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
+ 	.stat = mapped_stat,
++	.rename = mapped_rename,
+ };
+ 
+ struct hexagonfs_file_ops hexagonfs_mapped_or_empty_ops = {
+@@ -367,6 +392,7 @@
+ 	.readdir = mapped_or_empty_readdir,
+ 	.seek = mapped_or_empty_seek,
+ 	.stat = mapped_or_empty_stat,
++	.rename = mapped_or_empty_rename,
+ };
+ 
+ struct hexagonfs_file_ops hexagonfs_mapped_sysfs_ops = {
+@@ -378,4 +404,5 @@
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
+ 	.stat = mapped_sysfs_stat,
++	.rename = mapped_rename,
+ };
+--- a/hexagonrpcd/interfaces/apps_std.def
++++ b/hexagonrpcd/interfaces/apps_std.def
+@@ -36,6 +36,7 @@
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(27, apps_std_closedir, 2, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(28, apps_std_readdir, 2, 0, 66, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(31, apps_std_stat, 1, 1, 24, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(33, apps_std_frename, 1, 2, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(35, apps_std_fclose_fd, 2, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(36, apps_std_fopen_with_env_fd, 1, 4, 2, 0)
+ 

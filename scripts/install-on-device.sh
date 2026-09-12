@@ -12,6 +12,13 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 say() { printf '\n== %s\n' "$*"; }
 
+# VoiceCall.conf uses controls that only exist from kernel r93 ('Voice Tx Capture Switch',
+# 'Voice Calibration'). With an older kernel the call profile does not load and calls lose audio.
+REL=$(ssh "$HOST" uname -r)
+R=${REL##*.r}
+case "$R" in ''|*[!0-9]*) echo "cannot read the kernel release ($REL)"; exit 1 ;; esac
+[ "$R" -ge 93 ] || { echo "kernel $REL: this configuration needs r93 or later (kernel/)"; exit 1; }
+
 say "ALSA UCM (audio routing and call volume)"
 ssh "$HOST" 'sudo mkdir -p /usr/share/alsa/ucm2/conf.d/sm8250'
 scp -q "$HERE"/device/audio/*.conf "$HOST":/tmp/
@@ -74,5 +81,23 @@ ssh "$HOST" 'set -e
                           aviso-bt-caido goa-keyring-fix
   sudo systemctl daemon-reload
   sudo systemctl enable armar-audio gnss-engine-unlock'
+
+say "echo cancellation (needs hexagonrpcd from packages/hexagonrpcd)"
+# The canceller is a dynamic module the ADSP's audio PD loads over fastrpc, so that PD has to be
+# served. The boot service turns cancellation on only if the factory voice calibration is in
+# /lib/firmware (not included, see docs/echo-cancellation.es.md); otherwise calls stay in
+# passthrough and work as before.
+scp -q "$HERE"/device/echo/* "$HOST":/tmp/
+ssh "$HOST" 'set -e
+  sudo mkdir -p /etc/systemd/system/hexagonrpcd-adsp-rootpd.service.d
+  sudo install -m644 /tmp/hexagonrpcd-adsp-rootpd.override-fwdir.conf \
+                     /etc/systemd/system/hexagonrpcd-adsp-rootpd.service.d/override-fwdir.conf
+  sudo install -m644 /tmp/hexagonrpcd-adsp-audiopd.service /tmp/cancelacion-eco.service \
+                     /etc/systemd/system/
+  sudo install -m755 /tmp/activar-cancelacion-eco.sh /usr/local/sbin/
+  sudo systemctl daemon-reload
+  sudo systemctl enable hexagonrpcd-adsp-audiopd.service
+  # pulled in by armar-audio.service; reenable drops any old multi-user.target link (a cycle)
+  sudo systemctl reenable cancelacion-eco.service'
 
 say "Done. Reboot the phone so everything comes up in the right order."

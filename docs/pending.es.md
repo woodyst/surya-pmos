@@ -2,6 +2,10 @@
      regenerada desde git). Equivalencias en kernel/EQUIVALENCIAS.md -->
 # PENDIENTES / roadmap — surya (POCO X3 NFC, SM7150)
 
+> **Al 2026-09-12:** la **cancelación de eco ya funciona** ([`echo-cancellation.es.md`](echo-cancellation.es.md);
+> necesita la calibración de voz de fábrica, que no se incluye). Queda la **cámara frontal**, el
+> manos libres que distorsiona a volumen máximo y el script que genera la calibración desde tu móvil.
+>
 > **Al 2026-09-11:** las **llamadas ya son estables** —auricular, altavoz y casco Bluetooth, también
 > cambiando de salida a mitad de llamada ([`bt-return-to-headset.es.md`](bt-return-to-headset.es.md))—
 > y **solo les falta la cancelación de eco**. Queda también la **cámara frontal**. El móvil **ya no

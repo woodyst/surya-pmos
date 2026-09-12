@@ -1,0 +1,28 @@
+# Servidor fastrpc del dominio de audio del ADSP (audio_process / audiopd), como el
+# «vendor.adsprpcd_audiopd» (adsprpcd audiopd) de la ROM de Xiaomi. El PD de audio carga por aquí
+# sus módulos dinámicos de AVS (smecns_v2_module.so.1, fluence…) y su heap remoto; sin él, las
+# topologías de voz que los usan (SMECNS V2, la cancelación de eco) no confirman.
+#
+# Necesita: hexagonrpcd r13 (-a, ftell/flen, heap remoto y su liberación: parches 0007-0010) y el
+# kernel r90+ (memory-region y qcom,vmids en el nodo fastrpc del ADSP, 0137; devolver el heap a HLOS
+# antes de liberarlo, 0138). Lo instala scripts/install-on-device.sh.
+#
+# Probado a mano el 2026-09-12 (varias veces, sin caídas del ADSP): el PD se crea, el audio normal
+# sigue bien y las llamadas con la ECNS V2 confirman y liberan su heap al colgar.
+# ⚠️ No pararlo con una llamada en curso: libera el PD estático.
+[Unit]
+Description=Server for FastRPC remote procedure calls from Qualcomm ADSP - AudioPD
+Conflicts=suspend.target
+Before=suspend.target
+Requires=dev-fastrpc\x2dadsp.device
+After=dev-fastrpc\x2dadsp.device hexagonrpcd-adsp-rootpd.service
+RequiresMountsFor=/mnt/vendor/persist
+
+[Service]
+ExecStart=/usr/bin/stdbuf -oL /usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -a audiopd -R /usr/share/qcom/sm7150/Xiaomi/surya
+Restart=no
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=multi-user.target

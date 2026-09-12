@@ -1,0 +1,187 @@
+# Contributor: Dylan Van Assche <dylan@postmarketos.org>
+# Maintainer: Dylan Van Assche <dylan@postmarketos.org>
+# Local experimental build: includes unmerged upstream PR #21
+# (https://github.com/linux-msm/hexagonrpc/pull/21, branch
+# z3ntu/hexagonrpc@apps_std_fwrite) which stubs fwrite/fremove/fclose_fd/
+# fopen_with_env_fd support, needed to unblock ADSP SNS_REG_INIT on
+# Xiaomi Surya. That commit is 12 commits ahead of v0.4.0 / 0 behind, so
+# it's a clean superset -- no rebase needed. The systemd-services.patch
+# from the upstream Alpine APKBUILD is dropped here because this commit
+# already has data/meson.build + subdir('data') wired in natively.
+#
+# 0001-apps_std-fix-strerror-...patch: apps_std_fopen_with_env()'s open-for-
+# write error path calls strerror(errno) instead of strerror(-fd) - since
+# hexagonfs_openat() returns a negative error code directly rather than
+# setting errno, this always printed "No error information" (musl's
+# strerror(0) fallback), hiding the real reason SNS_REG_INIT's registry
+# writes fail. Fixes the message only; investigate the real underlying
+# open failure once it's visible.
+#
+# 0002-hexagonfs-add-read-write-support.patch: hexagonfs was read-only by
+# design (mapped_openat() hardcoded O_RDONLY, no write() op existed in the
+# hexagonfs_file_ops vtable at all), so SNS_REG_INIT's registry writes could
+# never succeed - the 0001 fix only made the failure's error message
+# correct (ENOENT), not the failure go away. This adds a want_write flag
+# threaded through hexagonfs_openat()/the openat vtable member (true only
+# for the final path segment of an actual open-for-write, never for
+# directory traversal), a real hexagonfs_write()/write vtable member, and
+# wires apps_std_fwrite() up to it instead of only faking success for two
+# hardcoded magic byte patterns ("DIR" / "version=3").
+#
+# 0003-add-writable-sensor-registry-directory-override.patch: even with
+# 0002, SNS_REG_INIT's writes still failed - the sensor registry directory
+# the ADSP writes new entries into (e.g. temp.json) is a virtual directory
+# with only two hardcoded child names ("registry", "sns_reg_version"), and
+# what it does expose ("registry") is backed by the read-only, root-owned
+# /usr/share/qcom/... package snapshot, not the real writable Android
+# persist partition (/mnt/vendor/persist/sensors/registry/, already set up
+# by our vendor/persist mount and containing genuine, newer calibration
+# data). This adds a new -P DIR flag that, when given, backs the whole
+# sensor registry directory with a real passthrough mapped directory
+# instead of the fixed two-entry list, so new files can actually be
+# created. Wired up below via a new systemd override pointing -P at
+# /mnt/vendor/persist/sensors/registry/. Other devices/setups are
+# unaffected since -P defaults to unset (old behavior preserved).
+#
+# 0004-listener-increase-inbuf-capacity.patch: even with 0001-0003, the
+# daemon still crash-looped once SNS_REG_INIT tried to write a real,
+# larger-than-trivial registry entry (several are ~900B-1KB) - the reverse
+# tunnel's FastRPC message receive buffer in listener.c was a hardcoded
+# 256B stack array with no way to resize on the fly (the remote side writes
+# directly into it; by the time the true size is known, the message is
+# already off the queue, so there's no safe "ask size, then refetch"
+# option). Moves it to an 8KB heap allocation instead, comfortably covering
+# the calibration data sizes actually seen on this device.
+#
+# 0005-apps_std-implement-frename.patch: past 0001-0004, SNS_REG_INIT got
+# through ~20 real registry stat() calls and then crashed on FastRPC proc
+# 33, which this project never implemented (only ~14 of ~37 apps_std procs
+# are). Confirmed against Qualcomm's own public fastrpc skeleton
+# (github.com/qualcomm/fastrpc, src/apps_std_skel.c) that proc 33 is
+# apps_std_frename(oldname, newname) - a plain rename(). Adds a
+# hexagonfs_rename()/rename vtable member (real renameat() on mapped
+# directories) and wires apps_std_frename() up to it, following the same
+# "resolve to parent dir + final segment" approach hexagonfs_openat()
+# already uses.
+#
+# 0006-listener-dont-kill-connection-on-unsupported-call.patch: every
+# "unsupported"/malformed-call path in invoke_requested_procedure() (bad
+# interface handle, unknown method, wrong buffer count, ...) returned 1,
+# which run_fastrpc_listener()'s main loop treats as fatal - tearing down
+# the *entire* reverse tunnel and killing the daemon over a single call it
+# doesn't support. This explains basically every crash-restart cycle seen
+# all session, including the ADSP probing for an optional "sns_registry"
+# interface this project doesn't implement, via a deliberately-invalid
+# handle (0xFFFFFFFF) - a normal probe-and-fall-back pattern, not an error
+# worth losing the whole session over. These paths now report the failure
+# result back to the remote (zero output buffers) via a new reject_call()
+# helper and keep the connection running, instead of exiting. (r6 shipped
+# a version of this that still crashed: return_for_next_invoke() encoded
+# the response using REMOTE_SCALARS_OUTBUFS() of the *stale* sc left over
+# from the rejected call while "returned" was NULL, segfaulting the very
+# first time a rejected call had declared any out buffers. r7 threads the
+# real, already-tracked out-buffer count through explicitly instead of
+# re-deriving it from sc.)
+#
+# r8 was a TEMPORARY diagnostic build only (-Dhexagonrpcd_verbose=true) to
+# trace the ADSP sensor_process firmware crash-loop (dmesg: "fatal error
+# ... sns_registry_sensor.c:94:SNS_RC_SUCCESS == rc"). Root-caused without
+# even needing the verbose logs: the crash-loop stopped as a side effect of
+# 0006 (the daemon no longer dies mid-call, so SNS_REG_INIT completes
+# cleanly in one pass instead of leaving the ADSP's registry state
+# half-updated across repeated retries). r9 reverts to a normal build.
+#
+# 0007-rpcd-create-static-PDs-audiopd.patch (r10, 2026-09-12): the ADSP's
+# audio runs in its own static PD (audio_process), which Xiaomi's ROM serves
+# with a third daemon, "adsprpcd audiopd". Nothing served it here, so the
+# audio PD could not load its dynamic AVS modules (smecns_v2_module.so.1 and
+# the other echo cancellers) and every voice topology using them failed its
+# TOPOLOGY_COMMIT. Adds -a NAME (FASTRPC_IOCTL_INIT_CREATE_STATIC, then serve
+# its file requests like the root PD) and -m BYTES for the remote heap
+# (3 MiB, as the vendor daemon). Needs the kernel's ADSP fastrpc node with
+# memory-region and qcom,vmids (kernel r89). Unit:
+# device/echo/hexagonrpcd-adsp-audiopd.service.
+#
+# 0008-apps_std-implement-ftell-and-flen.patch (r11): right after -a audiopd
+# the audio PD asked three times for apps_std method 8 (ftell, rejected), and
+# ASM stopped opening streams until reboot. Implements ftell (new hexagonfs
+# tell op) and flen, and names the handle when a call is rejected.
+#
+# 0009-apps_mem-log-map-requests-and-pass-remote-heap-ones.patch (r12): with
+# ftell in, the audio PD goes on to load its modules and asks apps_mem for
+# memory six times with non-ADD_PAGES flags ("DMA buffer request"), once
+# during a call whose echo canceller then failed to commit. Logs every
+# request's heap/flags/length and passes REMOTE_HEAP_ADDR ones to the kernel.
+#
+# 0010-apps_mem-implement-request_unmap64.patch (r13): with r12 the SMECNS V2
+# topologies commit (2026-09-12 11:38), but after a call the audio PD gives its
+# 3 MiB back with apps_mem method 3 (rejected), and the next call ran out of
+# heap. Implements it with FASTRPC_IOCTL_MUNMAP. Needs kernel r90, whose
+# munmap takes the memory back from the DSP's VMs before freeing it.
+pkgname=hexagonrpcd
+pkgver=0.4.0.100
+pkgrel=13
+pkgdesc="Qualcomm HexagonFS daemon (with experimental fwrite support, PR #21)"
+url="https://github.com/linux-msm/hexagonrpc"
+arch="all !s390x"
+license="GPL-3.0-or-later"
+makedepends="linux-headers meson"
+install="$pkgname.pre-install"
+subpackages="$pkgname-doc $pkgname-openrc $pkgname-systemd $pkgname-udev"
+
+_commit="9f987970f9bc3e72081b7966a1f4e766ce6af6f7"
+source="$pkgname-$pkgver.tar.gz::https://github.com/z3ntu/hexagonrpc/archive/$_commit.tar.gz
+	10-fastrpc.rules
+	$pkgname-adsp-rootpd.initd
+	$pkgname-adsp-sensorspd.initd
+	$pkgname-sdsp.initd
+	0001-apps_std-fix-strerror-using-wrong-error-source.patch
+	0002-hexagonfs-add-read-write-support.patch
+	0003-add-writable-sensor-registry-directory-override.patch
+	0004-listener-increase-inbuf-capacity.patch
+	0005-apps_std-implement-frename.patch
+	0006-listener-dont-kill-connection-on-unsupported-call.patch
+	0007-rpcd-create-static-PDs-audiopd.patch
+	0008-apps_std-implement-ftell-and-flen.patch
+	0009-apps_mem-log-map-requests-and-pass-remote-heap-ones.patch
+	0010-apps_mem-implement-request_unmap64.patch
+	"
+builddir="$srcdir/hexagonrpc-$_commit"
+
+build() {
+	abuild-meson -Db_lto=true . output
+	meson compile -C output
+}
+
+check() {
+	meson test -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+
+	# Allow access for FastRPC node for FastRPC user/group
+	install -Dm644 "$srcdir"/10-fastrpc.rules -t "$pkgdir"/usr/lib/udev/rules.d/
+
+	install -Dm755 "$srcdir"/$pkgname-adsp-rootpd.initd "$pkgdir"/etc/init.d/$pkgname-adsp-rootpd
+	install -Dm755 "$srcdir"/$pkgname-adsp-sensorspd.initd "$pkgdir"/etc/init.d/$pkgname-adsp-sensorspd
+	install -Dm755 "$srcdir"/$pkgname-sdsp.initd "$pkgdir"/etc/init.d/$pkgname-sdsp
+}
+
+sha512sums="
+5cd3fd4463f1b500aa77f0059a45289e317b45b939acc3ba87d036f9c755931231dce8710e41b56e92ea532b0a5c5a3cdea780b2a166c2c9bd64b66a84f75e96  hexagonrpcd-0.4.0.100.tar.gz
+f931cf5f901a7c17ffb0eb194b5de2c532fd238692898bf264c484b13b93119c9727bd8f8daf6a7d1668cc9108a9a0662231d300c6f1376e3e4edd3ce41d235d  10-fastrpc.rules
+934fda348f8b8896d15fa892e81e6dea022144c9bfcb557c0938898ac452ee3ab6a39f7ceaa54ede2ea78711f3516375c01746f8c55d1acec5ec1f1d9c9f816b  hexagonrpcd-adsp-rootpd.initd
+429f4f76e527b4289f95628603e4cee8b8d048d9a2a594ee367e5765b7554f494848c1f1aa0a7da84c193a698cd885e9325323fb6239293f1718775015cd3df0  hexagonrpcd-adsp-sensorspd.initd
+c88d3a813aa92298c3585c33111389c7175c67240497f2aeeb413228ccd8b991ed2e5edd2ffd4603389cfc9c8af6dfc5cd4c94c9979919e3efdd5bd5f547c9bd  hexagonrpcd-sdsp.initd
+549234d7a41f50a788c2d9583d96a9ecfe8fe85d329bc6fb51ee7c56143ea4dfc4e232f88a8385554fd10c149b7be0b6c08be4fd31cf0066fcd25704166e7eb3  0001-apps_std-fix-strerror-using-wrong-error-source.patch
+43355d7fad2d286176bdffe7994f632399b7e9d539dae5cbc329872d11826f05dbff44c63bacc63e0bd5adff942b031b41235dc3195743b9596156c22ef62b27  0002-hexagonfs-add-read-write-support.patch
+65d9e13a79b5dfae9e74f6b00d7099572f98401d27ff30aab7d91931d845e8ce0a18e9ce9c7d9252da59f1918711157b942519439eda4d98189fca41cc8959b0  0003-add-writable-sensor-registry-directory-override.patch
+efd45543c2c42011a584a2510c8014efc4f35ba9b3b12c638a7c2e7514d556a76c0c61125359855d55acf8548adb46f29d170c6f1c826bc9eb82eb27559f0261  0004-listener-increase-inbuf-capacity.patch
+61bdd83668a26949a30d42c7ebbd4894d56f26e8db5b0b344bc87af0d19a8957fb7010830f157225a7a1c057ea736796defaee451b15f770fb31a04041bccf7e  0005-apps_std-implement-frename.patch
+398ef96b98f4ce9ff15bd7a23ffab2f06550a36a1796c66fe2678e14d76d20af15ddd61ed9a37b74c9f74893b3f87af973baea480445c08c254f09e07439b16d  0006-listener-dont-kill-connection-on-unsupported-call.patch
+28bcf542f6379d3610f3d4e5cc1ed27f9ffac94a0dd07c238edfcc93d349aae89aeb8e4504e0617f9e078573469760d965a025e38d8b1d12ee7244f4bc4d4d48  0007-rpcd-create-static-PDs-audiopd.patch
+21d1a7e3ff68bffad35bf713fb572dda55550758ab2bc82a43682784176307d8e8c4ee90a8fbba1093857d5c87f033c40f51bcd269af2c0b05652fc18fb4f98c  0008-apps_std-implement-ftell-and-flen.patch
+c0cc5088243f7b4b31f1131404b493f8aa3ff4f153b4f137e864794f260121ebaf52f7ea8ad45051d8baa109c2055bfc014fc3d0bf5ff81a507da64c11fff369  0009-apps_mem-log-map-requests-and-pass-remote-heap-ones.patch
+12c9d47072f44a06de9f41e5c848c95f3fdfd1bb7f70407aad1570ff74c4bdbb1ee53dc4f084c92364d4402230b1d73309a896842bb25e9b4ba0597deb3808f3  0010-apps_mem-implement-request_unmap64.patch
+"

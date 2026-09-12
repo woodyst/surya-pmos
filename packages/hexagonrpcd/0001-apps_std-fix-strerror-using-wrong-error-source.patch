@@ -1,0 +1,11 @@
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -236,7 +236,7 @@
+ 	if (fd < 0) {
+ 		fprintf(stderr, "Could not open %s: %s\n",
+ 				(const char *) inbufs[3].p,
+-				strerror(errno));
++				strerror(-fd));
+ 		return AEE_EFAILED;
+ 	}
+ 

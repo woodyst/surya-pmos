@@ -17,7 +17,7 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 
 | | |
 |---|---|
-| **Calls** | Outgoing and incoming, **audio both ways**, earpiece ⇄ speaker ⇄ Bluetooth headset switching mid-call, with independent volume. **Stable** — only echo cancellation is missing (see below) |
+| **Calls** | Outgoing and incoming, **audio both ways**, earpiece ⇄ speaker ⇄ Bluetooth headset switching mid-call, with independent volume. **Stable**, with **echo cancellation** on earpiece and speaker — it needs the factory voice calibration from your own phone (see below) |
 | **Mobile data / SMS** | LTE, data and SMS |
 | **Audio** | Stereo speakers with correct L/R, earpiece, headset, per-amplifier trim |
 | **Bluetooth** | A2DP music, automatic switching, **calls through a headset** with SCO offloaded to the chip, **including moving the call to the speaker and back** (kernel patch 0130 — see [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)) |
@@ -36,10 +36,13 @@ kernel fork and postmarketOS' own packages. Nothing here replaces them — it is
 
 ## What does not work
 
-- **Echo cancellation in calls.** On the earpiece or the speaker, the other side hears themselves.
-  The DSP's echo canceller (`TX_SM_ECNS`) outputs pure silence without its ACDB calibration, which
-  mainline cannot load, so the uplink topology is passthrough (patch 0057). Bluetooth headsets
-  usually cancel echo themselves. Calls are otherwise stable.
+- **Echo cancellation needs files that are not here.** It works — echo measured ~23 dB down,
+  kernel r93 plus a patched `hexagonrpcd` serving the ADSP's audio PD — but the DSP's canceller
+  needs the factory voice calibration, which is Xiaomi's data and is not redistributed. Without it
+  the boot service leaves calls in passthrough: they work as before, without cancelling echo. A
+  script that generates it from your own phone is in progress. See
+  [`docs/echo-cancellation.es.md`](docs/echo-cancellation.es.md).
+- **Speakerphone distorts at maximum volume**; one step lower it is clean.
 - **Front camera.** The sensor reports that it is streaming and the receiver is configured to
   match, yet not a single packet arrives. Several hypotheses have been closed with measurements
   (it is D-PHY, not C-PHY; lane count, lane assignment and mux polarity all match the factory
@@ -89,7 +92,7 @@ usual:
 git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
-# 1. Kernel: 130 patches, the recipe and the config
+# 1. Kernel: 140 patches, the recipe and the config
 PMAPORTS=$(pmbootstrap config aports)
 cp kernel/*.patch kernel/APKBUILD kernel/config-* \
    "$PMAPORTS/device/testing/linux-postmarketos-qcom-sm7150/"
@@ -103,8 +106,13 @@ cp packages/libcamera/*.patch packages/libcamera/APKBUILD "$PMAPORTS/temp/libcam
 mkdir -p "$PMAPORTS/temp/libqmi"
 cp packages/libqmi/*.patch packages/libqmi/APKBUILD "$PMAPORTS/temp/libqmi/"
 
-# 4. Checksums and build
-pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi
+# 4. hexagonrpcd that serves the ADSP's audio PD (echo cancellation) and can write
+#    the sensor registry. Built out of temp/ too, over the distribution's package.
+mkdir -p "$PMAPORTS/temp/hexagonrpcd"
+cp packages/hexagonrpcd/* "$PMAPORTS/temp/hexagonrpcd/"
+
+# 5. Checksums and build
+pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi hexagonrpcd
 pmbootstrap shutdown          # see the pitfalls below
 pmbootstrap install
 ```

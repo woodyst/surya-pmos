@@ -1,0 +1,94 @@
+From efd83553297ed74bf97343418a4bc80b775dd1ba Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 09:53:03 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice-dai: optionally start the call at
+ prepare
+
+Downstream starts a voice call from the front end's prepare, which DPCM
+runs after the back ends' prepare: by then the AFE ports are running when
+the vocproc is created and its topology committed. This driver starts the
+call from the DAI's startup, before the back ends are configured.
+
+On a POCO X3 NFC that makes no difference for the old single-mic echo
+canceller (0x10F71), whose topology commit succeeds, but the DSP fails
+the commit (ADSP_EFAILED) of the SMECNS V2 topologies, both the built-in
+0x10F89 and the vendor's 0x10000003, with every parameter before it
+accepted.
+
+Add a writable start_at_prepare parameter, off by default, that leaves
+the start for prepare. prepare runs again after an xrun; the path is
+already up then and -EALREADY is not an error.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KTiSoMiKqxPrmSArLxTpFP
+---
+ sound/soc/qcom/qdsp6/q6voice-dai.c | 37 ++++++++++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice-dai.c b/sound/soc/qcom/qdsp6/q6voice-dai.c
+index 1dc0b9007..903ec8f47 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -11,14 +11,50 @@
+ 
+ #define DRV_NAME	"q6voice-dai"
+ 
++/*
++ * When the call's voice path starts. Downstream starts it from the front end's
++ * prepare (msm_pcm_prepare()), which DPCM runs after the back ends' prepare,
++ * so the AFE ports are already running when the vocproc is created and its
++ * topology committed. This driver starts it from startup, before the back
++ * ends are even configured. The old single-mic echo canceller does not mind,
++ * but the DSP fails the topology commit of the SMECNS V2 topologies (the
++ * built-in 0x10F89 and the vendor's 0x10000003) on a POCO X3 NFC.
++ * Writable and off by default; read when a call opens its streams.
++ */
++static bool start_at_prepare;
++module_param(start_at_prepare, bool, 0644);
++MODULE_PARM_DESC(start_at_prepare,
++		 "start the voice path at prepare, with the AFE ports running, instead of at startup");
++
++/* Whether each direction's start was left for prepare when it was opened. */
++static bool q6voice_dai_deferred[2];
++
+ static int q6voice_dai_startup(struct snd_pcm_substream *substream,
+ 			       struct snd_soc_dai *dai)
+ {
+ 	struct q6voice *v = snd_soc_dai_get_drvdata(dai);
+ 
++	q6voice_dai_deferred[substream->stream] = start_at_prepare;
++	if (start_at_prepare)
++		return 0;
++
+ 	return q6voice_start(v, Q6VOICE_PATH_VOICE, substream->stream);
+ }
+ 
++static int q6voice_dai_prepare(struct snd_pcm_substream *substream,
++			       struct snd_soc_dai *dai)
++{
++	struct q6voice *v = snd_soc_dai_get_drvdata(dai);
++	int ret;
++
++	if (!q6voice_dai_deferred[substream->stream])
++		return 0;
++
++	/* prepare runs again after an xrun: the path is already up then */
++	ret = q6voice_start(v, Q6VOICE_PATH_VOICE, substream->stream);
++	return ret == -EALREADY ? 0 : ret;
++}
++
+ static void q6voice_dai_shutdown(struct snd_pcm_substream *substream,
+ 				 struct snd_soc_dai *dai)
+ {
+@@ -29,6 +65,7 @@ static void q6voice_dai_shutdown(struct snd_pcm_substream *substream,
+ 
+ static struct snd_soc_dai_ops q6voice_dai_ops = {
+ 	.startup = q6voice_dai_startup,
++	.prepare = q6voice_dai_prepare,
+ 	.shutdown = q6voice_dai_shutdown,
+ };
+ 
+-- 
+2.43.0
+

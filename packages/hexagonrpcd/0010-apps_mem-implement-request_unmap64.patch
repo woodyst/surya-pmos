@@ -1,0 +1,80 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] apps_mem: implement request_unmap64
+
+The ADSP's static audio PD grows its remote heap during a voice call
+(apps_mem_request_map64 with ADSP_MMAP_REMOTE_HEAP_ADDR, 3 MiB on a POCO
+X3 NFC) and gives it back after the call with apps_mem method 3,
+request_unmap64, which was rejected: nothing was freed and the next call
+ran out of heap. Implement it with FASTRPC_IOCTL_MUNMAP.
+
+It needs a kernel that takes the memory back from the DSP's VMs before
+freeing it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/hexagonrpcd/apps_mem.c b/hexagonrpcd/apps_mem.c
+index 442a4d2..784b0ce 100644
+--- a/hexagonrpcd/apps_mem.c
++++ b/hexagonrpcd/apps_mem.c
+@@ -107,6 +107,41 @@ static uint32_t apps_mem_request_map64(void *data,
+ 	return 0;
+ }
+ 
++/*
++ * The audio PD gives back the remote heap it grew during a call. The kernel
++ * finds the mapping by DSP address and size, takes it back from the DSP's VMs
++ * and frees it.
++ */
++static uint32_t apps_mem_request_unmap64(void *data,
++					 const struct fastrpc_io_buffer *inbufs,
++					 struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_mem_ctx *ctx = data;
++	const struct {
++		uint64_t vadsp;
++		int64_t len;
++	} *first_in = inbufs[0].p;
++	struct fastrpc_req_munmap munmap = {
++		.vaddrout = first_in->vadsp,
++		.size = first_in->len,
++	};
++	int ret;
++
++	fprintf(stderr, "apps_mem_request_unmap64: vadsp 0x%" PRIx64 " len 0x%" PRIx64 "\n",
++		first_in->vadsp, (uint64_t) first_in->len);
++
++	ret = ioctl(ctx->fd, FASTRPC_IOCTL_MUNMAP, &munmap);
++	if (ret == -1) {
++		perror("Memory unmap failed");
++		return AEE_EFAILED;
++	} else if (ret) {
++		fprintf(stderr, "Memory unmap failed: %s\n", aee_strerror[ret]);
++		return ret;
++	}
++
++	return 0;
++}
++
+ struct fastrpc_interface *fastrpc_apps_mem_init(int fd)
+ {
+ 	struct fastrpc_interface *iface;
+@@ -144,7 +179,7 @@ static const struct fastrpc_function_impl apps_mem_procs[] = {
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = &apps_mem_request_map64_def, .impl = apps_mem_request_map64, },
+-	{ .def = NULL, .impl = NULL, },
++	{ .def = &apps_mem_request_unmap64_def, .impl = apps_mem_request_unmap64, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ };
+diff --git a/hexagonrpcd/interfaces/apps_mem.def b/hexagonrpcd/interfaces/apps_mem.def
+index 948b837..44cb126 100644
+--- a/hexagonrpcd/interfaces/apps_mem.def
++++ b/hexagonrpcd/interfaces/apps_mem.def
+@@ -25,5 +25,6 @@
+ #include <libhexagonrpc/interface.h>
+ 
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(2, apps_mem_request_map64, 8, 0, 4, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(3, apps_mem_request_unmap64, 4, 0, 0, 0)
+ 
+ #endif /* INTERFACE_APPS_MEM_DEF */

@@ -1,0 +1,19 @@
+[Unit]
+Description=Cancelación de eco de las llamadas (topologías y calibración de fábrica en el DSP)
+Documentation=https://github.com/woodyst/surya-pmos/blob/main/docs/echo-cancellation.es.md
+# Necesita los módulos de voz (armar-audio) y el PD de audio del ADSP servido. Si algo falla,
+# el guion deja las llamadas en paso directo: funcionan, sin cancelar el eco.
+After=armar-audio.service hexagonrpcd-adsp-audiopd.service
+Wants=hexagonrpcd-adsp-audiopd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/activar-cancelacion-eco.sh
+TimeoutStartSec=240
+
+[Install]
+# ⚠️ NO WantedBy=multi-user.target: armar-audio.service va After=multi-user.target (carga diferida del
+# audio), así que colgarse de multi-user y esperar a armar-audio es un ciclo y systemd borra este
+# trabajo en el arranque (2026-09-12: arrancaba a mano pero nunca solo). Lo arrastra armar-audio.
+WantedBy=armar-audio.service

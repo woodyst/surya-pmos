@@ -4,7 +4,7 @@ maintainer="Danila Tikhonov <danila@jiaxyga.com>"
 _flavor="postmarketos-qcom-sm7150"
 pkgname=linux-$_flavor
 pkgver=7.1_rc3
-pkgrel=82
+pkgrel=93
 pkgdesc="Mainline Kernel fork for SM7150 devices"
 arch="aarch64"
 _carch="arm64"
@@ -164,6 +164,16 @@ source="
 	0128-net-ipa-bound-the-wait-for-a-transaction-to-quiesce.patch
 	0129-ASoC-qdsp6-q6voice-rebuild-the-whole-voice-session-on-a-device-move.patch
 	0130-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-from-the-manager.patch
+	0131-ASoC-qdsp6-q6core-register-the-vendor-s-custom-topologies-with-the-DSP.patch
+	0132-ASoC-qdsp6-q6voice-set-up-the-vendor-vocproc-the-way-downstream-does.patch
+	0133-ASoC-qdsp6-q6voice-send-the-endpoint-media-format-before-the-topology-commit.patch
+	0134-ASoC-qdsp6-q6voice-knobs-for-mapping-the-voice-calibration.patch
+	0135-ASoC-qdsp6-q6voice-dai-optionally-start-the-call-at-prepare.patch
+	0136-ASoC-qdsp6-q6voice-let-the-vocproc-endpoints-be-announced-as-stereo.patch
+	0137-arm64-dts-qcom-sm7150-give-the-ADSP-fastrpc-channel-a-remote-heap-and-its-VMIDs.patch
+	0138-misc-fastrpc-give-remote-heap-memory-back-to-HLOS-before-freeing-it.patch
+	0139-ASoC-qdsp6-q6voice-mute-the-call-uplink-in-the-DSP.patch
+	0140-ASoC-qdsp6-q6voice-switch-the-calibration-set-with-the-device.patch
 "
 builddir="$srcdir/linux-$_tag"
 
@@ -200,7 +210,7 @@ package() {
 
 sha512sums="
 bb837959e337c66ff374d8f3aac6593723c4f4eb69fb18f9ff25c5c096c6656fd71149e105255c0f97c83e0bf547b0b0e94ca23eabde7b5f88308e9ecd784e3d  linux-postmarketos-qcom-sm7150-v7.1_rc3.tar.gz
-3e3e74278d6028a5efb6f6fe2d480fcf6d5461deff8da9087deb7c4122838ee0c04fcd9674f65b51745303c2b18c5ace16a4c9d7ed16f89c38b88c9cb5577d48  config-postmarketos-qcom-sm7150.aarch64
+829d0907225ddf506c368a76d5658bcdd635ee6bffee8b33840c03093f8493dd019eca6538eed5fd3e78673061dbc5e6f8c3ef8827a110d62387b92a618fc0b7  config-postmarketos-qcom-sm7150.aarch64
 78f0c13f84a10aad84cce37a08d851ef13c4cdd10f1db0f1447d295db48e49a1310d57dc1beb862099c9c6c3096a177d5c02aaca8b48b800dac5babc96c815b3  0001-arm64-dts-qcom-sm7150-xiaomi-common-fix-USB-C-to-all.patch
 93bb7e4dce5131240dffc73fa63c94e9f9c2cdbcb9f9cb36b94f61e603dae3d2f933b3c6da36285b21dbafe0f95b4080af51ed0bf8988d2a711cbdc9ca57ca16  0002-power-supply-add-TI-BQ25970-switched-capacitor-charg.patch
 d66b9f6f8cd6b8c6c168313471f10a86f050e634557b236a330b2c860f33efc9c5b01da42576819537008daac37a1fbcab5ccc0e80b3eb2bc2e0da815d104226  0003-arm64-dts-qcom-sm7150-xiaomi-common-raise-max-charge.patch
@@ -331,4 +341,14 @@ c44c07c1f045ef40d5215230380b80c5fcbac72618086022dffaac1da5356ec629f09f689f880a79
 7b7732d0897783034c61cee9751e1541cc3e4492a7b0e882941f862c34cc147200e5b0a072aa66d559a6c9204348d643cfa70a512cbde0d27f6e82f7cb72c34a  0128-net-ipa-bound-the-wait-for-a-transaction-to-quiesce.patch
 0c47132e9dc708cd30db350d7c8bb1ebe8b5105bbd158c04baa11f3d5779251d7be34fb69dc372dd3c569e18cf14cb3122df91f736dd8f97073822f0ee0a02c8  0129-ASoC-qdsp6-q6voice-rebuild-the-whole-voice-session-on-a-device-move.patch
 a40f47eb5733add28dd69c2ec6891a64fd0c3099b3936179886faa7cd153ef64dad8a23f56bf15cee2a7466acaf0d4602a70a0ba8ccab41e149dc199cf22d542  0130-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-from-the-manager.patch
+8ade85a97955bfed7420d0ef8656628fe2ad4d7cf61d8dde71e3fd95f467ea3a82b710c18b347f5c6be5fca2b55f7dd02ad0ae0c28753eb795c297f06c5b9015  0131-ASoC-qdsp6-q6core-register-the-vendor-s-custom-topologies-with-the-DSP.patch
+43837e273bfee86a743f36cb8aa3caa2ad3859e5163165613d9d7bfa977854242bec68c63598eecdde1b20335b5bae0553b89f01a83a79ecccaee5c5686de470  0132-ASoC-qdsp6-q6voice-set-up-the-vendor-vocproc-the-way-downstream-does.patch
+f054ddf73d339febabd1c6f475e1f24e03874f8a14909d022e105f1482bf97eb25a92f813109dc5cb3bfc6609a67819bcb476ee22361b5c2f00044c074a8892f  0133-ASoC-qdsp6-q6voice-send-the-endpoint-media-format-before-the-topology-commit.patch
+3ec1c403ee029806ab4bd72e36894bc2c1fc91d9a1fc50a30a9dd46a543e40027115b9a4fe49cf4dab44bbb36c0d32b8ff537510ffd1fb76215089aa34f15410  0134-ASoC-qdsp6-q6voice-knobs-for-mapping-the-voice-calibration.patch
+1e3df8e85b9ada742ba0f315c19e6aade57c02f1e4a35ac3e4f82d36d3f8ece6ffea1a213c28c370b1b10a970c0628953b41e26d5bc4f7df2fc379f8075ffd08  0135-ASoC-qdsp6-q6voice-dai-optionally-start-the-call-at-prepare.patch
+ab635e4857351a576b02e67fa6c745b8c4b764468dcef43d902f50bf424b6b1a09d7841d9e5fdfc78e907938882554c646e1ff10a752ead9e752ccab20820cf1  0136-ASoC-qdsp6-q6voice-let-the-vocproc-endpoints-be-announced-as-stereo.patch
+dec0b00fa5ec4202247ea20a9d1b20a00c66f0626575c63df9925578683b6e6d1b6182e488e66d180a788470240d76da562883af6f33d4cd057f0ba8f2c7464a  0137-arm64-dts-qcom-sm7150-give-the-ADSP-fastrpc-channel-a-remote-heap-and-its-VMIDs.patch
+ae19cb70ab283285b6938af5854e51659637dced3e5dfe25370ec4e71ab4ae2429c8cd93a9f91ad033f23f96497b420a49af3d0438fbd05d599e1c5c14cb6f74  0138-misc-fastrpc-give-remote-heap-memory-back-to-HLOS-before-freeing-it.patch
+fa885903a25b12067f01ff36ca6cbb5dc2b3da86e2524ac0c34fc7f21f6956a0324f1a84a1c953f17d959b1664b83b3e3f301164c95463c92adb8bd83debaf09  0139-ASoC-qdsp6-q6voice-mute-the-call-uplink-in-the-DSP.patch
+db5c833f3d6915095d2cb13648f7903275f2162a88083780680acae01084f327ec7bc959fb4016f26e2906f3a4152a90f7d854e6a20a59120e62086e7d5754e2  0140-ASoC-qdsp6-q6voice-switch-the-calibration-set-with-the-device.patch
 "

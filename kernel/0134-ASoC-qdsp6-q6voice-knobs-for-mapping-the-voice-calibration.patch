@@ -1,0 +1,132 @@
+From c1d01ab713dce18b7736aaf0ba6f2b92e565a1fe Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 09:44:40 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: knobs for mapping the voice calibration
+
+VSS_IMEMORY_CMD_MAP_PHYSICAL fails with ADSP_EBADPARAM on a POCO X3 NFC
+when the calibration is allocated through the q6asm-dais SMMU context,
+with the stream ID in the upper address bits, and is_cached = 0. An
+earlier attempt, with plain physical addresses the DSP could not reach
+through its SMMU, was accepted with is_cached = 0 and crashed the ADSP
+with is_cached = 1, which is what downstream sends and the only value the
+CVD header lists as supported.
+
+Add two writable parameters, both keeping the current behaviour by
+default, so the combinations can be tried between calls:
+q6mvm map_cached (is_cached = 1) and q6voice cal_sid (whether the stream
+ID goes in the address).
+
+Also ignore a trailing newline in cal_set: a sysfs write keeps it in a
+string parameter and it ended up in the firmware file name.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KTiSoMiKqxPrmSArLxTpFP
+---
+ sound/soc/qcom/qdsp6/q6mvm.c   | 22 +++++++++++++++-------
+ sound/soc/qcom/qdsp6/q6voice.c | 23 +++++++++++++++++------
+ 2 files changed, 32 insertions(+), 13 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6mvm.c b/sound/soc/qcom/qdsp6/q6mvm.c
+index 4e5dd4666..861db7637 100644
+--- a/sound/soc/qcom/qdsp6/q6mvm.c
++++ b/sound/soc/qcom/qdsp6/q6mvm.c
+@@ -147,15 +147,23 @@ struct vss_imemory_cmd_unmap_cmd {
+ 	u32 mem_handle;
+ } __packed;
+ 
++/*
++ * is_cached: downstream sends 1, the only value the CVD header lists as
++ * supported. It crashed the ADSP when first tried on this phone, but that was
++ * with memory the DSP could not reach through its SMMU; 0 was accepted then.
++ * With the memory mapped through the q6asm SMMU context (stream ID in the
++ * upper bits) the DSP refuses 0 with ADSP_EBADPARAM. Writable and off by
++ * default, so that 1 can be tried between calls.
++ */
++static bool map_cached;
++module_param(map_cached, bool, 0644);
++MODULE_PARM_DESC(map_cached, "map voice calibration memory with is_cached = 1, as downstream");
++
+ /*
+  * Map memory the voice services will read calibration from. The caller has
+  * already written the vss_imemory_table_t (next table descriptor, then one
+- * block) into DSP-visible memory at @table_addr.
+- *
+- * is_cached stays 0 although downstream sends 1: its buffers are ion
+- * allocations with explicit cache maintenance, ours come from
+- * dma_alloc_coherent(), and 1 crashed the ADSP when it was tried on this
+- * phone. Every other field is the downstream value.
++ * block) into DSP-visible memory at @table_addr. Every field but is_cached
++ * (see map_cached) is the downstream value.
+  */
+ int q6mvm_map_memory(struct q6voice_session *mvm, u64 table_addr, u32 table_size,
+ 		     u32 *mem_handle)
+@@ -170,7 +178,7 @@ int q6mvm_map_memory(struct q6voice_session *mvm, u64 table_addr, u32 table_size
+ 	cmd.table_addr_lsw = lower_32_bits(table_addr);
+ 	cmd.table_addr_msw = upper_32_bits(table_addr);
+ 	cmd.table_size = table_size;
+-	cmd.is_cached = 0;
++	cmd.is_cached = map_cached;
+ 	cmd.cache_line_size = 128;
+ 	cmd.access_mask = 3;
+ 	cmd.page_align = 4096;
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 741a3cfe7..5cdba8508 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -363,10 +363,19 @@ static bool q6voice_path_is_bt(struct q6voice_path *p)
+ 	       q6afe_get_port_id(p->rx_port) == AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX;
+ }
+ 
+-/* Same as q6asm-dai builds prtd->phys: the stream ID goes in the upper 32 bits */
++/*
++ * Same as q6asm-dai builds prtd->phys: the stream ID goes in the upper 32 bits.
++ * VSS_IMEMORY_CMD_MAP_PHYSICAL refused such an address (ADSP_EBADPARAM, with
++ * is_cached = 0) where it had taken a plain physical one; cal_sid=N leaves the
++ * stream ID out, to tell the two apart between calls.
++ */
++static bool cal_sid = true;
++module_param(cal_sid, bool, 0644);
++MODULE_PARM_DESC(cal_sid, "put the SMMU stream ID in the upper bits of voice calibration addresses");
++
+ static u64 q6voice_dsp_addr(struct q6voice_cal *cal, dma_addr_t dma)
+ {
+-	return cal->sid < 0 ? dma : dma | ((u64)cal->sid << 32);
++	return cal->sid < 0 || !cal_sid ? dma : dma | ((u64)cal->sid << 32);
+ }
+ 
+ static struct device *q6voice_find_dsp_dev(int *sid)
+@@ -431,6 +440,8 @@ static int q6voice_cal_load(struct q6voice_path *p)
+ 	struct device *dev = p->v->dev;
+ 	const struct firmware *fw;
+ 	struct q6voice_cal *cal;
++	/* a sysfs write keeps its trailing newline in a string parameter */
++	int set_len = strcspn(cal_set, "\n");
+ 	char name[96];
+ 	int i, ret;
+ 
+@@ -462,8 +473,8 @@ static int q6voice_cal_load(struct q6voice_path *p)
+ 		struct q6voice_cal_blob *b = &cal->blob[i];
+ 		u32 *t = cal->table;
+ 
+-		snprintf(name, sizeof(name), Q6VOICE_CAL_DIR "voice-%s-%s.bin",
+-			 cal_set, q6voice_cal_part[i]);
++		snprintf(name, sizeof(name), Q6VOICE_CAL_DIR "voice-%.*s-%s.bin",
++			 set_len, cal_set, q6voice_cal_part[i]);
+ 		ret = request_firmware(&fw, name, dev);
+ 		if (ret)
+ 			goto err;
+@@ -482,8 +493,8 @@ static int q6voice_cal_load(struct q6voice_path *p)
+ 
+ 		if (i != Q6VOICE_CAL_DEVCFG) {
+ 			snprintf(name, sizeof(name),
+-				 Q6VOICE_CAL_DIR "voice-%s-%s-col.bin",
+-				 cal_set, q6voice_cal_part[i]);
++				 Q6VOICE_CAL_DIR "voice-%.*s-%s-col.bin",
++				 set_len, cal_set, q6voice_cal_part[i]);
+ 			ret = request_firmware(&fw, name, dev);
+ 			if (ret)
+ 				goto err;
+-- 
+2.43.0
+

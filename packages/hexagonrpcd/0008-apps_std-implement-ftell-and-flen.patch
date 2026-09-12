@@ -1,0 +1,215 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] apps_std: implement ftell and flen; name the handle of unsupported calls
+
+Right after the ADSP's audio PD is created (-a audiopd) it asks for
+apps_std method 8 three times, which is ftell in Qualcomm's apps_std
+interface (0 fopen ... 8 ftell, 9 fseek, 10 flen), and the call is
+rejected. Implement ftell with a new tell operation of hexagonfs (lseek to
+the current position on mapped files) and flen, which usually comes with
+it, from fstat.
+
+Also print the handle when a call is rejected: the method number alone
+does not say which interface was asked.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index 63a5000..a55dccc 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -189,6 +189,52 @@ static uint32_t apps_std_fseek(void *data,
+ 	return 0;
+ }
+ 
++/* Downstream apps_std_ftell(): the audio PD asks where a stream is. */
++static uint32_t apps_std_ftell(void *data,
++			       const struct fastrpc_io_buffer *inbufs,
++			       struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const uint32_t *fd = inbufs[0].p;
++	uint32_t *pos = outbufs[0].p;
++	off_t ret;
++
++	ret = hexagonfs_tell(ctx->fds, *fd);
++	if (ret < 0) {
++		fprintf(stderr, "Could not tell stream position: %s\n",
++				strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++	*pos = ret;
++
++	return 0;
++}
++
++/* Downstream apps_std_flen(): the length of a stream, as a 64-bit number. */
++static uint32_t apps_std_flen(void *data,
++			      const struct fastrpc_io_buffer *inbufs,
++			      struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const uint32_t *fd = inbufs[0].p;
++	struct stat stats;
++	uint64_t len;
++	int ret;
++
++	ret = hexagonfs_fstat(ctx->fds, *fd, &stats);
++	if (ret) {
++		fprintf(stderr, "Could not get stream length: %s\n",
++				strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++	len = stats.st_size;
++	memcpy(outbufs[0].p, &len, sizeof(len));
++
++	return 0;
++}
++
+ static uint32_t apps_std_fopen_with_env(void *data,
+ 					const struct fastrpc_io_buffer *inbufs,
+ 					struct fastrpc_io_buffer *outbufs)
+@@ -567,12 +613,18 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
+ 	},
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
++	{
++		.def = &apps_std_ftell_def,
++		.impl = apps_std_ftell,
++	},
+ 	{
+ 		.def = &apps_std_fseek_def,
+ 		.impl = apps_std_fseek,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
++	{
++		.def = &apps_std_flen_def,
++		.impl = apps_std_flen,
++	},
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+diff --git a/hexagonrpcd/hexagonfs.c b/hexagonrpcd/hexagonfs.c
+index 6c2b749..1dd93cc 100644
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -325,6 +325,23 @@ int hexagonfs_lseek(struct hexagonfs_fd **fds, int fileno, off_t off, int whence
+ 	return fd->ops->seek(fd, off, whence);
+ }
+ 
++off_t hexagonfs_tell(struct hexagonfs_fd **fds, int fileno)
++{
++	struct hexagonfs_fd *fd;
++
++	if (fileno < 0 || fileno >= HEXAGONFS_MAX_FD)
++		return -EBADF;
++
++	fd = fds[fileno];
++	if (fd == NULL)
++		return -EBADF;
++
++	if (fd->ops->tell == NULL)
++		return -ENOSYS;
++
++	return fd->ops->tell(fd);
++}
++
+ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void *ptr)
+ {
+ 	struct hexagonfs_fd *fd;
+diff --git a/hexagonrpcd/hexagonfs.h b/hexagonrpcd/hexagonfs.h
+index c2c6d70..ab4091d 100644
+--- a/hexagonrpcd/hexagonfs.h
++++ b/hexagonrpcd/hexagonfs.h
+@@ -44,6 +44,7 @@ struct hexagonfs_file_ops {
+ 	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
+ 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
+ 	int (*seek)(struct hexagonfs_fd *fd, off_t off, int whence);
++	off_t (*tell)(struct hexagonfs_fd *fd);
+ 	int (*rename)(struct hexagonfs_fd *old_dir, const char *old_segment,
+ 		      struct hexagonfs_fd *new_dir, const char *new_segment);
+ };
+@@ -80,6 +81,7 @@ int hexagonfs_close(struct hexagonfs_fd **fds, int fileno);
+ 
+ int hexagonfs_fstat(struct hexagonfs_fd **fds, int fileno, struct stat *stats);
+ int hexagonfs_lseek(struct hexagonfs_fd **fds, int fileno, off_t pos, int whence);
++off_t hexagonfs_tell(struct hexagonfs_fd **fds, int fileno);
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t size, char *name);
+ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void *ptr);
+ ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
+diff --git a/hexagonrpcd/hexagonfs_mapped.c b/hexagonrpcd/hexagonfs_mapped.c
+index 5aabc30..9c1d7dc 100644
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -209,6 +209,18 @@ static int mapped_seek(struct hexagonfs_fd *fd, off_t off, int whence)
+ 	return 0;
+ }
+ 
++static off_t mapped_tell(struct hexagonfs_fd *fd)
++{
++	struct mapped_ctx *ctx = fd->data;
++	off_t ret;
++
++	ret = lseek(ctx->fd, 0, SEEK_CUR);
++	if (ret == -1)
++		return -errno;
++
++	return ret;
++}
++
+ static int mapped_stat(struct hexagonfs_fd *fd, struct stat *stats)
+ {
+ 	struct mapped_ctx *ctx = fd->data;
+@@ -379,6 +391,7 @@ struct hexagonfs_file_ops hexagonfs_mapped_ops = {
+ 	.write = mapped_write,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
++	.tell = mapped_tell,
+ 	.stat = mapped_stat,
+ 	.rename = mapped_rename,
+ };
+@@ -403,6 +416,7 @@ struct hexagonfs_file_ops hexagonfs_mapped_sysfs_ops = {
+ 	.write = mapped_write,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
++	.tell = mapped_tell,
+ 	.stat = mapped_sysfs_stat,
+ 	.rename = mapped_rename,
+ };
+diff --git a/hexagonrpcd/interfaces/apps_std.def b/hexagonrpcd/interfaces/apps_std.def
+index ca6428e..6d58c69 100644
+--- a/hexagonrpcd/interfaces/apps_std.def
++++ b/hexagonrpcd/interfaces/apps_std.def
+@@ -29,7 +29,9 @@ HEXAGONRPC_DEFINE_REMOTE_METHOD(2, apps_std_fflush, 8, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(3, apps_std_fclose, 1, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(4, apps_std_fread, 1, 0, 2, 1)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(5, apps_std_fwrite, 1, 1, 2, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(8, apps_std_ftell, 1, 0, 1, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(9, apps_std_fseek, 3, 0, 0, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(10, apps_std_flen, 1, 0, 2, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(19, apps_std_fopen_with_env, 0, 4, 1, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(24, apps_std_fremove, 0, 1, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(26, apps_std_opendir, 0, 1, 2, 0)
+diff --git a/hexagonrpcd/listener.c b/hexagonrpcd/listener.c
+index 5e1818c..9b44d62 100644
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -300,14 +300,14 @@ static int invoke_requested_procedure(size_t n_ifaces,
+ 	}
+ 
+ 	if (method >= ifaces[handle]->n_procs) {
+-		fprintf(stderr, "Unsupported method: %u (%08x)\n", method, sc);
++		fprintf(stderr, "Unsupported method: %u (%08x) on handle %u\n", method, sc, handle);
+ 		return reject_call(result, AEE_EUNSUPPORTED, returned, out_n_outbufs);
+ 	}
+ 
+ 	impl = &ifaces[handle]->procs[method];
+ 
+ 	if (impl->def == NULL || impl->impl == NULL) {
+-		fprintf(stderr, "Unsupported method: %u (%08x)\n", method, sc);
++		fprintf(stderr, "Unsupported method: %u (%08x) on handle %u\n", method, sc, handle);
+ 		return reject_call(result, AEE_EUNSUPPORTED, returned, out_n_outbufs);
+ 	}
+ 

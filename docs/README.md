@@ -77,3 +77,12 @@ A few of these cost days, and none of them are specific to a POCO X3:
 | [`bt-return-to-headset.es.md`](bt-return-to-headset.es.md) | ★ **Moving a call from the speaker back to a Bluetooth headset came back mute both ways.** The SLIMbus satellite controller (`qcom-ngd-ctrl`) drops the channel-removal messages, so the DSP's bus manager never learns the channels are gone and, inside a call, the DSP↔chip link stays dead. Kernel patch 0130 removes them the way the vendor kernel does. Not specific to this phone: any Qualcomm board with `qcom-ngd-ctrl`. Also how it was narrowed down with a two-phone test bench, and the new event-driven headset call supervisor |
 
 ⚠️ In Spanish, no English version yet.
+
+
+## Added 2026-09-12
+
+| document | what it covers |
+|---|---|
+| [`echo-cancellation.es.md`](echo-cancellation.es.md) | ★ **Echo cancellation in calls works** (echo ~23 dB down). The vendor's canceller is a **dynamic module loaded by the ADSP's audio PD**, which nothing in mainline served: every topology using it failed its commit until `hexagonrpcd` learned to create and serve that static PD (and the kernel gave the fastrpc channel its remote heap). Also the vendor vocproc sequence, mapping the calibration, a real mute in the DSP and the per-device calibration. The factory calibration itself is not included |
+
+⚠️ In Spanish, no English version yet.

@@ -1,0 +1,132 @@
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -108,9 +108,20 @@
+ /*
+  * Construct the root directory
+  *
++ * registry_dir, if non-NULL, overrides where the sensor registry (the
++ * "registry" subdirectory the ADSP reads calibration data from and writes
++ * new registry entries to, e.g. SNS_REG_INIT's scratch files) is backed by
++ * on the real filesystem. When NULL, the pre-existing behavior is kept: a
++ * read-only snapshot under prefix is used, with only two fixed child names
++ * ("registry" and "sns_reg_version") exposed - new files can never be
++ * created there. When given, the whole directory is exposed as a real,
++ * writable, passthrough mapped directory instead, so the ADSP can create
++ * new registry entries that actually persist.
++ *
+  * TODO: Make this free()-able with reference counts
+  */
+-struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
++struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp,
++					    const char *registry_dir)
+ {
+ 	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_version, *sns_reg_config, *socinfo;
+ 	size_t n_prefix;
+@@ -167,14 +178,22 @@
+ 	 * Some platforms need this in / and some need it in /mnt/vendor. Form
+ 	 * a hard link between both locations.
+ 	 */
+-	persist_dir = hfs_mkdir("persist", 1,
+-				hfs_mkdir("sensors", 1,
+-					hfs_mkdir("registry", 2,
+-						hfs_map("registry", sns_reg),
+-						hfs_map("sns_reg_version", sns_reg_version)
++	if (registry_dir != NULL) {
++		persist_dir = hfs_mkdir("persist", 1,
++					hfs_mkdir("sensors", 1,
++						hfs_map("registry", registry_dir)
++					)
++			      );
++	} else {
++		persist_dir = hfs_mkdir("persist", 1,
++					hfs_mkdir("sensors", 1,
++						hfs_mkdir("registry", 2,
++							hfs_map("registry", sns_reg),
++							hfs_map("sns_reg_version", sns_reg_version)
++						)
+ 					)
+-				)
+-		      );
++			      );
++	}
+ 
+ 	/*
+ 	 * Some platforms need vendor in / and some need it in /system. Form
+--- a/hexagonrpcd/rpcd_builder.h
++++ b/hexagonrpcd/rpcd_builder.h
+@@ -24,6 +24,7 @@
+ 
+ #include "hexagonfs.h"
+ 
+-struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp);
++struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp,
++					    const char *registry_dir);
+ 
+ #endif
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -139,6 +139,9 @@
+ 	       "\t-d DSP\t\tDSP name (default: "")\n"
+ 	       "\t-f DEVICE\tFastRPC device node to attach to\n"
+ 	       "\t-p PROGRAM\tRun client program with shared file descriptor\n"
++	       "\t-P DIR\t\tOverride the sensor registry directory with a real,\n"
++	       "\t\t\twritable one (default: read-only, fixed set of files\n"
++	       "\t\t\tunder -R)\n"
+ 	       "\t-R DIR\t\tRoot directory of served files (default: /usr/share/qcom/)\n"
+ 	       "\t-s\t\tAttach to sensorspd\n");
+ }
+@@ -250,7 +253,8 @@
+ 	return 0;
+ }
+ 
+-static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
++static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp,
++				  const char *registry_dir)
+ {
+ 	struct fastrpc_interface **ifaces;
+ 	struct hexagonfs_dirent *root_dir;
+@@ -261,7 +265,7 @@
+ 	if (ifaces == NULL)
+ 		return NULL;
+ 
+-	root_dir = construct_root_dir(device_dir, dsp);
++	root_dir = construct_root_dir(device_dir, dsp, registry_dir);
+ 
+ 	/*
+ 	 * The apps_remotectl interface patiently waits for this function to
+@@ -410,6 +414,7 @@
+ {
+ 	char *fastrpc_node = NULL;
+ 	const char *device_dir = "/usr/share/qcom/";
++	const char *registry_dir = NULL;
+ 	const char *dsp = "";
+ 	const char *create_shell = NULL;
+ 	const char *guessed_device_dir;
+@@ -435,7 +440,7 @@
+ 	if (guessed_device_dir != NULL)
+ 		device_dir = guessed_device_dir;
+ 
+-	while ((opt = getopt(argc, argv, "c:d:f:p:R:s")) != -1) {
++	while ((opt = getopt(argc, argv, "c:d:f:p:P:R:s")) != -1) {
+ 		switch (opt) {
+ 			case 'c':
+ 				create_shell = optarg;
+@@ -450,6 +455,9 @@
+ 				progs[n_progs] = optarg;
+ 				n_progs++;
+ 				break;
++			case 'P':
++				registry_dir = optarg;
++				break;
+ 			case 'R':
+ 				device_dir = optarg;
+ 				break;
+@@ -496,7 +504,7 @@
+ 	if (ret)
+ 		goto err_close_dev;
+ 
+-	start_reverse_tunnel(fd, device_dir, dsp);
++	start_reverse_tunnel(fd, device_dir, dsp, registry_dir);
+ 
+ 	terminate_clients(n_progs, pids);
+ 

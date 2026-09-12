@@ -1,0 +1,164 @@
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -150,6 +150,7 @@
+ 				  uint32_t *rctx,
+ 				  uint32_t *handle,
+ 				  uint32_t *sc,
++				  uint32_t n_outbufs,
+ 				  const struct fastrpc_io_buffer *returned,
+ 				  struct fastrpc_io_buffer **decoded)
+ {
+@@ -166,7 +167,15 @@
+ 		return -1;
+ 	}
+ 
+-	outbufs_len = outbufs_calculate_size(REMOTE_SCALARS_OUTBUFS(*sc), returned);
++	/*
++	 * n_outbufs is how many buffers invoke_requested_procedure() actually
++	 * populated for the call being reported here - NOT
++	 * REMOTE_SCALARS_OUTBUFS(*sc), which (by the time we get here) is
++	 * already the *next* fetched call's scalar code, and would also be
++	 * wrong for a rejected call (it declared some out buffer count, but
++	 * "returned" is NULL since nothing was produced).
++	 */
++	outbufs_len = outbufs_calculate_size(n_outbufs, returned);
+ 
+ 	if (outbufs_len) {
+ 		outbufs = malloc(outbufs_len);
+@@ -176,7 +185,7 @@
+ 			goto err_free_inbufs;
+ 		}
+ 
+-		outbufs_encode(REMOTE_SCALARS_OUTBUFS(*sc), returned, outbufs);
++		outbufs_encode(n_outbufs, returned, outbufs);
+ 	}
+ 
+ 	ret = adsp_listener_next2(fd,
+@@ -228,13 +237,34 @@
+ 	return ret;
+ }
+ 
++/*
++ * Rejects the current call cleanly: the remote gets *result back on the next
++ * round-trip as normal, with zero output buffers. This is deliberately
++ * different from returning nonzero (which tears down the whole reverse
++ * tunnel) - a single call this daemon doesn't support (unknown interface,
++ * unknown method, malformed argument count, ...) is routine (e.g. the ADSP
++ * probing for an optional interface that doesn't exist here) and must not
++ * kill every *other* already-working call on the same connection.
++ */
++static int reject_call(uint32_t *result, uint32_t code,
++		       struct fastrpc_io_buffer **returned,
++		       uint32_t *out_n_outbufs)
++{
++	*result = code;
++	*returned = NULL;
++	*out_n_outbufs = 0;
++
++	return 0;
++}
++
+ static int invoke_requested_procedure(size_t n_ifaces,
+ 				      struct fastrpc_interface **ifaces,
+ 				      uint32_t handle,
+ 				      uint32_t sc,
+ 			              uint32_t *result,
+ 				      const struct fastrpc_io_buffer *decoded,
+-				      struct fastrpc_io_buffer **returned)
++				      struct fastrpc_io_buffer **returned,
++				      uint32_t *out_n_outbufs)
+ {
+ 	const struct fastrpc_function_impl *impl;
+ 	uint8_t in_count;
+@@ -251,8 +281,7 @@
+ 
+ 	if (handle >= n_ifaces) {
+ 		fprintf(stderr, "Unsupported handle: %u\n", handle);
+-		*result = AEE_EUNSUPPORTED;
+-		return 1;
++		return reject_call(result, AEE_EUNSUPPORTED, returned, out_n_outbufs);
+ 	}
+ 
+ 	/*
+@@ -263,8 +292,7 @@
+ 		const struct fastrpc_io_buffer *inbufs = decoded;
+ 		if (REMOTE_SCALARS_INBUFS(sc) < 1 || inbufs[0].s < 4) { // TODO: Is this sufficient?
+ 			fprintf(stderr, "Got invalid inbufs in 'mid' handling\n");
+-			*result = AEE_EBADPARM;
+-			return 1;
++			return reject_call(result, AEE_EBADPARM, returned, out_n_outbufs);
+ 		}
+ 		uint32_t *mid = inbufs[0].p;
+ 		printf("mid=%u\n", *mid);
+@@ -273,16 +301,14 @@
+ 
+ 	if (method >= ifaces[handle]->n_procs) {
+ 		fprintf(stderr, "Unsupported method: %u (%08x)\n", method, sc);
+-		*result = AEE_EUNSUPPORTED;
+-		return 1;
++		return reject_call(result, AEE_EUNSUPPORTED, returned, out_n_outbufs);
+ 	}
+ 
+ 	impl = &ifaces[handle]->procs[method];
+ 
+ 	if (impl->def == NULL || impl->impl == NULL) {
+ 		fprintf(stderr, "Unsupported method: %u (%08x)\n", method, sc);
+-		*result = AEE_EUNSUPPORTED;
+-		return 1;
++		return reject_call(result, AEE_EUNSUPPORTED, returned, out_n_outbufs);
+ 	}
+ 
+ 	in_count = impl->def->in_bufs + ((impl->def->in_nums
+@@ -294,15 +320,12 @@
+ 	 || REMOTE_SCALARS_OUTBUFS(sc) != out_count) {
+ 		fprintf(stderr, "Unexpected buffer count for method %u: %08x (in: %d vs %d, out: %d vs %d)\n",
+ 			method, sc, REMOTE_SCALARS_INBUFS(sc), in_count, REMOTE_SCALARS_OUTBUFS(sc), out_count);
+-		*result = AEE_EBADPARM;
+-		return 1;
++		return reject_call(result, AEE_EBADPARM, returned, out_n_outbufs);
+ 	}
+ 
+ 	ret = check_inbuf_sizes(impl->def, decoded);
+-	if (ret) {
+-		*result = AEE_EBADPARM;
+-		return 1;
+-	}
++	if (ret)
++		return reject_call(result, AEE_EBADPARM, returned, out_n_outbufs);
+ 
+ 	*returned = allocate_outbufs(impl->def, decoded[0].p);
+ 	if (*returned == NULL && out_count > 0) {
+@@ -312,6 +335,7 @@
+ 	}
+ 
+ 	*result = impl->impl(ifaces[handle]->data, decoded, *returned);
++	*out_n_outbufs = out_count;
+ 
+ 	return 0;
+ }
+@@ -338,7 +362,7 @@
+ 	while (!ret) {
+ 		ret = return_for_next_invoke(fd,
+ 					     result, &rctx, &handle, &sc,
+-					     returned, &decoded);
++					     n_outbufs, returned, &decoded);
+ 		if (ret)
+ 			break;
+ 
+@@ -347,14 +371,13 @@
+ 
+ 		ret = invoke_requested_procedure(n_ifaces, ifaces,
+ 						 handle, sc, &result,
+-						 decoded, &returned);
++						 decoded, &returned,
++						 &n_outbufs);
+ 		if (ret)
+ 			break;
+ 
+ 		if (decoded != NULL)
+ 			iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
+-
+-		n_outbufs = REMOTE_SCALARS_OUTBUFS(sc);
+ 	}
+ 
+ 	return ret;

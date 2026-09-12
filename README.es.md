@@ -18,7 +18,7 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 
 | | |
 |---|---|
-| **Llamadas** | Salientes y entrantes, **con audio en ambos sentidos**, conmutación auricular ⇄ altavoz ⇄ casco Bluetooth a mitad de llamada y volumen propio de cada modo. **Estables**: solo falta la cancelación de eco (ver abajo) |
+| **Llamadas** | Salientes y entrantes, **con audio en ambos sentidos**, conmutación auricular ⇄ altavoz ⇄ casco Bluetooth a mitad de llamada y volumen propio de cada modo. **Estables**, con **cancelación de eco** en auricular y altavoz; necesita la calibración de voz de fábrica de tu propio móvil (ver abajo) |
 | **Datos móviles / SMS** | LTE, datos y SMS |
 | **Audio** | Altavoces estéreo con canales correctos, auricular, cascos, ajuste por amplificador |
 | **Bluetooth** | Música A2DP, conmutación automática y **llamadas por auricular** con el SCO descargado al chip, **también pasando la llamada al altavoz y volviendo** (parche 0130 — ver [`docs/bt-return-to-headset.es.md`](docs/bt-return-to-headset.es.md)) |
@@ -37,10 +37,13 @@ y en los paquetes del propio postmarketOS. No sustituye a ninguno de los dos: es
 
 ## Lo que no funciona
 
-- **La cancelación de eco en las llamadas.** Con el auricular o el altavoz, el otro lado se oye a
-  sí mismo. La canceladora del DSP (`TX_SM_ECNS`) saca silencio puro sin su calibración ACDB, que
-  mainline no sabe cargar, así que la subida va en paso directo (parche 0057). Los cascos
-  Bluetooth suelen cancelarlo por su cuenta. Por lo demás, las llamadas son estables.
+- **La cancelación de eco necesita ficheros que no están aquí.** Funciona —el eco baja unos 23 dB,
+  con el kernel r93 y un `hexagonrpcd` parcheado que sirve el PD de audio del ADSP—, pero la
+  canceladora del DSP necesita la calibración de voz de fábrica, que son datos de Xiaomi y no se
+  redistribuyen. Sin ella, el servicio de arranque deja las llamadas en paso directo: funcionan como
+  antes, sin cancelar el eco. Está en preparación un script que la genera desde tu propio móvil. Ver
+  [`docs/echo-cancellation.es.md`](docs/echo-cancellation.es.md).
+- **El manos libres distorsiona a volumen máximo**; un paso por debajo suena limpio.
 - **La cámara frontal.** El sensor dice que está emitiendo y el receptor está configurado igual,
   pero no llega ni un paquete. Varias hipótesis están cerradas con medidas (es D-PHY y no C-PHY; el
   número de carriles, su asignación física y la polaridad del multiplexor coinciden con el blob de
@@ -87,7 +90,7 @@ como siempre:
 git clone https://github.com/woodyst/surya-pmos
 cd surya-pmos
 
-# 1. Kernel: los 130 parches, la receta y la configuración
+# 1. Kernel: los 140 parches, la receta y la configuración
 PMAPORTS=$(pmbootstrap config aports)
 cp kernel/*.patch kernel/APKBUILD kernel/config-* \
    "$PMAPORTS/device/testing/linux-postmarketos-qcom-sm7150/"
@@ -101,8 +104,13 @@ cp packages/libcamera/*.patch packages/libcamera/APKBUILD "$PMAPORTS/temp/libcam
 mkdir -p "$PMAPORTS/temp/libqmi"
 cp packages/libqmi/*.patch packages/libqmi/APKBUILD "$PMAPORTS/temp/libqmi/"
 
-# 4. Sumas y compilación
-pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi
+# 4. hexagonrpcd que sirve el PD de audio del ADSP (cancelación de eco) y puede
+#    escribir el registro de sensores. También desde temp/, sobre el de la distribución.
+mkdir -p "$PMAPORTS/temp/hexagonrpcd"
+cp packages/hexagonrpcd/* "$PMAPORTS/temp/hexagonrpcd/"
+
+# 5. Sumas y compilación
+pmbootstrap checksum linux-postmarketos-qcom-sm7150 libcamera libqmi hexagonrpcd
 pmbootstrap shutdown          # ver las trampas de abajo
 pmbootstrap install
 ```

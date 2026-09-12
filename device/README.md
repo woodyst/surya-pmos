@@ -13,7 +13,7 @@ Where: `/usr/share/alsa/ucm2/conf.d/sm8250/`
 |---|---|
 | `POCO-X3.conf` | Card definition; points at the two verbs below |
 | `HiFi.conf` | Music, stereo with correct L/R, earpiece, headset, Bluetooth |
-| `VoiceCall.conf` | Calls: routing, and a **per-mode volume that really attenuates the call** |
+| `VoiceCall.conf` | Calls: routing, a **per-mode volume that really attenuates the call**, mute in the DSP (`Voice Tx Capture Switch`), the mic gain fixed at the factory value, and the voice calibration set per device (`Voice Calibration`). ⚠️ Needs kernel **r93**: without those controls the call profile does not load |
 
 ⚠️ Call volume works through a **decoy PCM** (`MultiMedia3`): it carries no call audio and exists
 only so the profile has a sink, which is what makes the routing run at all and gives the volume
@@ -60,6 +60,23 @@ Where: the `.conf` files in `~/.config/wireplumber/wireplumber.conf.d/`, and the
 | `hfp-registrado.service` + `.sh` | user | Watches that the **live** WirePlumber is the one holding the HFP profile registration, and restarts it if it lost the boot race. Without this, every headset call can come out mute for a whole boot — and rebooting does not fix it |
 | `gnss-engine-unlock.service` | system | The GNSS engine ships **locked in NV**; Android unlocks it on every boot, this does the same |
 | `goa-keyring-fix.service` | user | `goa-daemon` starts before the keyring and never recovers; this restarts it |
+
+## `echo/` — echo cancellation in calls
+
+See [`echo-cancellation.es.md`](../docs/echo-cancellation.es.md). Needs kernel r93 and `hexagonrpcd`
+from [`packages/hexagonrpcd`](../packages/hexagonrpcd), and the factory voice calibration in
+`/lib/firmware/qcom/sm7150/xiaomi/surya/`, which is **not** included. Without the calibration the calls
+stay in passthrough and work as before.
+
+| File | Where | What it does |
+|---|---|---|
+| `hexagonrpcd-adsp-audiopd.service` | `/etc/systemd/system/` | Serves the ADSP's **audio PD**, like the vendor's `adsprpcd audiopd`. The canceller (SMECNS V2) is a dynamic module that PD loads over fastrpc: without it the topology never commits |
+| `hexagonrpcd-adsp-rootpd.override-fwdir.conf` | `/etc/systemd/system/hexagonrpcd-adsp-rootpd.service.d/override-fwdir.conf` | Gives the root PD's daemon `-R`, so it serves the ADSP's libraries instead of an empty directory |
+| `cancelacion-eco.service` + `activar-cancelacion-eco.sh` | `/etc/systemd/system/`, `/usr/local/sbin/` | On every boot: registers the vendor topologies in the DSP, loads their modules and, **only if that worked**, sets the kernel parameters. On any failure it leaves passthrough and says so in the journal |
+
+⚠️ `cancelacion-eco.service` is pulled in by `armar-audio.service`, **not** by `multi-user.target`:
+`armar-audio` runs after multi-user, so waiting for it from there is an ordering cycle and systemd
+silently drops the job at boot.
 
 ## `modprobe/` — kernel module options
 

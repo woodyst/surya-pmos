@@ -1,0 +1,306 @@
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -124,7 +124,7 @@
+ 			        const struct fastrpc_io_buffer *inbufs,
+ 			        struct fastrpc_io_buffer *outbufs)
+ {
+-	// struct apps_std_ctx *ctx = data;
++	struct apps_std_ctx *ctx = data;
+ 	const struct {
+ 		uint32_t fd;
+ 		uint32_t buf_size;
+@@ -136,7 +136,12 @@
+ 	} *first_out = outbufs[0].p;
+ 	ssize_t ret;
+ 
+-	ret = 0;
++	ret = hexagonfs_write(ctx->fds, first_in->fd, first_in->buf_size, buf);
++	if (ret < 0) {
++		fprintf(stderr, "Could not write file: %s\n", strerror(-ret));
++		return AEE_EFAILED;
++	}
++
+ #ifdef HEXAGONRPC_VERBOSE
+ 	printf("write(%u, %u) -> %ld\n", first_in->fd,
+ 					 first_in->buf_size,
+@@ -148,20 +153,10 @@
+ 	printf("\n");
+ #endif
+ 
+-	const uint8_t fake_buf_dir[] = {0x44, 0x49, 0x52}; // "DIR"
+-	const uint8_t fake_buf_version3[] = {0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x3d, 0x33}; // "version=3"
+-	if ((first_in->buf_size == 3 && memcmp(buf, fake_buf_dir, 3) == 0) ||
+-		(first_in->buf_size == 9 && memcmp(buf, fake_buf_version3, 9) == 0)) {
++	first_out->written = ret;
++	first_out->is_eof = 0;
+ 
+-		first_out->written = first_in->buf_size;
+-		first_out->is_eof = 0;
+-
+-		printf("WARNING: Faking successful fwrite call for \"%s\"!\n", buf);
+-
+-		return 0;
+-	}
+-
+-	return AEE_EFAILED;
++	return 0;
+ }
+ 
+ static uint32_t apps_std_fseek(void *data,
+@@ -210,11 +205,6 @@
+ 		return AEE_EBADPARM;
+ 
+ 	rw_mode = ((const char *) inbufs[4].p)[0];
+-	if (rw_mode == 'w' || rw_mode == 'a') {
+-		fprintf(stderr, "(IGNORE LIMITATION) Tried to open %s for writing\n",
+-				(const char *) inbufs[3].p);
+-		//return AEE_EUNSUPPORTED;
+-	}
+ 
+ 	if (!strcmp(inbufs[1].p, "ADSP_LIBRARY_PATH")) {
+ 		dirfd = ctx->adsp_library_dirfd;
+@@ -232,7 +222,8 @@
+ 		return AEE_EFAILED;
+ 	}
+ 
+-	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p);
++	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p,
++			      rw_mode == 'w' || rw_mode == 'a');
+ 	if (fd < 0) {
+ 		fprintf(stderr, "Could not open %s: %s\n",
+ 				(const char *) inbufs[3].p,
+@@ -291,7 +282,7 @@
+ 	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+-	ret = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->rootfd, inbufs[1].p);
++	ret = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->rootfd, inbufs[1].p, false);
+ 	if (ret < 0) {
+ 		fprintf(stderr, "Could not open %s: %s\n",
+ 				(const char *) inbufs[1].p,
+@@ -384,7 +375,7 @@
+ 	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+-	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->adsp_library_dirfd, pathname);
++	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->adsp_library_dirfd, pathname, false);
+ 	if (fd < 0) {
+ 		fprintf(stderr, "Could not open %s: %s\n",
+ 				pathname, strerror(-fd));
+@@ -491,11 +482,13 @@
+ 	ctx->adsp_avs_cfg_dirfd = hexagonfs_openat(ctx->fds,
+ 						   ctx->rootfd,
+ 						   ctx->rootfd,
+-						   "/vendor/etc/acdbdata/");
++						   "/vendor/etc/acdbdata/",
++						   false);
+ 	ctx->adsp_library_dirfd = hexagonfs_openat(ctx->fds,
+ 						   ctx->rootfd,
+ 						   ctx->rootfd,
+-						   "/usr/lib/qcom/adsp/");
++						   "/usr/lib/qcom/adsp/",
++						   false);
+ 
+ 	iface->data = ctx;
+ 
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -139,7 +139,8 @@
+ 	return ret;
+ }
+ 
+-int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
++int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name,
++		     bool want_write)
+ {
+ 	struct hexagonfs_fd *fd;
+ 	const char *curr = name;
+@@ -169,7 +170,15 @@
+ 		} else if (!strcmp(segment, "..")) {
+ 			fd = pop_dir(fd, fds[rootfd]);
+ 		} else {
+-			ret = fd->ops->openat(fd, segment, expect_dir, &fd);
++			/*
++			 * want_write only ever applies to the final path
++			 * segment (the file actually being opened) -
++			 * intermediate directories along the way are always
++			 * just traversed read-only. expect_dir is false only
++			 * for that final segment.
++			 */
++			ret = fd->ops->openat(fd, segment, expect_dir,
++					      want_write && !expect_dir, &fd);
+ 		}
+ 
+ 	next:
+@@ -244,6 +253,23 @@
+ 	return fd->ops->read(fd, size, ptr);
+ }
+ 
++ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr)
++{
++	struct hexagonfs_fd *fd;
++
++	if (fileno < 0 || fileno >= HEXAGONFS_MAX_FD)
++		return -EBADF;
++
++	fd = fds[fileno];
++	if (fd == NULL)
++		return -EBADF;
++
++	if (fd->ops->write == NULL)
++		return -ENOSYS;
++
++	return fd->ops->write(fd, size, ptr);
++}
++
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t ent_size, char *ent)
+ {
+ 	struct hexagonfs_fd *fd;
+--- a/hexagonrpcd/hexagonfs.h
++++ b/hexagonrpcd/hexagonfs.h
+@@ -37,9 +37,11 @@
+ 	int (*openat)(struct hexagonfs_fd *dir,
+ 		      const char *segment,
+ 		      bool expect_dir,
++		      bool want_write,
+ 		      struct hexagonfs_fd **out);
+ 	int (*readdir)(struct hexagonfs_fd *fd, size_t size, char *out);
+ 	ssize_t (*read)(struct hexagonfs_fd *fd, size_t size, void *ptr);
++	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
+ 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
+ 	int (*seek)(struct hexagonfs_fd *fd, off_t off, int whence);
+ };
+@@ -70,12 +72,14 @@
+ extern struct hexagonfs_file_ops hexagonfs_virt_dir_ops;
+ 
+ int hexagonfs_open_root(struct hexagonfs_fd **fds, struct hexagonfs_dirent *root);
+-int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
++int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name,
++		     bool want_write);
+ int hexagonfs_close(struct hexagonfs_fd **fds, int fileno);
+ 
+ int hexagonfs_fstat(struct hexagonfs_fd **fds, int fileno, struct stat *stats);
+ int hexagonfs_lseek(struct hexagonfs_fd **fds, int fileno, off_t pos, int whence);
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t size, char *name);
+ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void *ptr);
++ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
+ 
+ #endif
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -81,6 +81,7 @@
+ static int mapped_openat(struct hexagonfs_fd *dir,
+ 			 const char *segment,
+ 			 bool expect_dir,
++			 bool want_write,
+ 			 struct hexagonfs_fd **out)
+ {
+ 	struct mapped_ctx *dir_ctx = dir->data;
+@@ -101,8 +102,10 @@
+ 
+ 	if (expect_dir)
+ 		flags |= O_DIRECTORY;
++	else if (want_write)
++		flags = O_WRONLY | O_CREAT | O_TRUNC;
+ 
+-	ctx->fd = openat(dir_ctx->fd, segment, flags);
++	ctx->fd = openat(dir_ctx->fd, segment, flags, 0644);
+ 	if (ctx->fd == -1) {
+ 		ret = -errno;
+ 		goto err_free_fd;
+@@ -138,6 +141,18 @@
+ 	return ret;
+ }
+ 
++static ssize_t mapped_write(struct hexagonfs_fd *fd, size_t size, const void *ptr)
++{
++	struct mapped_ctx *ctx = fd->data;
++	ssize_t ret;
++
++	ret = write(ctx->fd, ptr, size);
++	if (ret < 0)
++		return -errno;
++
++	return ret;
++}
++
+ static int mapped_readdir(struct hexagonfs_fd *fd, size_t size, char *out)
+ {
+ 	struct mapped_ctx *ctx = fd->data;
+@@ -236,10 +251,11 @@
+ static int mapped_or_empty_openat(struct hexagonfs_fd *dir,
+ 				  const char *segment,
+ 				  bool expect_dir,
++				  bool want_write,
+ 				  struct hexagonfs_fd **out)
+ {
+ 	if (dir->data)
+-		return mapped_openat(dir, segment, expect_dir, out);
++		return mapped_openat(dir, segment, expect_dir, want_write, out);
+ 	else
+ 		return -ENOENT;
+ }
+@@ -253,6 +269,15 @@
+ 	return 0;
+ }
+ 
++static ssize_t mapped_or_empty_write(struct hexagonfs_fd *fd,
++				     size_t size, const void *ptr)
++{
++	if (fd->data)
++		return mapped_write(fd, size, ptr);
++
++	return -EBADF;
++}
++
+ static int mapped_or_empty_readdir(struct hexagonfs_fd *fd,
+ 				   size_t size, char *out)
+ {
+@@ -327,6 +352,7 @@
+ 	.from_dirent = mapped_from_dirent,
+ 	.openat = mapped_openat,
+ 	.read = mapped_read,
++	.write = mapped_write,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
+ 	.stat = mapped_stat,
+@@ -337,6 +363,7 @@
+ 	.from_dirent = mapped_or_empty_from_dirent,
+ 	.openat = mapped_or_empty_openat,
+ 	.read = mapped_or_empty_read,
++	.write = mapped_or_empty_write,
+ 	.readdir = mapped_or_empty_readdir,
+ 	.seek = mapped_or_empty_seek,
+ 	.stat = mapped_or_empty_stat,
+@@ -347,6 +374,7 @@
+ 	.from_dirent = mapped_from_dirent,
+ 	.openat = mapped_openat,
+ 	.read = mapped_read,
++	.write = mapped_write,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
+ 	.stat = mapped_sysfs_stat,
+--- a/hexagonrpcd/hexagonfs_virt_dir.c
++++ b/hexagonrpcd/hexagonfs_virt_dir.c
+@@ -63,8 +63,11 @@
+ static int virt_dir_openat(struct hexagonfs_fd *dir,
+ 			   const char *segment,
+ 			   bool expect_dir,
++			   bool want_write,
+ 			   struct hexagonfs_fd **out)
+ {
++	(void) want_write;
++
+ 	const struct hexagonfs_dirent *const **dirlist = dir->data;
+ 	const struct hexagonfs_dirent *ent;
+ 	struct hexagonfs_fd *fd;
+--- a/hexagonrpcd/hexagonfs_plat_subtype_name.c
++++ b/hexagonrpcd/hexagonfs_plat_subtype_name.c
+@@ -68,6 +68,7 @@
+ static int plat_subtype_name_openat(struct hexagonfs_fd *dir,
+ 			const char *segment,
+ 			bool expect_dir,
++			bool want_write,
+ 			struct hexagonfs_fd **out)
+ {
+ 	return -ENOTDIR;

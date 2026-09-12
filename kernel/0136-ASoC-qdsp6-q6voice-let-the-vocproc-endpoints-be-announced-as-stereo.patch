@@ -1,0 +1,184 @@
+From c7b7b80efc1ddf33f2761df0ca220fb974b62c76 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 10:14:32 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: let the vocproc endpoints be announced
+ as stereo
+
+The vendor vocproc setup told the DSP that both endpoints carry one
+channel (FC), which is what this phone's ACDB says about its voice
+devices and what the vendor audio HAL configures its back ends to. The
+sm8250 machine driver, though, runs every non-Bluetooth back end at two
+channels, so the TX codec DMA and tertiary MI2S ports the call uses are
+stereo while the vocproc is told they are mono. The old echo canceller
+does not look; the DSP fails the topology commit of the SMECNS V2
+topologies on a POCO X3 NFC with everything before it accepted.
+
+Add vendor_rx_channels and vendor_tx_channels (1 by default, 2 means FL
+and FR) for the channel info and the endpoint media format, the echo
+reference following the Rx side, and pass a channel map down to q6cvp
+instead of a single channel.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KTiSoMiKqxPrmSArLxTpFP
+---
+ sound/soc/qcom/qdsp6/q6cvp.c   | 10 +++---
+ sound/soc/qcom/qdsp6/q6cvp.h   |  4 +--
+ sound/soc/qcom/qdsp6/q6voice.c | 58 +++++++++++++++++++++++++++-------
+ 3 files changed, 54 insertions(+), 18 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index 90380b708..8a4b70357 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -218,7 +218,7 @@ struct cvp_set_channel_info_cmd {
+ } __packed;
+ 
+ int q6cvp_set_channel_info(struct q6voice_session *cvp, u32 param_id,
+-			   u32 num_channels, u32 bits_per_sample, u8 channel)
++			   u32 num_channels, u32 bits_per_sample, const u8 *map)
+ {
+ 	struct cvp_set_channel_info_cmd cmd;
+ 
+@@ -233,7 +233,8 @@ int q6cvp_set_channel_info(struct q6voice_session *cvp, u32 param_id,
+ 						num_channels);
+ 	cmd.num_channels = num_channels;
+ 	cmd.bits_per_sample = bits_per_sample;
+-	cmd.channel_mapping[0] = channel;
++	memcpy(cmd.channel_mapping, map,
++	       min_t(u32, num_channels, Q6CVP_NUM_CHANNELS_MAX));
+ 
+ 	return q6voice_common_send(cvp, &cmd.hdr);
+ }
+@@ -271,7 +272,7 @@ struct cvp_set_media_format_cmd {
+ int q6cvp_set_endpoint_media_format(struct q6voice_session *cvp, u32 param_id,
+ 				    u32 port_id, u16 num_channels,
+ 				    u16 bits_per_sample, u32 sample_rate,
+-				    u8 channel)
++				    const u8 *map)
+ {
+ 	struct cvp_set_media_format_cmd cmd;
+ 
+@@ -288,7 +289,8 @@ int q6cvp_set_endpoint_media_format(struct q6voice_session *cvp, u32 param_id,
+ 	cmd.num_channels = num_channels;
+ 	cmd.bits_per_sample = bits_per_sample;
+ 	cmd.sample_rate = sample_rate;
+-	cmd.channel_mapping[0] = channel;
++	memcpy(cmd.channel_mapping, map,
++	       min_t(u32, num_channels, Q6CVP_NUM_CHANNELS_MAX));
+ 
+ 	return q6voice_common_send(cvp, &cmd.hdr);
+ }
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.h b/sound/soc/qcom/qdsp6/q6cvp.h
+index 1eeb61268..99892a825 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.h
++++ b/sound/soc/qcom/qdsp6/q6cvp.h
+@@ -13,12 +13,12 @@ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step);
+ 
+ /* Vendor vocproc setup: channel info, topology commit, media format, calibration */
+ int q6cvp_set_channel_info(struct q6voice_session *cvp, u32 param_id,
+-			   u32 num_channels, u32 bits_per_sample, u8 channel);
++			   u32 num_channels, u32 bits_per_sample, const u8 *map);
+ int q6cvp_topology_commit(struct q6voice_session *cvp);
+ int q6cvp_set_endpoint_media_format(struct q6voice_session *cvp, u32 param_id,
+ 				    u32 port_id, u16 num_channels,
+ 				    u16 bits_per_sample, u32 sample_rate,
+-				    u8 channel);
++				    const u8 *map);
+ int q6cvp_register_dev_cfg(struct q6voice_session *cvp, u32 mem_handle,
+ 			   u64 addr, u32 size);
+ int q6cvp_register_cal(struct q6voice_session *cvp, u32 opcode, u32 mem_handle,
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 5cdba8508..28ac4a25d 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -598,6 +598,37 @@ static void q6voice_cal_deregister(struct q6voice_path *p)
+ 	p->runtime->cvs_cal = false;
+ }
+ 
++#define Q6VOICE_PCM_CHANNEL_FL			1
++#define Q6VOICE_PCM_CHANNEL_FR			2
++
++/*
++ * How many channels the vocproc is told its endpoints carry. This phone's ACDB
++ * describes its voice devices as mono (one channel, FC) and the vendor audio
++ * HAL sets the back ends to match, but this machine driver runs every
++ * non-Bluetooth back end, the TX codec DMA and tertiary MI2S ports among them,
++ * at two channels. With the mono figures the DSP fails the commit of the
++ * SMECNS V2 topologies; these let two channels (FL, FR) be tried between calls.
++ */
++static uint vendor_rx_channels = 1;
++module_param(vendor_rx_channels, uint, 0644);
++MODULE_PARM_DESC(vendor_rx_channels,
++		 "channels announced for the vocproc Rx endpoint and echo reference (1 or 2)");
++
++static uint vendor_tx_channels = 1;
++module_param(vendor_tx_channels, uint, 0644);
++MODULE_PARM_DESC(vendor_tx_channels, "channels announced for the vocproc Tx endpoint (1 or 2)");
++
++static u32 q6voice_vendor_map(uint channels, u8 *map)
++{
++	if (channels >= 2) {
++		map[0] = Q6VOICE_PCM_CHANNEL_FL;
++		map[1] = Q6VOICE_PCM_CHANNEL_FR;
++		return 2;
++	}
++	map[0] = Q6VOICE_PCM_CHANNEL_FC;
++	return 1;
++}
++
+ /*
+  * Between creating a vocproc and enabling it, in voice_setup_vocproc()'s order:
+  * channel info, then the endpoint media format (CVD 2.3, voice_send_cvp_media_fmt_info_cmd()),
+@@ -607,33 +638,36 @@ static void q6voice_cal_deregister(struct q6voice_path *p)
+ static void q6voice_vendor_setup(struct q6voice_path *p, struct q6voice_session *cvp)
+ {
+ 	struct device *dev = p->v->dev;
++	u8 rx_map[2], tx_map[2];
++	u32 rx_ch, tx_ch;
+ 	int ret;
+ 
+ 	if (!vendor_steps || q6voice_path_is_bt(p))
+ 		return;
+ 
++	rx_ch = q6voice_vendor_map(vendor_rx_channels, rx_map);
++	tx_ch = q6voice_vendor_map(vendor_tx_channels, tx_map);
++
+ 	if (vendor_steps & Q6VOICE_VENDOR_CHANNEL_INFO) {
+ 		ret = q6cvp_set_channel_info(cvp, VSS_PARAM_VOCPROC_RX_CHANNEL_INFO,
+-					     1, 16, Q6VOICE_PCM_CHANNEL_FC);
+-		dev_info(dev, "vocproc rx channel info: %d\n", ret);
++					     rx_ch, 16, rx_map);
++		dev_info(dev, "vocproc rx channel info (%u ch): %d\n", rx_ch, ret);
+ 		ret = q6cvp_set_channel_info(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO,
+-					     1, 16, Q6VOICE_PCM_CHANNEL_FC);
+-		dev_info(dev, "vocproc tx channel info: %d\n", ret);
++					     tx_ch, 16, tx_map);
++		dev_info(dev, "vocproc tx channel info (%u ch): %d\n", tx_ch, ret);
+ 		ret = q6cvp_set_channel_info(cvp, VSS_PARAM_VOCPROC_EC_REF_CHANNEL_INFO,
+-					     1, 16, Q6VOICE_PCM_CHANNEL_FC);
+-		dev_info(dev, "vocproc ec ref channel info: %d\n", ret);
++					     rx_ch, 16, rx_map);
++		dev_info(dev, "vocproc ec ref channel info (%u ch): %d\n", rx_ch, ret);
+ 	}
+ 
+ 	if (vendor_steps & Q6VOICE_VENDOR_MEDIA_FORMAT) {
+ 		ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO,
+-						      q6afe_get_port_id(p->rx_port), 1, 16,
+-						      vendor_sample_rate,
+-						      Q6VOICE_PCM_CHANNEL_FC);
++						      q6afe_get_port_id(p->rx_port), rx_ch, 16,
++						      vendor_sample_rate, rx_map);
+ 		dev_info(dev, "vocproc rx endpoint media format: %d\n", ret);
+ 		ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
+-						      q6afe_get_port_id(p->tx_port), 1, 16,
+-						      vendor_sample_rate,
+-						      Q6VOICE_PCM_CHANNEL_FC);
++						      q6afe_get_port_id(p->tx_port), tx_ch, 16,
++						      vendor_sample_rate, tx_map);
+ 		dev_info(dev, "vocproc tx endpoint media format: %d\n", ret);
+ 	}
+ 
+-- 
+2.43.0
+

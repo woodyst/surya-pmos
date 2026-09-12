@@ -7,6 +7,7 @@
 | `kernel/*.patch` | **GPL-2.0** — derived work of the Linux kernel |
 | `packages/libcamera/*.patch` | **LGPL-2.1-or-later** — matching libcamera upstream |
 | `packages/libqmi/*.patch` | **GPL-2.0-or-later AND LGPL-2.1-or-later** — matching libqmi upstream |
+| `packages/hexagonrpcd/*.patch` | **GPL-3.0-or-later** — matching hexagonrpc upstream |
 | `tools/qmi-loc-idl/**` | **GPL-2.0-or-later** |
 | `packages/*/APKBUILD` | **GPL-2.0-or-later**, as the postmarketOS/Alpine aports they extend |
 | `device/**`, `scripts/**` | Configuration and glue, same terms as the projects they configure |
@@ -15,7 +16,8 @@
 
 This phone needs binaries that belong to Xiaomi and Qualcomm to work fully:
 
-- **ACDB** — audio calibration for the DSP.
+- **ACDB** — audio calibration for the DSP, including the voice calibration that echo cancellation
+  needs.
 - **ADSP / modem firmware** — signed by the vendor.
 - **Camera sensor configuration** (`com.qti.sensormodule.*.bin`) — power sequences, register
   tables and lane assignment for each module.

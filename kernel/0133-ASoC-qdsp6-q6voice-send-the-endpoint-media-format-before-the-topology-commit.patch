@@ -1,0 +1,115 @@
+From 3efa2c9a58078255cf588709b0edf40b8fc93357 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 09:17:20 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: send the endpoint media format before
+ the topology commit
+
+The previous change sent the vocproc's endpoint media format after the
+attach. Downstream's voice_setup_vocproc() sends it earlier, in
+voice_send_cvp_media_fmt_info_cmd(): channel info, then (CVD 2.3) the Rx
+and Tx endpoint media format, and only then the topology commit.
+
+Sent after the attach, it never got that far on a POCO X3 NFC: with the
+vendor's Tx topology 0x10000003 and CREATE_FULL_CONTROL_SESSION_V3 the
+DSP took the channel info (status 0) but failed the topology commit
+(ADSP_EFAILED), so the vocproc could not be enabled and the call's
+uplink was digital silence.
+
+Move it between the channel info and the commit, behind the same
+vendor_steps bit.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KTiSoMiKqxPrmSArLxTpFP
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 46 ++++++++++++++--------------------
+ 1 file changed, 19 insertions(+), 27 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index e02b4105d..741a3cfe7 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -587,7 +587,12 @@ static void q6voice_cal_deregister(struct q6voice_path *p)
+ 	p->runtime->cvs_cal = false;
+ }
+ 
+-/* Between creating a vocproc and enabling it, as voice_setup_vocproc() */
++/*
++ * Between creating a vocproc and enabling it, in voice_setup_vocproc()'s order:
++ * channel info, then the endpoint media format (CVD 2.3, voice_send_cvp_media_fmt_info_cmd()),
++ * then the topology commit, then the calibration. With the media format sent after the attach
++ * instead, the DSP failed the commit of the vendor's Tx topology (ADSP_EFAILED).
++ */
+ static void q6voice_vendor_setup(struct q6voice_path *p, struct q6voice_session *cvp)
+ {
+ 	struct device *dev = p->v->dev;
+@@ -608,6 +613,19 @@ static void q6voice_vendor_setup(struct q6voice_path *p, struct q6voice_session
+ 		dev_info(dev, "vocproc ec ref channel info: %d\n", ret);
+ 	}
+ 
++	if (vendor_steps & Q6VOICE_VENDOR_MEDIA_FORMAT) {
++		ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO,
++						      q6afe_get_port_id(p->rx_port), 1, 16,
++						      vendor_sample_rate,
++						      Q6VOICE_PCM_CHANNEL_FC);
++		dev_info(dev, "vocproc rx endpoint media format: %d\n", ret);
++		ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
++						      q6afe_get_port_id(p->tx_port), 1, 16,
++						      vendor_sample_rate,
++						      Q6VOICE_PCM_CHANNEL_FC);
++		dev_info(dev, "vocproc tx endpoint media format: %d\n", ret);
++	}
++
+ 	if (vendor_steps & Q6VOICE_VENDOR_TOPOLOGY_COMMIT) {
+ 		ret = q6cvp_topology_commit(cvp);
+ 		dev_info(dev, "vocproc topology commit: %d\n", ret);
+@@ -619,28 +637,6 @@ static void q6voice_vendor_setup(struct q6voice_path *p, struct q6voice_session
+ 	}
+ }
+ 
+-/* After the attach, as voice_setup_vocproc() does for CVD 2.3 */
+-static void q6voice_vendor_media_format(struct q6voice_path *p,
+-					struct q6voice_session *cvp)
+-{
+-	struct device *dev = p->v->dev;
+-	int ret;
+-
+-	if (!(vendor_steps & Q6VOICE_VENDOR_MEDIA_FORMAT) || q6voice_path_is_bt(p))
+-		return;
+-
+-	ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO,
+-					      q6afe_get_port_id(p->rx_port), 1, 16,
+-					      vendor_sample_rate,
+-					      Q6VOICE_PCM_CHANNEL_FC);
+-	dev_info(dev, "vocproc rx endpoint media format: %d\n", ret);
+-	ret = q6cvp_set_endpoint_media_format(cvp, VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
+-					      q6afe_get_port_id(p->tx_port), 1, 16,
+-					      vendor_sample_rate,
+-					      Q6VOICE_PCM_CHANNEL_FC);
+-	dev_info(dev, "vocproc tx endpoint media format: %d\n", ret);
+-}
+-
+ static int q6voice_path_start(struct q6voice_path *p)
+ {
+ 	struct device *dev = p->v->dev;
+@@ -702,8 +698,6 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 		goto attach_err;
+ 	}
+ 
+-	q6voice_vendor_media_format(p, cvp);
+-
+ 	/*
+ 	 * Mirrors the downstream's voice_send_vol_step_cmd() /
+ 	 * voice_send_stream_mute_cmd() between vocproc attach and MVM start.
+@@ -1090,8 +1084,6 @@ static void q6voice_switch_device(struct work_struct *work)
+ 		goto out;
+ 	}
+ 
+-	q6voice_vendor_media_format(p, cvp);
+-
+ 	/* Best effort, same as when the call was set up. */
+ 	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+ 	if (ret)
+-- 
+2.43.0
+

@@ -1,0 +1,66 @@
+From 788566505e84a77b1df0c69764f06a43098061f4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 11:07:56 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7150: give the ADSP fastrpc channel a
+ remote heap and its VMIDs
+
+The ADSP's audio PD is a static PD: the host creates it with
+FASTRPC_IOCTL_INIT_CREATE_STATIC, which allocates its remote heap from
+the channel's memory-region and assigns it to the VMs in qcom,vmids. The
+audio PD loads its dynamic AVS modules through the server that creates
+it; on a POCO X3 NFC that includes the SMECNS V2 echo canceller, and
+without it every voice topology using it fails to commit.
+
+Reserve 12 MiB for it, as downstream does, and assign it to LPASS and
+the ADSP heap VM (downstream qcom,adsp-remoteheap-vmid = <22 37>), the
+same way kodiak describes its ADSP channel.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KTiSoMiKqxPrmSArLxTpFP
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index db7a30861..44dc3e409 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -13,6 +13,7 @@
+ #include <dt-bindings/clock/qcom,sm7150-gcc.h>
+ #include <dt-bindings/clock/qcom,sm7150-videocc.h>
+ #include <dt-bindings/dma/qcom-gpi.h>
++#include <dt-bindings/firmware/qcom,scm.h>
+ #include <dt-bindings/interconnect/qcom,icc.h>
+ #include <dt-bindings/interconnect/qcom,osm-l3.h>
+ #include <dt-bindings/interconnect/qcom,sm7150-rpmh.h>
+@@ -781,6 +782,17 @@ adsp_mem: adsp@95700000 {
+ 			reg = <0x0 0x95700000 0x0 0x1e00000>;
+ 			no-map;
+ 		};
++		/*
++		 * Remote heap for the ADSP's static audio PD (FASTRPC_IOCTL_INIT_CREATE_STATIC,
++		 * assigned to LPASS and the ADSP heap VM). Downstream reserves 12 MiB for it.
++		 */
++		adsp_rpc_remote_heap_mem: adsp-rpc-remote-heap {
++			compatible = "shared-dma-pool";
++			size = <0x0 0xc00000>;
++			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
++			alignment = <0x0 0x400000>;
++			no-map;
++		};
+ 
+ 		wlan_msa_mem: wlan-msa@97500000 {
+ 			reg = <0x0 0x97500000 0x0 0x180000>;
+@@ -2666,6 +2678,8 @@ fastrpc {
+ 					label = "adsp";
+ 
+ 					qcom,non-secure-domain;
++					memory-region = <&adsp_rpc_remote_heap_mem>;
++					qcom,vmids = <QCOM_SCM_VMID_LPASS QCOM_SCM_VMID_ADSP_HEAP>;
+ 
+ 					#address-cells = <1>;
+ 					#size-cells = <0>;
+-- 
+2.43.0
+
