@@ -38,8 +38,8 @@ pmbootstrap checksum libcamera
 pmbootstrap shutdown            # ⚠️ si no, el build falla al desmontar /mnt/pmbootstrap/packages
 pmbootstrap build libcamera --arch aarch64
 # 3. instalar en el móvil (los tres subpaquetes que usa surya)
-scp .../packages/v26.06/aarch64/libcamera{,-ipa,-tools}-99990.7.1-r1.apk epo:/tmp/
-ssh epo 'sudo apk add --allow-untrusted /tmp/libcamera*.apk'
+scp .../packages/v26.06/aarch64/libcamera{,-ipa,-tools}-99990.7.1-r1.apk <tu-movil>:/tmp/
+ssh <tu-movil> 'sudo apk add --allow-untrusted /tmp/libcamera*.apk'
 ```
 
 ⚠️ `pmbootstrap checksum` **deja el chroot montado**; el `build` siguiente falla con

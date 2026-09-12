@@ -109,7 +109,7 @@ de alta velocidad nunca arranca.
 
 **Lo único que queda por probar y no es físico**: un volcado del banco de estado del CSIPHY
 **durante** un enlace en marcha, para saber si esos bits son *errores* o *actividad detectada* —
-la dicotomía abierta desde julio. En eut2 (mismo IP, mismas direcciones, enlace que funciona) el
+la dicotomía abierta desde julio. En el móvil de referencia (mismo IP, mismas direcciones, enlace que funciona) el
 driver de fábrica solo vuelca **al arrancar**, así que sus ceros no valen. Habría que provocar un
 volcado a mitad de flujo.
 
@@ -385,7 +385,7 @@ librería vendor real (`libacdbloader64.so`) nativamente en el PC (también ARM6
 propio (`msm_audio_cal_stub.ko`) simulando `/dev/msm_audio_cal` + `/dev/ion` para capturar
 exactamente los bytes que la librería le pasa al kernel. Resultado: **4316 bytes reales de la
 tabla de volumen del auricular** (rx=7, tx=4, feature_set=0), más el struct `AUDIO_SET_CALIBRATION`
-confirmado byte a byte contra la cabecera UAPI. Todo en `~/claude/postmarketos/calibrations/`
+confirmado byte a byte contra la cabecera UAPI. Todo en el repositorio de trabajo, sin publicar (contiene datos de fábrica)
 (README con el protocolo completo + harness reutilizable para capturar otros cal_type). Detalle
 completo en la memoria [[project-pmos-surya-mic]].
 
@@ -750,7 +750,7 @@ WhatsApp, Telegram, Authenticator, Keepass2Android…) y el `/sdcard` entero.
 - **NO hace falta remapear UIDs.** Los UIDs de Android son **internos al contenedor e
   idénticos en ambos sistemas** (`u0_a138` = 10138 en los dos). Comprobado: **0 ficheros
   con uid 32011 (phablet) dentro de `data/`**. Lo único con UID del host es el
-  **directorio contenedor** → `chown edi:edi ~/.local/share/waydroid`, y nada de dentro.
+  **directorio contenedor** → `chown $USER:$USER ~/.local/share/waydroid`, y nada de dentro.
   Remapear los UIDs internos habría roto todo.
 - **La causa del fallo original** era solo la **ruta**: el script de sync copia a la misma
   ruta en ambos equipos (`/home/phablet/…`), pero pmOS lee de `$HOME/…`
@@ -773,7 +773,7 @@ WhatsApp, Telegram, Authenticator, Keepass2Android…) y el `/sdcard` entero.
   que ancle las claves, así que viajan con los datos.
 - `dalvik-cache` vaciado por precaución, pero es **casi irrelevante**: desde Android 8 los
   `.oat` por app viven en `/data/app/*/oat/` y viajaron intactos.
-- Copias de seguridad que quedaron en pie: el Waydroid original en eut2lan (intacto),
+- Copias de seguridad que quedaron en pie: el Waydroid original en el móvil con Ubuntu Touch (intacto),
   `~/.local/share/waydroid.bkp` (11,8 G), `data.vacio`, `waydroid.orig`, y el
   `.SeedVaultAndroidBackup` (5,5 G) dentro de los propios datos migrados.
 

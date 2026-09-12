@@ -216,7 +216,7 @@ Resultado: lease `<ip>`, `ping 8.8.8.8` 0% pérdida.
 
 Pendiente menor (cosmético): las cadenas `st_*` de *strict mode* siguen fallando (`-m u32` y `-j NFLOG` no están en el kernel; los `CONFIG_` en el README). Ruido no relacionado: `com.android.nfc` hace coredump (Waydroid no tiene HAL de NFC).
 
-**MIGRACIÓN DESDE UBUNTU TOUCH ✅ COMPLETADA (2026-07-19)**: 77 apps con sus datos y el `/sdcard` entero. **No hizo falta remapear UIDs** — los de Android son internos al contenedor e idénticos en ambos sistemas (0 ficheros con uid 32011 dentro de `data/`); solo el **directorio contenedor** lleva UID del host (`chown edi:edi`). La ventana transparente **se resolvió sola** por el camino (era el contenedor en mal estado, no gráficos). Detalle completo: `waydroid/README.md`.
+**MIGRACIÓN DESDE UBUNTU TOUCH ✅ COMPLETADA (2026-07-19)**: 77 apps con sus datos y el `/sdcard` entero. **No hizo falta remapear UIDs** — los de Android son internos al contenedor e idénticos en ambos sistemas (0 ficheros con uid 32011 dentro de `data/`); solo el **directorio contenedor** lleva UID del host (`chown $USER:$USER`). La ventana transparente **se resolvió sola** por el camino (era el contenedor en mal estado, no gráficos). Detalle completo: `waydroid/README.md`.
 
 ---
 

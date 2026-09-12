@@ -191,7 +191,7 @@ se descartan en modo caché-only).
 ## 4. Rutas de audio (perfiles UCM)
 
 Fichero: `/usr/share/alsa/ucm2/Xiaomi/surya/HiFi.conf`
-(copia buena en `~/claude/postmarketos/audio/HiFi.conf`).
+(copia buena en `device/audio/HiFi.conf`).
 
 Los dos amplis comparten PCM, así que las rutas son **perfiles mutuamente
 excluyentes** (`ConflictingDevice`), y `callaudiod`/phosh conmutan entre ellos
@@ -217,8 +217,8 @@ arriba = canal izquierdo, abajo = canal derecho.
 
 > Para reequilibrar: usa el control de **ganancia** del ampli (pasos de 0.5 dB).
 > El control de volumen digital va en saltos de 2 dB y está topado — demasiado
-> grueso para afinar balance. Script interactivo en
-> `~/claude/postmarketos/audio/balance-manual.sh`.
+> grueso para afinar balance. El balance se afinó con
+> un script interactivo que no se publica.
 
 **Bluetooth** funciona de forma nativa: PipeWire lo gestiona como un sink
 aparte que **no pasa por estos amplificadores**, así que no necesita nada en
@@ -250,7 +250,7 @@ ssh <tu-movil> "sudo apk add --allow-untrusted /tmp/linux-postmarketos-qcom-sm71
 ### 5.3 Instalar el perfil UCM
 
 ```sh
-scp ~/claude/postmarketos/audio/HiFi.conf <tu-movil>:/tmp/
+scp device/audio/HiFi.conf <tu-movil>:/tmp/
 ssh <tu-movil> "sudo cp /tmp/HiFi.conf /usr/share/alsa/ucm2/Xiaomi/surya/HiFi.conf"
 ssh <tu-movil> "export XDG_RUNTIME_DIR=/run/user/\$(id -u); systemctl --user restart wireplumber pipewire"
 ```

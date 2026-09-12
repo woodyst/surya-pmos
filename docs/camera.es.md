@@ -171,7 +171,7 @@ SIGNALING     (0x0111) = 0x02     → CSI-2 D-PHY  (NO es C-PHY)
 | ¿Coincide el nº de carriles? | ✅ 4 en sensor y receptor |
 | ¿La asignación física de carriles? | ✅ `laneAssign = 0x3210` en el blob = `data-lanes = <0 1 2 3>` |
 | ¿La polaridad del multiplexor? | ✅ el blob pone `STANDBY=0`; el driver también |
-| ¿La configuración del PHY? | ✅ `CTRL0=0x02`, `CTRL5=0xD5` — **idénticos** a la D-PHY que funciona en eut2 |
+| ¿La configuración del PHY? | ✅ `CTRL0=0x02`, `CTRL5=0xD5` — **idénticos** a la D-PHY que funciona en el móvil de referencia |
 | ¿El CSID? | ✅ `RX_CFG0 = 0x132103` → 4 carriles, `laneAssign 0x3210`, PHY 1, bit C-PHY a 0 |
 
 **Y el resultado, medido con las IRQ enmascaradas** (única forma de que el cero signifique algo):
@@ -194,13 +194,13 @@ csiphy1 no veía nada». Pero **tampoco ve nada apagado**: comparar «nada» con
 aquella medida es anterior a saber que **hay que enmascarar las IRQ** o toda lectura es una muestra
 al azar. **Reprobarlo bien es el siguiente experimento** (exige tocar el DT y reiniciar).
 
-### Lo que eut2 NO puede enseñarnos
+### Lo que el móvil de referencia NO puede enseñarnos
 
 Su cámara frontal declara **`gpio-no-mux`**: no pasa por ningún conmutador. La de surya sí. **El
 multiplexor es la diferencia estructural entre el caso que funciona y el nuestro**, y es
-precisamente lo que eut2 no tiene.
+precisamente lo que el móvil de referencia no tiene.
 
-⚠️ Y comparar las **tablas de sintonía** del PHY contra eut2 **no es evidencia válida**: es otro SoC
+⚠️ Y comparar las **tablas de sintonía** del PHY contra el móvil de referencia **no es evidencia válida**: es otro SoC
 (SM7325) y esas tablas son específicas de cada uno. La referencia buena es el kernel de fábrica de
 **surya**, contra el que ya se verificó byte a byte en julio.
 
@@ -422,7 +422,7 @@ porque este sí es D-PHY. **Aparcado a propósito** para terminar primero el tra
 
 ### ★ Cómo atacarlo cuando se retome: ya tenemos la referencia archivada
 
-En `eut2-sm7325/volcado-camara-funcionando.txt` hay **siete volcados del banco de registros del
+En el volcado del móvil de referencia (SM7325) con la cámara funcionando hay **siete volcados del banco de registros del
 CSIPHY** tomados con la cámara funcionando, y uno de ellos es de **`CSIPHY_IDX: 0` con
 `Datarate: 245760000`** — el **IMX471 frontal**. A esa velocidad, y siendo un Sony frontal, es
 D-PHY casi con seguridad (el trasero IMX766 va a 1,93 Gbps y es C-PHY, con `CTRL5 = 0x2a`).
@@ -430,7 +430,7 @@ D-PHY casi con seguridad (el trasero IMX766 va a 1,93 Gbps y es C-PHY, con `CTRL
 Es decir: **tenemos guardada la configuración de un enlace D-PHY que SÍ engancha**, en el mismo
 IP de cámara y las mismas direcciones que surya. Comparar el banco de ese volcado contra lo que
 programa mainline en el `csiphy1` de surya es la misma jugada que resolvió el trasero, y **no
-hace falta volver a tocar eut2**.
+hace falta volver a tocar el móvil de referencia**.
 
 Primer paso al retomar: confirmar en el volcado que el `CTRL5` de ese PHY usa la codificación
 D-PHY (bits pares + bit 7), y a partir de ahí diferencia a diferencia.
@@ -479,7 +479,7 @@ Lo que queda, en orden de valor (**el usuario prefiere el enfoque antes que el z
 # ★★★★ 2026-08-07 — LA CAUSA: el sensor va en C-PHY y el receptor está en D-PHY
 
 **Idea del usuario**: «¿seguro que surya usa D-PHY? ¿No debería usar C-PHY, siendo casi el mismo
-chip que eut2?». Comprobado, y es eso.
+chip que el móvil de referencia?». Comprobado, y es eso.
 
 ## La evidencia
 
@@ -502,7 +502,7 @@ lo mismo (línea 199 de `imx682_init_regs`). Los dos ponen el sensor en **C-PHY*
   va embebido en cada trío).
 - `camss-csiphy` de mainline **no tiene soporte C-PHY**: cero apariciones en todo el driver.
 - Medido en el móvil: `CTRL5 = 0x95` = bits pares + bit 7 (reloj) = **codificación D-PHY**.
-  En eut2, con el IMX766 funcionando: `CTRL5 = 0x2a` = bits impares = **codificación C-PHY**.
+  En el móvil de referencia, con el IMX766 funcionando: `CTRL5 = 0x2a` = bits impares = **codificación C-PHY**.
 
 ## ★ CONFIRMADO EN EL HARDWARE (no solo en las tablas)
 
@@ -642,7 +642,7 @@ ni un sensor concreto, ni csiphy0 en particular.
 ## ★★★ 2026-08-07 — CONTESTADA la pregunta de julio: esos bits son ERRORES
 
 La dicotomía abierta desde el 2026-07-17 —*«si los bits son errores → el carril 0 recibe limpio;
-si son actividad detectada → el carril 0 no recibe nada»*— queda resuelta comparando con **eut2**
+si son actividad detectada → el carril 0 no recibe nada»*— queda resuelta comparando con **el móvil de referencia**
 (Nothing Phone 1, SM7325), que tiene **el mismo IP de cámara en las mismas direcciones**
 (CSID0 `0x0acb3000`, CSIPHY0 `0x0ace0000`, `csiphy-v1.2.1` frente a `v1.2`) y un enlace que **sí
 funciona**.
@@ -655,13 +655,13 @@ IMX766 emitiendo):
 
 | | interrupciones del CSIPHY |
 |---|---|
-| **eut2, enlace funcionando** | **1 y 2** por sesión (arranque y parada) |
+| **móvil de referencia, enlace funcionando** | **1 y 2** por sesión (arranque y parada) |
 | **surya, enlace roto** | **~280 000 por segundo** (medido en julio: el ISR limpia sin parar) |
 
 **Cinco órdenes de magnitud.** Un CSIPHY sano está callado. Una tormenta continua es un
 subsistema gritando. → **los bits del banco de estado son ERRORES.**
 
-⚠️ Salvedad: eut2 usa **C-PHY** y surya **D-PHY**. El argumento se apoya en la **magnitud**
+⚠️ Salvedad: el móvil de referencia usa **C-PHY** y surya **D-PHY**. El argumento se apoya en la **magnitud**
 —silencio frente a tormenta—, que es robusta a esa diferencia, no en el significado de un bit
 concreto.
 

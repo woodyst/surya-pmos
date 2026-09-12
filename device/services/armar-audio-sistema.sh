@@ -37,8 +37,9 @@ sleep 2
 #
 # Desde el kernel r70 el modulo va DENTRO del arbol y se llama
 # snd-soc-wcn-bt-slim (la convencion de sound/soc/codecs). Antes era un .ko
-# suelto en /home/edi, y sigue habiendo kernels instalados que solo tienen ese:
-# el respaldo. Por eso se acepta cualquiera de los dos, y en ese orden.
+# suelto (KO_SUELTO, si se define), y sigue habiendo kernels instalados que
+# solo tienen ese: el respaldo. Por eso se acepta cualquiera de los dos, y en
+# ese orden.
 #
 # La lista negra NO estorba: solo impide la carga automatica por udev, que es
 # justo lo que hay que evitar (cargarlo en el arranque temprano cuelga el
@@ -47,7 +48,7 @@ if [ -d /sys/module/snd_soc_wcn_bt_slim ] || [ -d /sys/module/wcn_bt_slim ]; the
 	log "codec del WCN399x: ya cargado"
 elif modprobe --ignore-install snd-soc-wcn-bt-slim 2>/dev/null; then
 	log "codec del WCN399x: modulo del arbol"
-elif insmod /home/edi/wcn-bt-slim.ko 2>/dev/null; then
+elif [ -n "${KO_SUELTO:-}" ] && insmod "$KO_SUELTO" 2>/dev/null; then
 	log "codec del WCN399x: .ko suelto (kernel sin el modulo integrado)"
 else
 	log "AVISO: el codec del WCN399x NO se ha cargado (no habra audio de llamada BT)"

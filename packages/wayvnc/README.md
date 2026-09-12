@@ -61,14 +61,14 @@ pantalla-movil vinagre    # con otro cliente
 A mano, si hace falta:
 
 ```sh
-ssh epo 'XDG_RUNTIME_DIR=/run/user/10000 systemctl --user start wayvnc'
-ssh -f -N -L 5900:localhost:5900 epo
+ssh <tu-movil> 'XDG_RUNTIME_DIR=/run/user/10000 systemctl --user start wayvnc'
+ssh -f -N -L 5900:localhost:5900 <tu-movil>
 remmina -c vnc://localhost:5900
 ```
 
 En el móvil hay una unidad de usuario (`wayvnc.service`, copia aquí) que **no se arranca
 sola**: se enciende cuando se pide, para no dejar el servidor abierto ni gastar batería.
-Para pararlo: `ssh epo 'XDG_RUNTIME_DIR=/run/user/10000 systemctl --user stop wayvnc'`.
+Para pararlo: `ssh <tu-movil> 'XDG_RUNTIME_DIR=/run/user/10000 systemctl --user stop wayvnc'`.
 
 Atado a `127.0.0.1` a propósito: el **túnel SSH es el único acceso**, comprobado
 intentando conectar directamente a la IP del móvil (conexión rehusada).

@@ -45,16 +45,16 @@ la mitad del informe inservible. Hay que bajar a la sesión:
 
 ## 2026-08-21 (tarde) · banco de pruebas de dos móviles
 
-`scripts/dos-moviles.sh` **se ejecuta en el PC**, no en el móvil, y orquesta los dos: eut2
-emite un tono de 1 kHz al 30 % junto al micro de epo y **epo mide su propia subida** con la toma
+`scripts/dos-moviles.sh` **se ejecuta en el PC**, no en el móvil, y orquesta los dos: el otro móvil
+emite un tono de 1 kHz al 30 % junto al micro de surya y **surya mide su propia subida** con la toma
 del DSP (`0.000000` = muda). Alterna saliente y entrante.
 
-📌 **El otro extremo es irrelevante**: la subida se mide DENTRO de epo, así que da igual quién
-conteste. Se llegó a montar un contestador automático por ofono en eut2 que no hacía falta.
+📌 **El otro extremo es irrelevante**: la subida se mide DENTRO de surya, así que da igual quién
+conteste. Se llegó a montar un contestador automático por ofono en el otro móvil que no hacía falta.
 
 ⚠️ **`paplay` NO lee de la entrada estándar** (`open() No such file or directory`): usar `pacat`
 con formato crudo. Con `paplay` no sonaba nada y la medida habría sido un falso «muda».
-⚠️ eut2 = Ubuntu Touch: usuario `phablet`, alias `eut2lan`, ofono (`/ril_0`), **disco al 99 %**.
+⚠️ El otro móvil era Ubuntu Touch: usuario `phablet`, ofono (`/ril_0`), **disco al 99 %**.
 ⚠️ Un bucle de descuelgue por SSH llega tarde: la llamada **se desvía al buzón**. Tiene que
 correr dentro del propio móvil.
 
@@ -62,7 +62,7 @@ correr dentro del propio móvil.
 
 | hipótesis | cómo cayó |
 |---|---|
-| reiniciar wireplumber antes de llamar | 3 de 3 al principio, pero luego una BUENA sin remedio (0.907); y el A/B quedó **inválido** porque eut2 salió del modo avión a mitad |
+| reiniciar wireplumber antes de llamar | 3 de 3 al principio, pero luego una BUENA sin remedio (0.907); y el A/B quedó **inválido** porque el otro móvil salió del modo avión a mitad |
 | una suspensión rompe la siguiente llamada | el experimento **no se ejecutó** (`suspensiones nuevas: 0`): ni probada ni refutada |
 | cambiar de perfil recupera la llamada | ⛔ **refutado dentro de la misma llamada muda**: 0.000000 antes y después |
 
@@ -169,8 +169,8 @@ Frente al método anterior (grabar con la toma del DSP), este **no reproduce nin
 rompe la subida** al medir, **no necesita el segundo móvil** ni descolgar — y además el PCM de la
 toma dejó de abrir (`Unable to install hw params`), así que aquel método ya ni funciona.
 
-⚠️ Para las tandas, **eut2 en MODO AVIÓN**: así las llamadas van al buzón, que descuelga siempre.
-Con eut2 operativo suenan sin que nadie conteste y **no llegan a activarse** — invalidó dos tandas.
+⚠️ Para las tandas, **el otro móvil en MODO AVIÓN**: así las llamadas van al buzón, que descuelga siempre.
+Con el otro móvil operativo suenan sin que nadie conteste y **no llegan a activarse** — invalidó dos tandas.
 
 ## ✅ Silenciar el micrófono en llamada (2026-08-22)
 
