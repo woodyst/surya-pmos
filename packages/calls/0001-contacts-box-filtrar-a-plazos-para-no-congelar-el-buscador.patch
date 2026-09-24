@@ -1,0 +1,29 @@
+--- a/src/calls-contacts-box.c
++++ b/src/calls-contacts-box.c
+@@ -207,6 +207,23 @@ calls_contacts_box_init (CallsContactsBox *self)
+   self->search_filter = gtk_custom_filter_new ((GtkCustomFilterFunc) contacts_filter_func, self, NULL);
+   filtered_contacts = gtk_filter_list_model_new (G_LIST_MODEL (sorted_contacts), GTK_FILTER (g_object_ref (self->search_filter)));
+ 
++  // Filtrar a plazos en vez de reevaluar y reconstruir todas las filas de una
++  // tacada en cada pulsacion.
++  //
++  // Con 2556 contactos, escribir en el buscador congela el bucle principal
++  // hasta ~25 s por tecla en un telefono (Snapdragon 732G): el coste escala con
++  // el numero de resultados, no con el total barrido, porque GtkListBox crea una
++  // fila (avatar + un boton por numero) por cada acierto que llega del modelo.
++  //
++  // GtkFilterListModel filtra de una tacada salvo que se le pida lo contrario.
++  // Con `incremental`, GTK reparte el trabajo en ratos ociosos (tandas de 512
++  // items por idle): el mismo trabajo total, pero la interfaz sigue viva y los
++  // resultados van apareciendo en vez de congelarse hasta el final.
++  //
++  // Mismo parche que arreglo gnome-contacts (0002-incremental, medido en vivo:
++  // el congelado bajo de ~1050 ms a ~340 ms por pulsacion).
++  gtk_filter_list_model_set_incremental (filtered_contacts, TRUE);
++
+   gtk_list_box_bind_model (GTK_LIST_BOX (self->contacts_listbox),
+                            G_LIST_MODEL (filtered_contacts),
+                            (GtkListBoxCreateWidgetFunc) calls_contacts_row_new,
+-- 
+2.43.0
+

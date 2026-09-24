@@ -12,6 +12,7 @@ they record *how* each thing was found, and the traps that cost the most time.
 | [`bluetooth.es.md`](bluetooth.es.md) | Bluetooth calls: SCO over SLIMBus and offload to the chip |
 | [`notifications.es.md`](notifications.es.md) | Notification sound and vibration — three stacked causes |
 | [`changes.es.md`](changes.es.md) | Every change, patch by patch |
+| [`contacts-search.es.md`](contacts-search.es.md) | The contacts search in Calls froze up to ~25 s per keystroke with 2556 contacts: filter in idle batches, and don't filter below 3 characters |
 | [`pending.es.md`](pending.es.md) | What is still open, and where to start on each |
 | [`deploy.es.md`](deploy.es.md) | How the working state is deployed and verified |
 | [`blobs.md`](blobs.md) | Extracting the vendor firmware from your **own** phone (English) |

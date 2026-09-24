@@ -1,0 +1,51 @@
+--- a/src/calls-contacts-box.c	2026-09-21 11:59:27.943241953 +0200
++++ b/src/calls-contacts-box.c	2026-09-21 11:59:28.029907761 +0200
+@@ -45,19 +45,35 @@
+   GtkCustomSorter  *contacts_sorter;
+   FolksSimpleQuery *search_query;
+   GtkCustomFilter  *search_filter;
++  gboolean          filtering;
+ };
+ 
++/* No filtrar hasta que la busqueda tenga al menos estos caracteres (sin contar
++ * los espacios de los extremos). Con una o dos letras casan cientos de
++ * contactos: filtrar y pintar todas esas filas en cada pulsacion era el peor
++ * caso del buscador (hasta ~25 s por letra con ~2500 contactos) y no ayuda a
++ * encontrar a nadie. Por debajo del minimo la lista se queda entera, como sin
++ * busqueda, y pasar de una a dos letras no cuesta nada. */
++#define CALLS_CONTACTS_BOX_MIN_SEARCH_CHARS 3
++
+ G_DEFINE_TYPE (CallsContactsBox, calls_contacts_box, ADW_TYPE_BIN);
+ 
+ static void
+ search_changed_cb (CallsContactsBox *self,
+                    GtkEntry         *entry)
+ {
+-  const gchar *search_text;
++  g_autofree gchar *search_text = NULL;
++  gboolean filtering;
++
++  search_text = g_strstrip (g_strdup (gtk_editable_get_text (GTK_EDITABLE (entry))));
++  filtering = g_utf8_strlen (search_text, -1) >= CALLS_CONTACTS_BOX_MIN_SEARCH_CHARS;
+ 
+-  search_text = gtk_editable_get_text (GTK_EDITABLE (entry));
++  /* Por debajo del minimo y ya sin filtro: no hay nada que refiltrar. */
++  if (!filtering && !self->filtering)
++    return;
+ 
+-  folks_simple_query_set_query_string (self->search_query, search_text);
++  self->filtering = filtering;
++  folks_simple_query_set_query_string (self->search_query, filtering ? search_text : "");
+ 
+   gtk_filter_changed (GTK_FILTER (self->search_filter), GTK_FILTER_CHANGE_DIFFERENT);
+ }
+@@ -66,6 +82,9 @@
+ contacts_filter_func (FolksIndividual *item,
+                       CallsContactsBox *self)
+ {
++  if (!self->filtering)
++    return TRUE;
++
+   return folks_query_is_match (FOLKS_QUERY (self->search_query), item) > 0;
+ }
+ 

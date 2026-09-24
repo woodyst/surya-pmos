@@ -1,0 +1,68 @@
+# Contributor: Bart Ribbers <bribbers@disroot.org>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=calls
+pkgver=50.0
+# pkgrel=100 on purpose: an Alpine rebuild (r1..r99) would replace this package on `apk upgrade` and the patches
+# would be silently lost. A real new version (50.1) still supersedes it — check after upgrading.
+pkgrel=100
+pkgdesc="Phone dialer and call handler"
+url="https://gitlab.gnome.org/GNOME/calls"
+arch="all"
+license="GPL-3.0-or-later"
+depends="
+	callaudiod
+	modemmanager
+	sofia-sip-linphone
+	"
+makedepends="
+	abuild-meson
+	mobile-broadband-provider-info
+	callaudiod-dev
+	desktop-file-utils
+	evolution-data-server-dev
+	feedbackd-dev
+	folks-dev
+	gettext-dev
+	gmobile-dev
+	gobject-introspection-dev
+	gom-dev
+	gsound-dev
+	gstreamer-dev
+	gtk4.0-dev
+	libadwaita-dev
+	libpeas2-dev
+	meson
+	modemmanager-dev
+	ninja
+	py3-docutils
+	sofia-sip-linphone-dev
+	vala
+	"
+subpackages="$pkgname-doc $pkgname-dbg $pkgname-lang $pkgname-systemd"
+source="https://download.gnome.org/sources/calls/${pkgver%%.*}/calls-$pkgver.tar.xz
+	0001-contacts-box-filtrar-a-plazos-para-no-congelar-el-buscador.patch
+	0002-contacts-box-no-filtrar-hasta-tres-caracteres.patch
+	"
+options="!check" # Requires running Wayland compositor
+
+build() {
+	abuild-meson \
+		-Db_lto=true \
+		-Dtests="$(want_check && echo true || echo false)" \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+6360da21cfc33b4f101e3c8c2e137bbba706ed5c490cf38aa1a0e65363e85183593b5f54db5b8dabc10213326c1842ac2add376a3bec656ebdc3909f2d165e89  calls-50.0.tar.xz
+9ba1fc6f3021e145063c61fa459e8bb5c71babbe9e9b4d6fa4b256908e30a620c33c3937c9e542de7b420989d1f1af9c249579fedaf44dae45405d8a3be81711  0001-contacts-box-filtrar-a-plazos-para-no-congelar-el-buscador.patch
+0556b03de247d00f6a01738b292666d22bcf5c6f88fd3d79fcb164f3673174c406e473df472b8578295bed38c70b540cf14f92697eb10d0c31d0e54d367bb766  0002-contacts-box-no-filtrar-hasta-tres-caracteres.patch
+"
