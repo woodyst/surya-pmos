@@ -1,0 +1,363 @@
+From fd6617086dd7c875beff9f5f18b106b754434568 Mon Sep 17 00:00:00 2001
+From: spacewar <x@x>
+Date: Tue, 10 Nov 2026 14:42:31 +0100
+Subject: [PATCH 1/3] contacts-box: indice de busqueda precalculado por
+ contacto
+
+Cada tecla filtraba con Folks SimpleQuery sobre ~2500 contactos, y el campo
+phone-numbers forzaba normalizar telefonos con libphonenumber por contacto y
+por pulsacion. Ahora el buscador compara contra un blob precalculado por
+contacto (nombre, aliases, apodo, nombre estructurado, telefonos crudo y
+normalizado, en minusculas) y una variante de solo digitos: cero asignaciones
+por contacto en cada tecla.
+
+Mantiene el filtrado incremental (0001) y el minimo de 3 caracteres (0002).
+---
+ src/calls-contacts-box.c | 261 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 251 insertions(+), 10 deletions(-)
+
+diff --git a/src/calls-contacts-box.c b/src/calls-contacts-box.c
+index 3aca51a..2bcd0d2 100644
+--- a/src/calls-contacts-box.c
++++ b/src/calls-contacts-box.c
+@@ -30,6 +30,7 @@
+ #include <glib/gi18n.h>
+ 
+ #include <adwaita.h>
++#include <folks/folks.h>
+ 
+ struct _CallsContactsBox {
+   AdwBin            parent_instance;
+@@ -43,9 +44,17 @@ struct _CallsContactsBox {
+ 
+   GListStore       *contacts_list;
+   GtkCustomSorter  *contacts_sorter;
+-  FolksSimpleQuery *search_query;
+   GtkCustomFilter  *search_filter;
+   gboolean          filtering;
++
++  /* spacewar: indice de busqueda. Cada contacto guarda aqui su blob precalculado
++   * (FolksIndividual* -> ContactBlob), asi que buscar es comparar cadenas ya
++   * preparadas en vez de re-normalizar telefonos por contacto y por tecla. */
++  GHashTable       *search_index;
++  /* Consulta normalizada, cacheada al teclear (no por contacto): minusculas y
++   * solo-digitos. Valen solo mientras `filtering` es TRUE. */
++  gchar            *query_text;
++  gchar            *query_digits;
+ };
+ 
+ /* No filtrar hasta que la busqueda tenga al menos estos caracteres (sin contar
+@@ -58,6 +67,197 @@ struct _CallsContactsBox {
+ 
+ G_DEFINE_TYPE (CallsContactsBox, calls_contacts_box, ADW_TYPE_BIN);
+ 
++/*
++ * spacewar: indice de busqueda precalculado (2026-10-15).
++ *
++ * El buscador de serie filtra con Folks `SimpleQuery.is_match` sobre los ~2500
++ * contactos en cada tecla, y con el campo «phone-numbers» eso fuerza a
++ * normalizar telefonos con libphonenumber (creando objetos E.PhoneNumber) por
++ * contacto y por pulsacion: el origen del congelado que el filtrado
++ * incremental (parche 0001) solo reparte, no quita.
++ *
++ * Aqui cada contacto guarda un blob con lo buscable ya preparado en minusculas
++ * (nombre, aliases, apodo, nombre estructurado, telefonos crudos y
++ * normalizados) y otro solo con sus digitos. Construirlos cuesta una vez por
++ * contacto; cada tecla pasa a ser un `g_strstr_len` por blob, sin asignaciones.
++ */
++typedef struct {
++  gchar *text;
++  gchar *digits;
++} ContactBlob;
++
++
++static void
++contact_blob_free (gpointer data)
++{
++  ContactBlob *blob = data;
++
++  g_clear_pointer (&blob->text, g_free);
++  g_clear_pointer (&blob->digits, g_free);
++  g_free (blob);
++}
++
++
++static void
++blob_append_text (GString    *text,
++                  const char *s)
++{
++  g_autofree gchar *down = NULL;
++
++  if (!s || !*s)
++    return;
++
++  down = g_utf8_strdown (s, -1);
++  if (!down)
++    return;
++
++  g_string_append (text, down);
++  g_string_append_c (text, '\n');
++}
++
++
++static void
++blob_append_digits (GString    *digits,
++                    const char *s)
++{
++  gsize start;
++
++  if (!s)
++    return;
++
++  start = digits->len;
++  for (; *s; s++) {
++    if (g_ascii_isdigit (*s))
++      g_string_append_c (digits, *s);
++  }
++
++  /* Un espacio por telefono para que el final de un numero no case con el
++   * principio del siguiente al ir todos pegados. */
++  if (digits->len > start)
++    g_string_append_c (digits, ' ');
++}
++
++
++/* «value» leido por propiedad: todos los FieldDetails de folks la exponen, y
++ * por propiedad nos ahorramos casts que cambian entre versiones. */
++static void
++append_property_value (GString   *text,
++                       GString   *digits,
++                       gpointer   object)
++{
++  g_autofree gchar *value = NULL;
++
++  if (!object)
++    return;
++
++  if (!g_object_class_find_property (G_OBJECT_GET_CLASS (object), "value"))
++    return;
++
++  g_object_get (G_OBJECT (object), "value", &value, NULL);
++  blob_append_text (text, value);
++  if (digits)
++    blob_append_digits (digits, value);
++}
++
++
++static ContactBlob *
++contact_blob_new (FolksIndividual *individual)
++{
++  ContactBlob *blob = g_new0 (ContactBlob, 1);
++  GString *text = g_string_new (NULL);
++  GString *digits = g_string_new (NULL);
++  GObjectClass *klass = G_OBJECT_GET_CLASS (individual);
++
++  blob_append_text (text, folks_individual_get_display_name (individual));
++
++  /* «aliases»: GeeList de FolksAliasFieldDetails. */
++  if (g_object_class_find_property (klass, "aliases")) {
++    g_autoptr (GeeList) aliases = NULL;
++
++    g_object_get (individual, "aliases", &aliases, NULL);
++    if (aliases) {
++      guint n = gee_list_get_size (aliases);
++      guint i;
++
++      for (i = 0; i < n; i++) {
++        g_autoptr (FolksAbstractFieldDetails) detail = gee_list_get (aliases, i);
++
++        append_property_value (text, NULL, detail);
++      }
++    }
++  }
++
++  if (g_object_class_find_property (klass, "nickname")) {
++    g_autofree gchar *nickname = NULL;
++
++    g_object_get (individual, "nickname", &nickname, NULL);
++    blob_append_text (text, nickname);
++  }
++
++  if (g_object_class_find_property (klass, "name")) {
++    g_autoptr (FolksStructuredName) name = NULL;
++    g_autofree gchar *given = NULL;
++    g_autofree gchar *family = NULL;
++
++    g_object_get (individual, "name", &name, NULL);
++    if (name) {
++      g_object_get (name, "given-name", &given, "family-name", &family, NULL);
++      blob_append_text (text, given);
++      blob_append_text (text, family);
++    }
++  }
++
++  /* Telefonos: crudo y normalizado, igual que la fila al pintar
++   * (calls-contacts-row.c). Ambos alimentan `text`; los digitos, ademas, `digits`. */
++  if (g_object_class_find_property (klass, "phone-numbers")) {
++    g_autoptr (GeeSet) phone_numbers = NULL;
++    GeeIterator *iter;
++
++    g_object_get (individual, "phone-numbers", &phone_numbers, NULL);
++    if (phone_numbers) {
++      iter = gee_iterable_iterator (GEE_ITERABLE (phone_numbers));
++      while (gee_iterator_next (iter)) {
++        g_autoptr (FolksAbstractFieldDetails) detail = gee_iterator_get (iter);
++        g_autofree gchar *normalised = NULL;
++
++        if (!FOLKS_IS_PHONE_FIELD_DETAILS (detail))
++          continue;
++
++        append_property_value (text, digits, detail);
++        normalised = folks_phone_field_details_get_normalised (FOLKS_PHONE_FIELD_DETAILS (detail));
++        blob_append_text (text, normalised);
++        blob_append_digits (digits, normalised);
++      }
++      g_clear_object (&iter);
++    }
++  }
++
++  blob->text = g_string_free (text, FALSE);
++  blob->digits = g_string_free (digits, FALSE);
++  return blob;
++}
++
++
++static void
++individual_changed_cb (FolksIndividual  *individual,
++                       GParamSpec       *pspec,
++                       CallsContactsBox *self)
++{
++  /* Rehacer el blob solo de contactos ya cargados: cambios de nombre o numero
++   * son esporadicos; con el buscador abierto, avisar al modelo para que
++   * reevalue (el reevaluar ya es barato). */
++  if (!g_hash_table_contains (self->search_index, individual))
++    return;
++
++  g_hash_table_replace (self->search_index,
++                        individual,
++                        contact_blob_new (individual));
++
++  if (self->filtering)
++    gtk_filter_changed (GTK_FILTER (self->search_filter), GTK_FILTER_CHANGE_DIFFERENT);
++}
++
++
+ static void
+ search_changed_cb (CallsContactsBox *self,
+                    GtkEntry         *entry)
+@@ -73,19 +273,45 @@ search_changed_cb (CallsContactsBox *self,
+     return;
+ 
+   self->filtering = filtering;
+-  folks_simple_query_set_query_string (self->search_query, filtering ? search_text : "");
++  g_clear_pointer (&self->query_text, g_free);
++  g_clear_pointer (&self->query_digits, g_free);
++
++  if (filtering) {
++    GString *digits;
++
++    self->query_text = g_utf8_strdown (search_text, -1);
++
++    digits = g_string_new (NULL);
++    blob_append_digits (digits, search_text);
++    if (digits->len)
++      self->query_digits = g_string_free (digits, FALSE);
++    else
++      g_string_free (digits, TRUE);
++  }
+ 
+   gtk_filter_changed (GTK_FILTER (self->search_filter), GTK_FILTER_CHANGE_DIFFERENT);
+ }
+ 
+ static gboolean
+-contacts_filter_func (FolksIndividual *item,
++contacts_filter_func (FolksIndividual  *item,
+                       CallsContactsBox *self)
+ {
++  ContactBlob *blob;
++
+   if (!self->filtering)
+     return TRUE;
+ 
+-  return folks_query_is_match (FOLKS_QUERY (self->search_query), item) > 0;
++  blob = g_hash_table_lookup (self->search_index, item);
++  if (!blob)
++    return FALSE;
++
++  if (self->query_text && g_strstr_len (blob->text, -1, self->query_text))
++    return TRUE;
++
++  if (self->query_digits && g_strstr_len (blob->digits, -1, self->query_digits))
++    return TRUE;
++
++  return FALSE;
+ }
+ 
+ 
+@@ -131,11 +357,22 @@ contacts_provider_added (CallsContactsBox *self,
+ {
+   g_list_store_append (G_LIST_STORE (self->contacts_list), individual);
+ 
++  /* Precalcular ya la busqueda de este contacto (una vez, no por tecla). */
++  g_hash_table_insert (self->search_index,
++                       individual,
++                       contact_blob_new (individual));
++
+   g_signal_connect_object (individual,
+                            "notify::is-favourite",
+                            G_CALLBACK (on_favourite_changed),
+                            self,
+                            G_CONNECT_SWAPPED);
++
++  g_signal_connect_object (individual,
++                           "notify",
++                           G_CALLBACK (individual_changed_cb),
++                           self,
++                           0);
+ }
+ 
+ static void
+@@ -143,6 +380,9 @@ contacts_provider_removed (CallsContactsBox *self,
+                            FolksIndividual  *individual)
+ {
+   guint position;
++
++  g_hash_table_remove (self->search_index, individual);
++
+   while (g_list_store_find (G_LIST_STORE (self->contacts_list), individual, &position)) {
+     g_list_store_remove(G_LIST_STORE (self->contacts_list), position);
+   }
+@@ -180,6 +420,9 @@ calls_contacts_box_dispose (GObject *object)
+ 
+   GtkWidget *child = self->child;
+ 
++  g_clear_pointer (&self->query_text, g_free);
++  g_clear_pointer (&self->query_digits, g_free);
++  g_clear_pointer (&self->search_index, g_hash_table_destroy);
+   g_clear_pointer (&child, gtk_widget_unparent);
+ }
+ 
+@@ -209,11 +452,6 @@ calls_contacts_box_init (CallsContactsBox *self)
+   GtkFilterListModel *filtered_contacts;
+ 
+   g_autoptr (GeeCollection) individuals = NULL;
+-  gchar* query_fields[] = { "alias",
+-                            "full-name",
+-                            "nickname",
+-                            "structured-name",
+-                            "phone-numbers" };
+ 
+   gtk_widget_init_template (GTK_WIDGET (self));
+ 
+@@ -222,7 +460,10 @@ calls_contacts_box_init (CallsContactsBox *self)
+   self->contacts_sorter = gtk_custom_sorter_new ((GCompareDataFunc) contacts_sort_func, NULL, NULL);
+   sorted_contacts = gtk_sort_list_model_new (G_LIST_MODEL (g_object_ref (self->contacts_list)), GTK_SORTER (g_object_ref (self->contacts_sorter)));
+ 
+-  self->search_query = folks_simple_query_new ("", query_fields, G_N_ELEMENTS (query_fields));
++  self->search_index = g_hash_table_new_full (g_direct_hash,
++                                              g_direct_equal,
++                                              NULL,
++                                              contact_blob_free);
+   self->search_filter = gtk_custom_filter_new ((GtkCustomFilterFunc) contacts_filter_func, self, NULL);
+   filtered_contacts = gtk_filter_list_model_new (G_LIST_MODEL (sorted_contacts), GTK_FILTER (g_object_ref (self->search_filter)));
+ 

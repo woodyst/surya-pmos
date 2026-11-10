@@ -1,0 +1,53 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Tue, 25 Aug 2026 18:30:00 +0200
+Subject: [PATCH] store: filtrar a plazos para no congelar la barra de busqueda
+
+Gtk.FilterListModel filtra de una tacada salvo que se le pida lo contrario.
+Con 2556 contactos eso bloquea el bucle principal ~1,2 s por pulsacion en un
+telefono, asi que la barra de busqueda deja de responder y las letras
+aparecen a tirones.
+
+`incremental` no reduce el trabajo total: lo reparte en ratos ociosos. La
+interfaz sigue viva mientras filtra y los resultados van apareciendo en vez
+de llegar todos de golpe al final.
+
+Donde se va el tiempo, perfilando con gdb en un Snapdragon 732G y 2556
+contactos (muestreo de pila mientras se teclea):
+
+  gtk_css_node_ensure_style        7/22 muestras
+  gtk_label_ensure_layout          4/22
+  gtk_css_color_value_parse        3/22
+  gtk_list_item_manager_*          3/22
+  el filtro y Folks.Query.is_match 3/22
+
+O sea: la mayor parte no es comparar, es construir y aplicar estilos a las
+filas cada vez que el modelo cambia (el avatar de reserva de AdwAvatar dibuja
+iniciales con su color, y eso es un nodo CSS y una etiqueta por fila). Ese
+coste no se puede abaratar desde aqui, pero si se puede dejar de hacer todo
+junto y devolverle el control al bucle principal entre tanda y tanda.
+---
+diff --git a/src/contacts-store.vala b/src/contacts-store.vala
+index 6fd6489..eef9464 100644
+--- a/src/contacts-store.vala
++++ b/src/contacts-store.vala
+@@ -171,6 +171,20 @@ public class Contacts.Store : GLib.Object {
+     filter.append (this.manual_filter);
+ 
+     this.filter_model = new Gtk.FilterListModel (this.sort_model, filter);
++    // Filtrar a plazos en vez de todo de una tacada.
++    //
++    // Con 2556 contactos, reevaluar la lista entera bloquea el bucle principal
++    // ~1,2 s por pulsacion en un telefono: la barra de busqueda se queda sin
++    // responder y las letras aparecen a tirones. Con `incremental`, GTK reparte
++    // el filtrado en ratos ociosos: el mismo trabajo total, pero la interfaz
++    // sigue viva y los resultados van apareciendo en vez de llegar de golpe.
++    //
++    // Medido en un Snapdragon 732G: la parte de comparar cuesta ~450 ms por
++    // pasada completa y el resto se va en construir y aplicar estilos a las
++    // filas (gtk_css_node_ensure_style y gtk_label_ensure_layout dominan el
++    // perfil). Nada de eso se puede hacer mas barato desde aqui, pero si se
++    // puede dejar de hacer todo junto.
++    this.filter_model.incremental = true;
+   }
+ 
+   private void on_individuals_changed_detailed (Gee.MultiMap<Individual?,Individual?> changes) {

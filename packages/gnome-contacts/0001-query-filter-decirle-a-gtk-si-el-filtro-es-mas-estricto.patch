@@ -1,0 +1,61 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Tue, 25 Aug 2026 18:00:00 +0200
+Subject: [PATCH] query-filter: decirle a GTK si el filtro se ha vuelto mas o
+ menos estricto
+
+Al escribir en la barra de busqueda, QueryFilter emitia siempre
+Gtk.FilterChange.DIFFERENT, con lo que Gtk.FilterListModel tiene que
+reevaluar TODOS los contactos en cada pulsacion.
+
+Con 2556 contactos eso son ~450 ms de Folks.Query.is_match por tecla en un
+telefono (medido en un Snapdragon 732G), y el coste NO baja al ir
+concretando la busqueda: "marta", con 12 aciertos, cuesta lo mismo que "m",
+con 681, porque lo que domina es recorrer las 2556 fichas y no el numero de
+resultados.
+
+Anadir una letra solo puede quitar resultados, nunca anadirlos, asi que el
+filtro es MAS ESTRICTO y GTK puede reexaminar unicamente los que ya casaban.
+Borrar una letra es lo simetrico: MENOS ESTRICTO, y basta con reexaminar los
+que no casaban.
+
+Comprobado que la premisa se cumple con datos reales ANTES de escribir esto:
+12 pares prefijo->extension ("mar"->"mari", "jos"->"jose", "maria j"->
+"maria jo", ...) sobre las 2556 fichas reales, y en ninguno aparecio un solo
+resultado que no estuviera ya en el conjunto del prefijo.
+
+Efecto al teclear "marta" (candidatos que quedan tras cada letra: 2556 ->
+681 -> 400 -> 139 -> 42): de 5 x 2556 = 12780 evaluaciones a 3818, y la
+mejora crece cuanto mas larga es la busqueda.
+
+El propio fichero ya decia que esto se podia hacer ("A very common use case
+is that the user is typing in the search bar. In case they add a letter, we
+know the filter will be more strict (and vice versa)"), pero la pista nunca
+llegaba a GTK.
+---
+diff --git a/src/contacts-query-filter.vala b/src/contacts-query-filter.vala
+index c1846e0..5b9161c 100644
+--- a/src/contacts-query-filter.vala
++++ b/src/contacts-query-filter.vala
+@@ -63,6 +63,22 @@ public class Contacts.QueryFilter : Gtk.Filter {
+         // We shouldn't get a notify for this but in reality we do, so ignore it
+         if (this.query_string == old_query_str)
+           return;
++
++        // Anadir texto solo puede QUITAR resultados: el filtro es mas
++        // estricto, y GTK puede reexaminar solo los que ya casaban en vez de
++        // la lista entera. Con muchos contactos es la diferencia entre
++        // recorrer 2556 fichas por tecla o unas pocas decenas.
++        if (this.query_string.has_prefix (old_query_str)) {
++          this.changed (Gtk.FilterChange.MORE_STRICT);
++          return;
++        }
++
++        // Y borrar texto solo puede ANADIR resultados: menos estricto, asi
++        // que basta con reexaminar los que NO casaban.
++        if (old_query_str.has_prefix (this.query_string)) {
++          this.changed (Gtk.FilterChange.LESS_STRICT);
++          return;
++        }
+       }
+     }
+ 

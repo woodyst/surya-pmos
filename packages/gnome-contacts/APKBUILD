@@ -1,0 +1,58 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=gnome-contacts
+pkgver=50.0
+# 2026-10-15: r100 (antes r2) al sumar 0003 (botón Llamar + estrella en la ficha), como en calls:
+# que un `apk upgrade` de Alpine (r3..r99) no pise los parches. El 0003 es el mismo parche de
+# spacewar (allí sobre 51.0), verificado aplicable sin conflictos sobre 50.0 + 0001 + 0002.
+pkgrel=100
+pkgdesc="A contacts manager for GNOME"
+url="https://apps.gnome.org/Contacts"
+arch="all"
+license="GPL-2.0-or-later"
+makedepends="
+	blueprint-compiler
+	desktop-file-utils
+	evolution-data-server-dev
+	folks-dev
+	glib-dev
+	gnome-desktop-dev
+	gnome-online-accounts-dev
+	gstreamer-dev
+	gtk4.0-dev
+	libadwaita-dev
+	libgee-dev
+	libglycin-gtk4-dev
+	libportal-dev
+	libqrencode-dev
+	meson
+	telepathy-glib-dev
+	vala
+	"
+checkdepends="appstream-glib"
+subpackages="$pkgname-lang $pkgname-doc"
+source="https://download.gnome.org/sources/gnome-contacts/${pkgver%%.*}/gnome-contacts-$pkgver.tar.xz
+	0001-query-filter-decirle-a-gtk-si-el-filtro-es-mas-estricto.patch
+	0002-store-filtrar-a-plazos-para-no-congelar-la-barra-de-busqueda.patch
+	0003-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
+	"
+
+build() {
+	abuild-meson -Db_lto=true . output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+192e84ac63d2eae2ca6dc19ce6015f2b5ee8559af9bfd189abdb6a4559a2a2d9a2a7b81e84e6f8daefea03aa41869a6752dd14f022ba5e0757877ad90540f868  gnome-contacts-50.0.tar.xz
+22527bdf012c0649b89f7b6279240bad0cc84ac6aa34e2e8b57921771cadb25175557494efd3c65f7c5e46a3c29931ec56bcf70753ca1fff35e2c173b62e1ebf  0001-query-filter-decirle-a-gtk-si-el-filtro-es-mas-estricto.patch
+626e67768b829cd06a4d9396a39a25ee41a76402203c3ec102265e5c4c363eebf78b79d0131e21a2926b05c3a2322d9117e47690fc8e4bda3701c796f9b9491a  0002-store-filtrar-a-plazos-para-no-congelar-la-barra-de-busqueda.patch
+6458c952c7be5a8a0edb9fde32391d5c759be4a4afdaf2aa9eb8856b26ac07801f50006bf8fd05b2a3a4a23e287f9f37484157aa5c252eaefabb4ba49c1c70fd  0003-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
+"

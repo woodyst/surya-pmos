@@ -1,0 +1,133 @@
+From 5ef10f680fc107a242eef6cc5270f64ff2b0a2d4 Mon Sep 17 00:00:00 2001
+From: spacewar <x@x>
+Date: Tue, 10 Nov 2026 14:46:03 +0100
+Subject: [PATCH 2/3] contacts-row: estrella de favorito compartida con la
+ agenda
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+La pestaña Contactos ya ordenaba favoritos primero pero no dejaba marcarlos:
+cada fila gana un boton plano starred/non-starred a la derecha del nombre
+(columna 2, fila 0: lejos de los botones de llamada, no se pulsa por error).
+Escribe Individual.is-favourite via folks, la misma propiedad que usa la
+agenda (starred de EDS): un estado, dos apps. El notify refresca en ambas.
+---
+ src/calls-contacts-row.c | 55 ++++++++++++++++++++++++++++++++++++++++
+ src/ui/contacts-row.ui   | 16 ++++++++++++
+ 2 files changed, 71 insertions(+)
+
+diff --git a/src/calls-contacts-row.c b/src/calls-contacts-row.c
+index f8845a9..35f78ea 100644
+--- a/src/calls-contacts-row.c
++++ b/src/calls-contacts-row.c
+@@ -22,6 +22,7 @@ struct _CallsContactsRow {
+   GtkWidget       *avatar;
+   GtkWidget       *title;
+   GtkWidget       *grid;
++  GtkWidget       *favorite;
+ 
+   gint             n_phonenumbers;
+ 
+@@ -87,6 +88,47 @@ phone_numbers_changed_cb (CallsContactsRow *self)
+   }
+ }
+ 
++/* spacewar: favorito compartido con la agenda (starred de EDS a traves de
++ * folks). La lista ya ordena favoritos primero; esto es el interruptor. */
++static void
++favorite_update (CallsContactsRow *self)
++{
++  gboolean favorite = FALSE;
++  const char *label;
++
++  g_object_get (G_OBJECT (self->item), "is-favourite", &favorite, NULL);
++
++  gtk_button_set_icon_name (GTK_BUTTON (self->favorite),
++                            favorite ? "starred-symbolic" : "non-starred-symbolic");
++
++  /* Texto de la interfaz en español (fork personal, sin ficheros .po). */
++  label = favorite ? "Quitar de favoritos" : "Añadir a favoritos";
++  gtk_widget_set_tooltip_text (self->favorite, label);
++  gtk_accessible_update_property (GTK_ACCESSIBLE (self->favorite),
++                                  GTK_ACCESSIBLE_PROPERTY_LABEL, label,
++                                  -1);
++}
++
++
++static void
++favorite_toggled_cb (CallsContactsRow *self)
++{
++  gboolean favorite = FALSE;
++
++  g_object_get (G_OBJECT (self->item), "is-favourite", &favorite, NULL);
++  /* La misma escritura que hace la agenda: folks propaga el starred al backend
++   * (EDS) y el notify refresca el icono aqui y en la agenda. */
++  g_object_set (G_OBJECT (self->item), "is-favourite", !favorite, NULL);
++}
++
++
++static void
++favorite_changed_cb (CallsContactsRow *self)
++{
++  favorite_update (self);
++}
++
++
+ static void
+ avatar_changed_cb (CallsContactsRow *self)
+ {
+@@ -139,6 +181,7 @@ calls_contacts_row_class_init (CallsContactsRowClass *klass)
+   gtk_widget_class_bind_template_child (widget_class, CallsContactsRow, avatar);
+   gtk_widget_class_bind_template_child (widget_class, CallsContactsRow, title);
+   gtk_widget_class_bind_template_child (widget_class, CallsContactsRow, grid);
++  gtk_widget_class_bind_template_child (widget_class, CallsContactsRow, favorite);
+ }
+ 
+ static void
+@@ -175,6 +218,18 @@ calls_contacts_row_new (FolksIndividual *item)
+                            G_CALLBACK (avatar_changed_cb),
+                            self, G_CONNECT_SWAPPED);
+ 
++  g_signal_connect_object (self->favorite,
++                           "clicked",
++                           G_CALLBACK (favorite_toggled_cb),
++                           self, G_CONNECT_SWAPPED);
++
++  g_signal_connect_object (item,
++                           "notify::is-favourite",
++                           G_CALLBACK (favorite_changed_cb),
++                           self, G_CONNECT_SWAPPED);
++
++  favorite_update (self);
++
+   avatar_changed_cb (self);
+   phone_numbers_changed_cb (self);
+ 
+diff --git a/src/ui/contacts-row.ui b/src/ui/contacts-row.ui
+index 0e1b87d..72259e9 100644
+--- a/src/ui/contacts-row.ui
++++ b/src/ui/contacts-row.ui
+@@ -37,6 +37,22 @@
+             </layout>
+           </object>
+         </child>
++        <!-- spacewar: estrella de favorito, al lado del nombre para que no
++             quede junto a los botones de llamada y no se pulse por error. -->
++        <child>
++          <object class="GtkButton" id="favorite">
++            <property name="valign">center</property>
++            <property name="halign">end</property>
++            <property name="visible">True</property>
++            <style>
++              <class name="flat"/>
++            </style>
++            <layout>
++              <property name="column">2</property>
++              <property name="row">0</property>
++            </layout>
++          </object>
++        </child>
+       </object>
+     </property>
+   </template>

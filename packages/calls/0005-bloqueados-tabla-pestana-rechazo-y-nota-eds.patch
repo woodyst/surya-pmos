@@ -1,0 +1,1780 @@
+From 87170030dec0f7031521211cc6a75d3a5d783d3d Mon Sep 17 00:00:00 2001
+From: spacewar <x@x>
+Date: Tue, 10 Nov 2026 15:16:09 +0100
+Subject: [PATCH 3/3] bloqueados: tabla propia, pestana, rechazo silencioso y
+ nota en observaciones
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Spec S3 (odd/tasks/llamadas-contactos.md), decisiones del usuario del Log L5:
+
+- CallsBlockedStore: BD GOM propia blocked.db (no toca el esquema de
+  records.db) con numero crudo, E.164, etiqueta, razon, boolean blocked y
+  fecha. Desbloquear conserva la fila. Cache en memoria para que
+  is_blocked sea barato en la ruta de llamada.
+- Llamada entrante bloqueada: silence_ring + rechazo inmediato; se emite
+  ui-call-added igual (el historial vive de ahi: la llamada queda
+  registrada) y calls-notifier salta el aviso de perdida gracias a la
+  marca blocked-silent del CallsUiCallData.
+- Pestana «Bloqueados» en el AdwViewStack con interruptor, borrado y
+  dialogo de anadido (numero + razon). Bloqueo rapido desde el menu
+  contextual de cada fila del historial.
+- Si el numero es de un contacto, sus observaciones (EDS via folks)
+  ganan la linea «Bloqueado en Llamadas (fecha): razon»; al desbloquear
+  se reescribe como «Desbloqueado (fecha): razon». Escrito de mejor
+  esfuerzo: si el backend no admite escritura, aviso y sigue la tabla.
+Comparacion de numeros por E.PhoneNumber (LOCALREGION): normalizado o
+crudo exacto; solo ese numero, no el contacto entero.
+---
+ src/calls-blocked-box.c     | 627 ++++++++++++++++++++++++++++
+ src/calls-blocked-box.h     |  18 +
+ src/calls-blocked-store.c   | 792 ++++++++++++++++++++++++++++++++++++
+ src/calls-blocked-store.h   |  45 ++
+ src/calls-call-record-row.c |  34 ++
+ src/calls-main-window.c     |   8 +
+ src/calls-manager.c         |  18 +
+ src/calls-notifier.c        |   6 +-
+ src/calls-ui-call-data.c    |  24 ++
+ src/calls-ui-call-data.h    |   6 +
+ src/meson.build             |   2 +
+ src/ui/call-record-row.ui   |   6 +
+ 12 files changed, 1585 insertions(+), 1 deletion(-)
+ create mode 100644 src/calls-blocked-box.c
+ create mode 100644 src/calls-blocked-box.h
+ create mode 100644 src/calls-blocked-store.c
+ create mode 100644 src/calls-blocked-store.h
+
+diff --git a/src/calls-blocked-box.c b/src/calls-blocked-box.c
+new file mode 100644
+index 0000000..8a8be09
+--- /dev/null
++++ b/src/calls-blocked-box.c
+@@ -0,0 +1,627 @@
++/* calls-blocked-box.c
++ *
++ * Copyright 2026 spacewar
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * spacewar (spec S3, odd/tasks/llamadas-contactos.md): la pestaña «Bloqueados»
++ * y el dialogo de bloqueo.
++ *
++ * Decisiones del usuario que viven aqui (Log L5):
++ *  - Desbloquear no borra: el interruptor deja la fila con su razon.
++ *  - Bloquear un numero que es de un contacto anade a sus observaciones (EDS)
++ *    la linea «Bloqueado en Llamadas (fecha): razon»; al desbloquear esa linea
++ *    se reescribe como «Desbloqueado (fecha): razon» (se conserva la info).
++ *  - El bloqueo es del numero exacto, no del contacto entero.
++ *
++ * Los textos nuevos van en espanol literal (Log L7): es un fork personal con
++ * la interfaz en espanol y sin .po propios.
++ */
++
++#define G_LOG_DOMAIN "CallsBlockedBox"
++
++#include "calls-config.h"
++
++#include "calls-blocked-box.h"
++#include "calls-blocked-store.h"
++#include "calls-contacts-provider.h"
++#include "calls-manager.h"
++
++#include <folks/folks.h>
++
++#include <time.h>
++
++
++/* ------------------------- notas del contacto (EDS) ------------------- */
++
++/* Texto completo de las notas de un individuo (sus valores unidos por \n) y,
++ * de paso, el persona editable que las admite escritura, o NULL. */
++static char *
++collect_notes (FolksIndividual *individual,
++               FolksPersona   **editable_out)
++{
++  GString *text = g_string_new (NULL);
++  g_autoptr (GeeList) personas = NULL;
++
++  if (editable_out)
++    *editable_out = NULL;
++
++  g_object_get (G_OBJECT (individual), "personas", &personas, NULL);
++  if (!personas)
++    return g_string_free (text, FALSE);
++
++  for (guint i = 0; i < gee_list_get_size (personas); i++) {
++    g_autoptr (FolksAbstractPersona) persona = gee_list_get (personas, i);
++    gboolean read_only = TRUE;
++    GList *notes;
++
++    if (!FOLKS_IS_PERSONA (persona))
++      continue;
++
++    g_object_get (G_OBJECT (persona), "read-only", &read_only, NULL);
++    if (read_only || !FOLKS_IS_NOTE_DETAILS (persona))
++      continue;
++
++    if (editable_out && !*editable_out)
++      *editable_out = FOLKS_PERSONA (g_object_ref (persona));
++
++    notes = folks_note_details_get_notes (FOLKS_NOTE_DETAILS (persona));
++    /* Lista ajena: solo se recorre. */
++    for (GList *l = notes; l; l = l->next) {
++      g_autofree char *value = NULL;
++
++      if (!g_object_class_find_property (G_OBJECT_GET_CLASS (l->data), "value"))
++        continue;
++
++      g_object_get (G_OBJECT (l->data), "value", &value, NULL);
++      if (value && *value) {
++        if (text->len)
++          g_string_append_c (text, '\n');
++        g_string_append (text, value);
++      }
++    }
++  }
++
++  return g_string_free (text, FALSE);
++}
++
++
++static void
++commit_cb (FolksPersona *persona,
++           GAsyncResult *res,
++           gpointer      unused)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!folks_persona_commit_finish (persona, res, &error))
++    g_warning ("No se pudieron guardar las observaciones del contacto: %s",
++               error ? error->message : "desconocido");
++}
++
++
++static gboolean
++write_notes (FolksPersona *persona,
++             const char   *text)
++{
++  GList *notes = NULL;
++  GObject *field;
++
++  /* FolksNoteFieldDetails comparte con los demas FieldDetails la propiedad
++   * «value»; construirla por g_object_new evita depender del constructor. */
++  field = g_object_new (FOLKS_TYPE_NOTE_FIELD_DETAILS, "value", text, NULL);
++  notes = g_list_append (notes, field);
++
++  folks_note_details_set_notes (FOLKS_NOTE_DETAILS (persona), notes);
++
++  /* Propiedad Vala `List<NoteFieldDetails>`: no esta claro si el setter toma o
++   * no la posesion de la lista. Erramos hacia el lado que no revienta: nada de
++   * free/unref aqui; a lo sumo una fuga de una linea por bloqueo. */
++
++  /* El commit es lo que escribe en EDS; si el backend no puede, aviso y
++   * sigo: la tabla de bloqueos es lo canonico (spec S3). */
++  folks_persona_commit (persona, NULL, (GAsyncReadyCallback) commit_cb, NULL);
++
++  return TRUE;
++}
++
++
++/* Busca el individuo con un numero igual (normalizado o crudo). Prestado:
++ * coleccion vivo del agregador, usar sin guardar. */
++static FolksIndividual *
++find_individual_by_number (const char *number)
++{
++  CallsContactsProvider *provider;
++  g_autoptr (GeeCollection) individuals = NULL;
++  g_autoptr (GeeIterator) iter = NULL;
++  g_autofree char *normalized = calls_blocked_normalize (number);
++
++  provider = calls_manager_get_contacts_provider (calls_manager_get_default ());
++  if (!provider)
++    return NULL;
++
++  individuals = calls_contacts_provider_get_individuals (provider);
++  if (!individuals)
++    return NULL;
++
++  iter = gee_iterable_iterator (GEE_ITERABLE (individuals));
++  while (gee_iterator_has_next (iter)) {
++    g_autoptr (FolksIndividual) individual = gee_iterator_next (iter);
++    g_autoptr (GeeSet) phones = NULL;
++    GeeIterator *phone_iter;
++
++    g_object_get (G_OBJECT (individual), "phone-numbers", &phones, NULL);
++    if (!phones)
++      continue;
++
++    phone_iter = gee_iterable_iterator (GEE_ITERABLE (phones));
++    while (gee_iterator_next (phone_iter)) {
++      g_autoptr (FolksAbstractFieldDetails) detail = gee_iterator_get (phone_iter);
++      g_autofree char *raw = NULL;
++      g_autofree char *norm = NULL;
++      gboolean match = FALSE;
++
++      if (!FOLKS_IS_PHONE_FIELD_DETAILS (detail))
++        continue;
++
++      g_object_get (G_OBJECT (detail), "value", &raw, NULL);
++      if (raw && g_strcmp0 (raw, number) == 0)
++        match = TRUE;
++
++      if (!match && normalized) {
++        norm = calls_blocked_normalize (raw);
++        if (norm && g_strcmp0 (norm, normalized) == 0)
++          match = TRUE;
++      }
++
++      if (match) {
++        g_clear_object (&phone_iter);
++        return g_object_ref (individual);
++      }
++    }
++    g_clear_object (&phone_iter);
++  }
++
++  return NULL;
++}
++
++
++static char *
++today (void)
++{
++  g_autoptr (GDate) date = g_date_new ();
++  g_autofree char *buffer = g_malloc (16);
++
++  g_date_set_time_t (date, time (NULL));
++  g_strchomp (g_date_strftime (buffer, 16, "%x", date));
++  return g_steal_pointer (&buffer);
++}
++
++
++/* Anade la linea de bloqueo a las observaciones del contacto, si el numero es
++ * de alguno. */
++static void
++annotate_contact_blocked (const char *number,
++                          const char *reason)
++{
++  g_autoptr (FolksIndividual) individual = find_individual_by_number (number);
++  g_autoptr (FolksPersona) persona = NULL;
++  g_autofree char *existing = NULL;
++  g_autofree char *date = NULL;
++  GString *text;
++
++  if (!individual)
++    return;
++
++  existing = collect_notes (individual, &persona);
++  if (!persona) {
++    g_debug ("Contacto de %s sin backend de notas editable", number);
++    return;
++  }
++
++  date = today ();
++  if (existing && *existing)
++    text = g_strdup_printf ("%s\nBloqueado en Llamadas (%s): %s",
++                            existing, date,
++                            reason && *reason ? reason : "(sin razon)");
++  else
++    text = g_strdup_printf ("Bloqueado en Llamadas (%s): %s",
++                            date,
++                            reason && *reason ? reason : "(sin razon)");
++
++  write_notes (persona, text);
++  g_free (text);
++}
++
++
++/* Al desbloquear: la ultima linea nuestra «Bloqueado en Llamadas (...)» pasa a
++ * «Desbloqueado (fecha de hoy): ...» conservando la razon (decision L5). */
++static void
++annotate_contact_unblocked (const char *number)
++{
++  g_autoptr (FolksIndividual) individual = find_individual_by_number (number);
++  g_autoptr (FolksPersona) persona = NULL;
++  g_autofree char *existing = NULL;
++  g_autofree char *date = NULL;
++  g_auto (GStrv) lines = NULL;
++  GString *text;
++  int target_line = -1;
++
++  if (!individual)
++    return;
++
++  existing = collect_notes (individual, &persona);
++  if (!persona || !existing)
++    return;
++
++  lines = g_strsplit (existing, "\n", -1);
++  for (int i = g_strv_length (lines) - 1; i >= 0; i--) {
++    if (g_str_has_prefix (lines[i], "Bloqueado en Llamadas (")) {
++      target_line = i;
++      break;
++    }
++  }
++
++  if (target_line < 0)
++    return;
++
++  date = today ();
++  text = g_string_new (NULL);
++  for (int i = 0; lines[i]; i++) {
++    if (i)
++      g_string_append_c (text, '\n');
++
++    if (i == target_line) {
++      const char *colon = strstr (lines[i], "): ");
++      g_string_append_printf (text, "Desbloqueado (%s): %s",
++                              date,
++                              colon ? colon + 3 : "");
++    } else {
++      g_string_append (text, lines[i]);
++    }
++  }
++
++  write_notes (persona, text->str);
++  g_string_free (text, TRUE);
++}
++
++
++/* ------------------------------ pestaña -------------------------------- */
++
++struct _CallsBlockedBox {
++  AdwBin    parent_instance;
++
++  GtkWidget *group;
++  GList    *rows;
++};
++
++G_DEFINE_TYPE (CallsBlockedBox, calls_blocked_box, ADW_TYPE_BIN)
++
++
++static void
++clear_rows (CallsBlockedBox *self)
++{
++  for (GList *l = self->rows; l; l = l->next)
++    adw_preferences_group_remove (ADW_PREFERENCES_GROUP (self->group),
++                                  GTK_WIDGET (l->data));
++
++  g_list_clear (&self->rows);
++}
++
++
++static gboolean
++blocked_switch_state_set_cb (AdwSwitch          *switch_,
++                             gboolean            state,
++                             CallsBlockedBox    *self)
++{
++  CallsBlockedNumber *entry = g_object_get_data (G_OBJECT (switch_), "entry");
++
++  if (!entry)
++    return FALSE;
++
++  calls_blocked_store_set_blocked (calls_blocked_store_get_default (),
++                                   entry, state);
++
++  if (!state) {
++    g_autofree char *number = NULL;
++
++    g_object_get (G_OBJECT (entry), "number", &number, NULL);
++    if (number)
++      annotate_contact_unblocked (number);
++  }
++
++  /* El modelo se reconstruye con la senal "changed" del almacen. */
++  return TRUE;
++}
++
++
++static void
++remove_button_clicked_cb (GtkButton *button,
++                          gpointer   unused)
++{
++  CallsBlockedNumber *entry = g_object_get_data (G_OBJECT (button), "entry");
++
++  if (entry)
++    calls_blocked_store_remove (calls_blocked_store_get_default (), entry);
++}
++
++
++static GtkWidget *
++build_row (CallsBlockedNumber *entry)
++{
++  g_autofree char *number = NULL;
++  g_autofree char *label = NULL;
++  g_autofree char *description = NULL;
++  gboolean blocked = FALSE;
++  gint64 added = 0;
++  GtkWidget *row;
++  GtkWidget *switch_;
++  GtkWidget *trash;
++
++  g_object_get (G_OBJECT (entry),
++                "number", &number,
++                "label", &label,
++                "description", &description,
++                "blocked", &blocked,
++                "added", &added,
++                NULL);
++
++  row = adw_action_row_new ();
++  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row),
++                                 (label && *label) ? label : number);
++
++  {
++    g_autoptr (GDateTime) dt = g_date_time_new_from_unix_local (added);
++    g_autofree char *date = dt ? g_date_time_format (dt, "%x") : g_strdup ("?");
++    const char *why = (description && *description) ? description : "(sin razón)";
++    g_autofree char *subtitle = NULL;
++
++    if (label && *label)
++      subtitle = g_strdup_printf ("%s · Razón: %s · %s", number, why, date);
++    else
++      subtitle = g_strdup_printf ("Razón: %s · %s", why, date);
++
++    adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle);
++  }
++
++  switch_ = adw_switch_new ();
++  gtk_widget_set_valign (switch_, GTK_ALIGN_CENTER);
++  adw_switch_set_active (ADW_SWITCH (switch_), blocked);
++  g_object_set_data_full (G_OBJECT (switch_), "entry",
++                          g_object_ref (entry), g_object_unref);
++  g_signal_connect (switch_, "state-set",
++                    G_CALLBACK (blocked_switch_state_set_cb), NULL);
++  adw_action_row_add_suffix (ADW_ACTION_ROW (row), switch_);
++
++  trash = gtk_button_new_from_icon_name ("user-trash-symbolic");
++  gtk_widget_set_valign (trash, GTK_ALIGN_CENTER);
++  gtk_widget_add_css_class (trash, "flat");
++  gtk_widget_add_css_class (trash, "destructive-action");
++  g_object_set_data_full (G_OBJECT (trash), "entry",
++                          g_object_ref (entry), g_object_unref);
++  /* El boton solo necesita su entrada; la pestana no interviene. */
++  g_signal_connect (trash, "clicked",
++                    G_CALLBACK (remove_button_clicked_cb), NULL);
++  adw_action_row_add_suffix (ADW_ACTION_ROW (row), trash);
++
++  return row;
++}
++
++
++static void
++rebuild_rows (CallsBlockedBox *self)
++{
++  GListModel *model;
++  guint n;
++
++  clear_rows (self);
++
++  model = G_LIST_MODEL (calls_blocked_store_get_model (calls_blocked_store_get_default ()));
++  n = g_list_model_get_n_items (model);
++
++  for (guint i = 0; i < n; i++) {
++    g_autoptr (CallsBlockedNumber) entry = g_list_model_get_item (model, i);
++    GtkWidget *row;
++
++    row = build_row (entry);
++    adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->group), row);
++    self->rows = g_list_append (self->rows, row);
++  }
++}
++
++
++/* Conectada con G_CONNECT_SWAPPED: el primer parametro es la pestana. */
++static void
++add_button_clicked_cb (CallsBlockedBox *self)
++{
++  calls_blocked_dialog_present (GTK_WIDGET (self), NULL, NULL);
++}
++
++
++static void
++store_changed_cb (CallsBlockedBox *self)
++{
++  rebuild_rows (self);
++}
++
++
++static void
++calls_blocked_box_finalize (GObject *object)
++{
++  CallsBlockedBox *self = CALLS_BLOCKED_BOX (object);
++
++  g_list_clear (&self->rows);
++
++  G_OBJECT_CLASS (calls_blocked_box_parent_class)->finalize (object);
++}
++
++
++static void
++calls_blocked_box_class_init (CallsBlockedBoxClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->finalize = calls_blocked_box_finalize;
++}
++
++
++static void
++calls_blocked_box_init (CallsBlockedBox *self)
++{
++  GtkWidget *scrolled;
++  GtkWidget *clamp;
++  GtkWidget *outer;
++  GtkWidget *add_button;
++
++  scrolled = gtk_scrolled_window_new ();
++  gtk_widget_set_vexpand (scrolled, TRUE);
++  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scrolled),
++                                  GTK_POLICY_NEVER,
++                                  GTK_POLICY_AUTOMATIC);
++
++  clamp = adw_clamp_new ();
++  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 600);
++  adw_clamp_set_margin (ADW_CLAMP (clamp), 12);
++  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scrolled), clamp);
++
++  outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
++
++  add_button = gtk_button_new_with_label ("Añadir número bloqueado");
++  gtk_widget_set_halign (add_button, GTK_ALIGN_START);
++  gtk_widget_add_css_class (add_button, "pill");
++  g_signal_connect_swapped (add_button, "clicked",
++                            G_CALLBACK (add_button_clicked_cb), self);
++  gtk_box_append (GTK_BOX (outer), add_button);
++
++  self->group = adw_preferences_group_new ();
++  gtk_box_append (GTK_BOX (outer), self->group);
++
++  adw_clamp_set_child (ADW_CLAMP (clamp), outer);
++  adw_bin_set_child (ADW_BIN (self), scrolled);
++
++  /* Las filas se rehacen con cada cambio del almacen (anadido, interruptor,
++   * borrado): son cuatro gatos, no merece la pena afinar mas. */
++  g_signal_connect_object (calls_blocked_store_get_default (),
++                           "changed",
++                           G_CALLBACK (store_changed_cb),
++                           self, G_CONNECT_SWAPPED);
++
++  /* El almacen puede terminar de cargar despues de abrir la pestaña; el
++   * "changed" de la carga reconstruye. Reconstruccion inicial por si acaso. */
++  rebuild_rows (self);
++}
++
++
++GtkWidget *
++calls_blocked_box_new (void)
++{
++  return g_object_new (CALLS_TYPE_BLOCKED_BOX, NULL);
++}
++
++
++/* ------------------------------ dialogo -------------------------------- */
++
++static void
++dialog_confirm_clicked_cb (GtkButton *button,
++                           gpointer   dialog)
++{
++  GtkWidget *number_row = g_object_get_data (G_OBJECT (dialog), "number-row");
++  GtkWidget *reason_row = g_object_get_data (G_OBJECT (dialog), "reason-row");
++  const char *number;
++  const char *reason;
++
++  number = adw_entry_row_get_text (ADW_ENTRY_ROW (number_row));
++  reason = adw_entry_row_get_text (ADW_ENTRY_ROW (reason_row));
++
++  if (!number || !*number)
++    return;
++
++  calls_blocked_store_add (calls_blocked_store_get_default (),
++                           number,
++                           g_object_get_data (G_OBJECT (dialog), "label"),
++                           reason);
++
++  annotate_contact_blocked (number, reason);
++
++  adw_dialog_close (ADW_DIALOG (dialog));
++}
++
++
++static void
++dialog_opened_notify_cb (GtkWidget *dialog,
++                         GParamSpec *pspec,
++                         gpointer    unused)
++{
++  if (!adw_dialog_get_is_opened (ADW_DIALOG (dialog)))
++    gtk_widget_destroy (dialog);
++}
++
++
++void
++calls_blocked_dialog_present (GtkWidget  *parent_widget,
++                              const char *number,
++                              const char *label)
++{
++  GtkWidget *window;
++  GtkWidget *dialog;
++  GtkWidget *toolbar;
++  GtkWidget *header;
++  GtkWidget *confirm;
++  GtkWidget *clamp;
++  GtkWidget *group;
++  GtkWidget *number_row;
++  GtkWidget *reason_row;
++
++  window = gtk_widget_get_root (parent_widget);
++  g_return_if_fail (GTK_IS_WINDOW (window));
++
++  dialog = adw_dialog_new ();
++  adw_dialog_set_title (ADW_DIALOG (dialog), "Bloquear número");
++
++  toolbar = adw_toolbar_view_new ();
++
++  header = adw_header_bar_new ();
++  confirm = gtk_button_new_with_label ("Bloquear");
++  gtk_widget_add_css_class (confirm, "suggested-action");
++  g_signal_connect (confirm, "clicked",
++                    G_CALLBACK (dialog_confirm_clicked_cb), dialog);
++  adw_header_bar_pack_end (ADW_HEADER_BAR (header), confirm);
++  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), header);
++
++  clamp = adw_clamp_new ();
++  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 400);
++  adw_clamp_set_margin (ADW_CLAMP (clamp), 12);
++
++  group = adw_preferences_group_new ();
++
++  number_row = adw_entry_row_new ();
++  adw_entry_row_set_title (ADW_ENTRY_ROW (number_row), "Número");
++  adw_entry_row_set_input_purpose (ADW_ENTRY_ROW (number_row),
++                                   GTK_INPUT_PURPOSE_PHONE);
++  if (number)
++    adw_entry_row_set_text (ADW_ENTRY_ROW (number_row), number);
++  adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), number_row);
++
++  reason_row = adw_entry_row_new ();
++  adw_entry_row_set_title (ADW_ENTRY_ROW (reason_row), "Razón");
++  adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), reason_row);
++
++  adw_clamp_set_child (ADW_CLAMP (clamp), group);
++  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), clamp);
++  adw_dialog_set_child (ADW_DIALOG (dialog), toolbar);
++
++  g_object_set_data_full (G_OBJECT (dialog), "number-row",
++                          g_object_ref (number_row), g_object_unref);
++  g_object_set_data_full (G_OBJECT (dialog), "reason-row",
++                          g_object_ref (reason_row), g_object_unref);
++  if (label && *label)
++    g_object_set_data_full (G_OBJECT (dialog), "label",
++                            g_strdup (label), g_free);
++
++  /* El dialogo vive desde aqui hasta que se cierra: present lo mete en el
++   * arbol y el notify de "opened" lo destruye al desaparecer. */
++  g_object_ref_sink (dialog);
++  adw_dialog_present (ADW_DIALOG (dialog), window);
++  g_signal_connect (dialog, "notify::opened",
++                    G_CALLBACK (dialog_opened_notify_cb), NULL);
++  g_object_unref (dialog);
++}
+diff --git a/src/calls-blocked-box.h b/src/calls-blocked-box.h
+new file mode 100644
+index 0000000..fb873c4
+--- /dev/null
++++ b/src/calls-blocked-box.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++#include <adwaita.h>
++
++G_BEGIN_DECLS
++
++#define CALLS_TYPE_BLOCKED_BOX (calls_blocked_box_get_type ())
++G_DECLARE_FINAL_TYPE (CallsBlockedBox, calls_blocked_box, CALLS, BLOCKED_BOX, AdwBin)
++
++GtkWidget *calls_blocked_box_new        (void);
++
++/* Pestaña «Bloqueados»: dialogo de bloqueo (numero y etiqueta prellenables),
++ * compartida con las filas del historial (bloqueo rapido). */
++void       calls_blocked_dialog_present (GtkWidget   *parent_widget,
++                                         const char  *number,
++                                         const char  *label);
++
++G_END_DECLS
+diff --git a/src/calls-blocked-store.c b/src/calls-blocked-store.c
+new file mode 100644
+index 0000000..d5dc507
+--- /dev/null
++++ b/src/calls-blocked-store.c
+@@ -0,0 +1,792 @@
++/* calls-blocked-store.c
++ *
++ * Copyright 2026 spacewar
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * spacewar (spec S3, odd/tasks/llamadas-contactos.md): numeros bloqueados.
++ *
++ * BD propia (`blocked.db`) para no tocar el esquema de records.db: una tabla
++ * con el numero crudo, su forma normalizada, la etiqueta del contacto, la
++ * razon del bloqueo y un boolean para desactivarlo sin perder la informacion
++ * (decision del usuario: desbloquear conserva la fila). La caché en memoria
++ * hace que `is_blocked` sea barato en la ruta de llamada entrante; se abre al
++ * primer uso, que casi siempre es antes de que haya interfaz.
++ */
++
++#define G_LOG_DOMAIN "CallsBlockedStore"
++
++#include "calls-config.h"
++#include "calls-blocked-store.h"
++
++#include <gom/gom.h>
++#include <glib/gstdio.h>
++
++#include <errno.h>
++
++#include <libebook-contacts/libebook-contacts.h>
++
++
++#define BLOCKED_STORE_FILENAME "blocked.db"
++#define BLOCKED_STORE_VERSION  1
++
++/* ------------------------------------------------------------------ */
++/* CallsBlockedNumber: una fila de la tabla `blocked`                  */
++/* ------------------------------------------------------------------ */
++
++enum {
++  R_PROP_0,
++  R_PROP_ID,
++  R_PROP_NUMBER,
++  R_PROP_NORMALIZED,
++  R_PROP_LABEL,
++  R_PROP_DESCRIPTION,
++  R_PROP_BLOCKED,
++  R_PROP_ADDED,
++  R_PROP_LAST_PROP,
++};
++static GParamSpec *r_props[R_PROP_LAST_PROP];
++
++struct _CallsBlockedNumber {
++  GomResource  parent_instance;
++
++  guint        id;
++  gchar       *number;
++  gchar       *normalized;
++  gchar       *label;
++  gchar       *description;
++  gboolean     blocked;
++  gint64       added;
++};
++
++G_DEFINE_TYPE (CallsBlockedNumber, calls_blocked_number, GOM_TYPE_RESOURCE)
++
++
++static void
++calls_blocked_number_get_property (GObject    *object,
++                                   guint       prop_id,
++                                   GValue     *value,
++                                   GParamSpec *pspec)
++{
++  CallsBlockedNumber *self = CALLS_BLOCKED_NUMBER (object);
++
++  switch (prop_id) {
++  case R_PROP_ID:
++    g_value_set_uint (value, self->id);
++    break;
++
++  case R_PROP_NUMBER:
++    g_value_set_string (value, self->number);
++    break;
++
++  case R_PROP_NORMALIZED:
++    g_value_set_string (value, self->normalized);
++    break;
++
++  case R_PROP_LABEL:
++    g_value_set_string (value, self->label);
++    break;
++
++  case R_PROP_DESCRIPTION:
++    g_value_set_string (value, self->description);
++    break;
++
++  case R_PROP_BLOCKED:
++    g_value_set_boolean (value, self->blocked);
++    break;
++
++  case R_PROP_ADDED:
++    g_value_set_int64 (value, self->added);
++    break;
++
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++  }
++}
++
++
++static void
++calls_blocked_number_set_property (GObject      *object,
++                                   guint         prop_id,
++                                   const GValue *value,
++                                   GParamSpec   *pspec)
++{
++  CallsBlockedNumber *self = CALLS_BLOCKED_NUMBER (object);
++
++  switch (prop_id) {
++  case R_PROP_ID:
++    self->id = g_value_get_uint (value);
++    break;
++
++  case R_PROP_NUMBER:
++    g_set_str (&self->number, g_value_get_string (value));
++    break;
++
++  case R_PROP_NORMALIZED:
++    g_set_str (&self->normalized, g_value_get_string (value));
++    break;
++
++  case R_PROP_LABEL:
++    g_set_str (&self->label, g_value_get_string (value));
++    break;
++
++  case R_PROP_DESCRIPTION:
++    g_set_str (&self->description, g_value_get_string (value));
++    break;
++
++  case R_PROP_BLOCKED:
++    self->blocked = g_value_get_boolean (value);
++    break;
++
++  case R_PROP_ADDED:
++    self->added = g_value_get_int64 (value);
++    break;
++
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++  }
++}
++
++
++static void
++calls_blocked_number_finalize (GObject *object)
++{
++  CallsBlockedNumber *self = CALLS_BLOCKED_NUMBER (object);
++
++  g_clear_pointer (&self->number, g_free);
++  g_clear_pointer (&self->normalized, g_free);
++  g_clear_pointer (&self->label, g_free);
++  g_clear_pointer (&self->description, g_free);
++
++  G_OBJECT_CLASS (calls_blocked_number_parent_class)->finalize (object);
++}
++
++
++static void
++calls_blocked_number_class_init (CallsBlockedNumberClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++  GomResourceClass *resource_class = GOM_RESOURCE_CLASS (klass);
++
++  object_class->finalize = calls_blocked_number_finalize;
++  object_class->get_property = calls_blocked_number_get_property;
++  object_class->set_property = calls_blocked_number_set_property;
++
++  gom_resource_class_set_table (resource_class, "blocked");
++
++  r_props[R_PROP_ID] =
++    g_param_spec_uint ("id",
++                       "ID",
++                       "The row ID",
++                       0, G_MAXUINT, 0,
++                       G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_ID, r_props[R_PROP_ID]);
++  gom_resource_class_set_primary_key (resource_class, "id");
++
++  r_props[R_PROP_NUMBER] =
++    g_param_spec_string ("number",
++                         "Number",
++                         "The blocked number as it was stored",
++                         NULL,
++                         G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_NUMBER, r_props[R_PROP_NUMBER]);
++
++  r_props[R_PROP_NORMALIZED] =
++    g_param_spec_string ("normalized",
++                         "Normalized",
++                         "E.164 form of the number for comparing",
++                         NULL,
++                         G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_NORMALIZED, r_props[R_PROP_NORMALIZED]);
++
++  r_props[R_PROP_LABEL] =
++    g_param_spec_string ("label",
++                         "Label",
++                         "Name of the contact when known",
++                         NULL,
++                         G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_LABEL, r_props[R_PROP_LABEL]);
++
++  r_props[R_PROP_DESCRIPTION] =
++    g_param_spec_string ("description",
++                         "Description",
++                         "Why the number is blocked",
++                         NULL,
++                         G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_DESCRIPTION, r_props[R_PROP_DESCRIPTION]);
++
++  r_props[R_PROP_BLOCKED] =
++    g_param_spec_boolean ("blocked",
++                          "Blocked",
++                          "Whether the block is active (false keeps the row for history)",
++                          TRUE,
++                          G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_BLOCKED, r_props[R_PROP_BLOCKED]);
++
++  r_props[R_PROP_ADDED] =
++    g_param_spec_int64 ("added",
++                        "Added",
++                        "Epoch seconds of when the entry was created",
++                        G_MININT64, G_MAXINT64, 0,
++                        G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
++  g_object_class_install_property (object_class, R_PROP_ADDED, r_props[R_PROP_ADDED]);
++}
++
++
++static void
++calls_blocked_number_init (CallsBlockedNumber *self)
++{
++}
++
++
++/* ------------------------------------------------------------------ */
++/* CallsBlockedStore                                                   */
++/* ------------------------------------------------------------------ */
++
++enum {
++  SIGNAL_CHANGED,
++  N_SIGNALS
++};
++static guint signals[N_SIGNALS];
++
++struct _CallsBlockedStore {
++  GObject        parent_instance;
++
++  gchar         *filename;
++  GomAdapter    *adapter;
++  GomRepository *repository;
++
++  /* Clave -> entrada. Cada entrada vive referenciada una vez por clave
++   * (cruda y normalizada) y otra en `model`. */
++  GHashTable    *cache;
++  GListStore    *model;
++
++  /* Guardas pendientes de BD porque todavia no habia repositorio abierto */
++  GList         *pending_saves;
++};
++
++G_DEFINE_TYPE (CallsBlockedStore, calls_blocked_store, G_TYPE_OBJECT);
++
++
++char *
++calls_blocked_normalize (const char *number)
++{
++  g_autoptr (EPhoneNumber) parsed = NULL;
++  const char *e164;
++
++  if (!number || !*number)
++    return NULL;
++
++  parsed = e_phone_number_from_string (number,
++                                       E_PHONE_NUMBER_COUNTRY_CODE_LOCALREGION);
++  if (!parsed)
++    return NULL;
++
++  e164 = e_phone_number_get_e164_number (parsed);
++  return e164 ? g_strdup (e164) : NULL;
++}
++
++
++/* Cada clave de la caché toma su propia referencia a la entrada: asi la caché
++ * es autonomica del modelo. Al borrar, `cache_remove` libera la de cada clave. */
++static void
++cache_insert (CallsBlockedStore  *self,
++              CallsBlockedNumber *entry)
++{
++  g_autofree char *raw = NULL;
++  g_autofree char *normalized = NULL;
++
++  g_object_get (G_OBJECT (entry),
++                "number", &raw,
++                "normalized", &normalized,
++                NULL);
++
++  if (!raw)
++    return;
++
++  g_hash_table_replace (self->cache, g_strdup (raw), g_object_ref (entry));
++  if (normalized && g_strcmp0 (normalized, raw) != 0)
++    g_hash_table_replace (self->cache, g_strdup (normalized), g_object_ref (entry));
++}
++
++
++static void
++cache_remove (CallsBlockedStore  *self,
++              CallsBlockedNumber *entry)
++{
++  g_autofree char *raw = NULL;
++  g_autofree char *normalized = NULL;
++
++  g_object_get (G_OBJECT (entry),
++                "number", &raw,
++                "normalized", &normalized,
++                NULL);
++
++  /* La misma entrada puede estar bajo dos claves: quitar las dos. */
++  if (raw)
++    g_hash_table_remove (self->cache, raw);
++  if (normalized)
++    g_hash_table_remove (self->cache, normalized);
++
++  /* Si sigue en la caché por otra clave idéntica, ya se ira al destruirse. */
++  (void) entry;
++}
++
++
++gboolean
++calls_blocked_store_is_blocked (CallsBlockedStore *self,
++                                const char        *number)
++{
++  CallsBlockedNumber *entry;
++  g_autofree char *normalized = NULL;
++
++  g_return_val_if_fail (CALLS_IS_BLOCKED_STORE (self), FALSE);
++
++  if (!number || !*number)
++    return FALSE;
++
++  entry = g_hash_table_lookup (self->cache, number);
++  if (!entry) {
++    normalized = calls_blocked_normalize (number);
++    if (normalized)
++      entry = g_hash_table_lookup (self->cache, normalized);
++  }
++
++  if (!entry)
++    return FALSE;
++
++  {
++    gboolean blocked = FALSE;
++
++    g_object_get (G_OBJECT (entry), "blocked", &blocked, NULL);
++    return blocked;
++  }
++}
++
++
++static void
++emit_changed (CallsBlockedStore *self)
++{
++  g_signal_emit (self, signals[SIGNAL_CHANGED], 0);
++}
++
++
++static void
++save_cb (GomResource       *resource,
++         GAsyncResult      *res,
++         CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!gom_resource_save_finish (resource, res, &error)) {
++    g_warning ("No se pudo guardar el numero bloqueado: %s",
++               error ? error->message : "desconocido");
++    goto exit;
++  }
++
++exit:
++  g_object_unref (self);
++}
++
++
++static void
++remove_cb (GomResource       *resource,
++           GAsyncResult      *res,
++           CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!gom_resource_delete_finish (resource, res, &error))
++    g_warning ("No se pudo borrar el numero bloqueado: %s",
++               error ? error->message : "desconocido");
++
++  g_object_unref (self);
++}
++
++
++static void
++flush_pending_saves (CallsBlockedStore *self)
++{
++  GList *l;
++
++  for (l = self->pending_saves; l; l = l->next) {
++    CallsBlockedNumber *entry = l->data;
++
++    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++                             (GAsyncReadyCallback) save_cb,
++                             g_object_ref (self));
++  }
++
++  g_list_free_full (self->pending_saves, g_object_unref);
++  self->pending_saves = NULL;
++}
++
++
++void
++calls_blocked_store_add (CallsBlockedStore *self,
++                         const char        *number,
++                         const char        *label,
++                         const char        *description)
++{
++  CallsBlockedNumber *entry;
++  g_autofree char *normalized = NULL;
++
++  g_return_if_fail (CALLS_IS_BLOCKED_STORE (self));
++  g_return_if_fail (number && *number);
++
++  /* Evita filas dobles: si ya estaba (aunque estuviera desactivado), se
++   * reactiva y se actualizan razon y etiqueta. */
++  normalized = calls_blocked_normalize (number);
++  entry = g_hash_table_lookup (self->cache, number);
++  if (!entry && normalized)
++    entry = g_hash_table_lookup (self->cache, normalized);
++
++  if (entry) {
++    g_object_set (G_OBJECT (entry),
++                  "blocked", TRUE,
++                  "label", label,
++                  "description", description,
++                  NULL);
++    if (self->repository)
++      gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++                               (GAsyncReadyCallback) save_cb,
++                               g_object_ref (self));
++    emit_changed (self);
++    return;
++  }
++
++  entry = g_object_new (CALLS_TYPE_BLOCKED_NUMBER,
++                        "number", number,
++                        "normalized", normalized,
++                        "label", label,
++                        "description", description,
++                        "blocked", TRUE,
++                        "added", (gint64) g_get_real_time () / G_USEC_PER_SEC,
++                        NULL);
++
++  g_list_store_append (self->model, entry);
++  cache_insert (self, entry);
++
++  if (self->repository)
++    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++                             (GAsyncReadyCallback) save_cb,
++                             g_object_ref (self));
++  else
++    self->pending_saves = g_list_append (self->pending_saves,
++                                         g_object_ref (entry));
++
++  g_object_unref (entry);
++  emit_changed (self);
++}
++
++
++void
++calls_blocked_store_set_blocked (CallsBlockedStore  *self,
++                                 CallsBlockedNumber *entry,
++                                 gboolean            blocked)
++{
++  g_return_if_fail (CALLS_IS_BLOCKED_STORE (self));
++  g_return_if_fail (CALLS_IS_BLOCKED_NUMBER (entry));
++
++  g_object_set (G_OBJECT (entry), "blocked", blocked, NULL);
++
++  if (self->repository)
++    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++                             (GAsyncReadyCallback) save_cb,
++                             g_object_ref (self));
++
++  emit_changed (self);
++}
++
++
++void
++calls_blocked_store_remove (CallsBlockedStore  *self,
++                            CallsBlockedNumber *entry)
++{
++  guint position;
++
++  g_return_if_fail (CALLS_IS_BLOCKED_STORE (self));
++  g_return_if_fail (CALLS_IS_BLOCKED_NUMBER (entry));
++
++  if (self->repository)
++    gom_resource_delete_async (GOM_RESOURCE (entry), NULL,
++                               (GAsyncReadyCallback) remove_cb,
++                               g_object_ref (self));
++
++  cache_remove (self, entry);
++
++  if (g_list_store_find (self->model, entry, &position))
++    g_list_store_remove (self->model, position);
++
++  emit_changed (self);
++}
++
++
++GListStore *
++calls_blocked_store_get_model (CallsBlockedStore *self)
++{
++  g_return_val_if_fail (CALLS_IS_BLOCKED_STORE (self), NULL);
++
++  return self->model;
++}
++
++
++/* ---------------------------- carga ---------------------------------- */
++
++static void
++load_fetch_cb (GomResourceGroup  *group,
++               GAsyncResult      *res,
++               CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++  guint count;
++  guint i;
++
++  if (!gom_resource_group_fetch_finish (group, res, &error)) {
++    g_warning ("Error leyendo numeros bloqueados: %s",
++               error ? error->message : "desconocido");
++    g_object_unref (group);
++    goto exit;
++  }
++
++  count = gom_resource_group_get_count (group);
++  for (i = 0; i < count; i++) {
++    GomResource *resource = gom_resource_group_get_index (group, i);
++
++    if (!CALLS_IS_BLOCKED_NUMBER (resource))
++      continue;
++
++    g_list_store_append (self->model, CALLS_BLOCKED_NUMBER (resource));
++    cache_insert (self, CALLS_BLOCKED_NUMBER (resource));
++  }
++
++  g_object_unref (group);
++
++  flush_pending_saves (self);
++  emit_changed (self);
++
++exit:
++  g_object_unref (self);
++}
++
++
++static void
++load_find_cb (GomRepository     *repository,
++              GAsyncResult      *res,
++              CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++  GomResourceGroup *group;
++  guint count;
++
++  group = gom_repository_find_finish (repository, res, &error);
++  if (error) {
++    g_warning ("Error buscando numeros bloqueados: %s", error->message);
++    goto exit;
++  }
++
++  g_assert (group != NULL);
++
++  count = gom_resource_group_get_count (group);
++  if (count == 0) {
++    g_object_unref (group);
++    flush_pending_saves (self);
++    goto exit;
++  }
++
++  gom_resource_group_fetch_async (group,
++                                  0,
++                                  count,
++                                  (GAsyncReadyCallback) load_fetch_cb,
++                                  g_object_ref (self));
++
++exit:
++  g_object_unref (self);
++}
++
++
++static void
++load_blocked (CallsBlockedStore *self)
++{
++  GomSorting *sorting;
++
++  sorting = gom_sorting_new (CALLS_TYPE_BLOCKED_NUMBER,
++                             "added",
++                             GOM_SORTING_ASCENDING,
++                             NULL);
++
++  gom_repository_find_sorted_async (self->repository,
++                                    CALLS_TYPE_BLOCKED_NUMBER,
++                                    NULL,
++                                    sorting,
++                                    (GAsyncReadyCallback) load_find_cb,
++                                    g_object_ref (self));
++  g_object_unref (G_OBJECT (sorting));
++}
++
++
++static void
++set_up_repo_migrate_cb (GomRepository     *repo,
++                        GAsyncResult      *res,
++                        CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!gom_repository_automatic_migrate_finish (repo, res, &error)) {
++    g_warning ("Error migrando la base de bloqueos `%s': %s",
++               self->filename, error ? error->message : "desconocido");
++    g_clear_object (&self->repository);
++    g_clear_object (&self->adapter);
++    return;
++  }
++
++  load_blocked (self);
++  g_object_unref (self);
++}
++
++
++static void
++set_up_repo (CallsBlockedStore *self)
++{
++  GomRepository *repo;
++  GList *types = NULL;
++
++  repo = gom_repository_new (self->adapter);
++
++  types = g_list_append (types, (gpointer) CALLS_TYPE_BLOCKED_NUMBER);
++  gom_repository_automatic_migrate_async (repo,
++                                          BLOCKED_STORE_VERSION,
++                                          types,
++                                          (GAsyncReadyCallback) set_up_repo_migrate_cb,
++                                          g_object_ref (self));
++
++  self->repository = repo;
++}
++
++
++static void
++open_adapter_cb (GomAdapter        *adapter,
++                 GAsyncResult      *res,
++                 CallsBlockedStore *self)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!gom_adapter_open_finish (adapter, res, &error)) {
++    g_warning ("No se pudo abrir la base de bloqueos `%s': %s",
++               self->filename, error ? error->message : "desconocido");
++    g_clear_object (&self->adapter);
++    goto exit;
++  }
++
++  set_up_repo (self);
++
++exit:
++  g_object_unref (self);
++}
++
++
++static void
++open_repo (CallsBlockedStore *self)
++{
++  g_autofree char *dir = NULL;
++  g_autofree char *uri = NULL;
++  int err;
++
++  if (self->adapter)
++    return;
++
++  dir = g_path_get_dirname (self->filename);
++  err = g_mkdir_with_parents (dir, 0755);
++  if (err)
++    g_warning ("No se pudo crear el directorio de datos de Calls: %s",
++               g_strerror (errno));
++
++  uri = g_strdup_printf ("file:%s", self->filename);
++  self->adapter = gom_adapter_new ();
++  gom_adapter_open_async (self->adapter,
++                          uri,
++                          (GAsyncReadyCallback) open_adapter_cb,
++                          g_object_ref (self));
++}
++
++
++/* ---------------------------- boilerplate ---------------------------- */
++
++static void
++calls_blocked_store_constructed (GObject *object)
++{
++  CallsBlockedStore *self = CALLS_BLOCKED_STORE (object);
++
++  G_OBJECT_CLASS (calls_blocked_store_parent_class)->constructed (object);
++
++  open_repo (self);
++}
++
++
++static void
++calls_blocked_store_finalize (GObject *object)
++{
++  CallsBlockedStore *self = CALLS_BLOCKED_STORE (object);
++
++  g_clear_object (&self->repository);
++  g_clear_object (&self->adapter);
++  g_clear_pointer (&self->cache, g_hash_table_destroy);
++  g_clear_object (&self->model);
++  g_list_free_full (self->pending_saves, g_object_unref);
++  g_clear_pointer (&self->filename, g_free);
++
++  G_OBJECT_CLASS (calls_blocked_store_parent_class)->finalize (object);
++}
++
++
++static void
++calls_blocked_store_class_init (CallsBlockedStoreClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->constructed = calls_blocked_store_constructed;
++  object_class->finalize = calls_blocked_store_finalize;
++
++  /* La lista de la UI se rehace con esto: anadido, cambio de estado o borrado. */
++  signals[SIGNAL_CHANGED] =
++    g_signal_new ("changed",
++                  G_TYPE_FROM_CLASS (klass),
++                  G_SIGNAL_RUN_LAST,
++                  0, NULL, NULL, NULL,
++                  G_TYPE_NONE,
++                  0, NULL);
++}
++
++
++static void
++calls_blocked_store_init (CallsBlockedStore *self)
++{
++  self->filename = g_build_filename (g_get_user_data_dir (),
++                                     "calls",
++                                     BLOCKED_STORE_FILENAME,
++                                     NULL);
++  /* Las claves son cadenas propias; los valores toman su referencia (el modelo
++   * es dueno, la cache no debe dejar colgando la entrada al vaciar). */
++  self->cache = g_hash_table_new_full (g_str_hash,
++                                       g_str_equal,
++                                       g_free,
++                                       g_object_unref);
++  self->model = g_list_store_new (CALLS_TYPE_BLOCKED_NUMBER);
++}
++
++
++CallsBlockedStore *
++calls_blocked_store_get_default (void)
++{
++  static volatile gsize inited = 0;
++  static CallsBlockedStore *store = NULL;
++
++  if (g_once_init_enter (&inited)) {
++    CallsBlockedStore *new_store = g_object_new (CALLS_TYPE_BLOCKED_STORE, NULL);
++
++    store = new_store;
++    g_once_init_leave (&inited, 1);
++  }
++
++  return store;
++}
+diff --git a/src/calls-blocked-store.h b/src/calls-blocked-store.h
+new file mode 100644
+index 0000000..b5b3cbc
+--- /dev/null
++++ b/src/calls-blocked-store.h
+@@ -0,0 +1,45 @@
++#pragma once
++
++#include <glib-object.h>
++#include <gom/gom.h>
++
++G_BEGIN_DECLS
++
++#define CALLS_TYPE_BLOCKED_NUMBER (calls_blocked_number_get_type ())
++G_DECLARE_FINAL_TYPE (CallsBlockedNumber, calls_blocked_number,
++                      CALLS, BLOCKED_NUMBER, GomResource)
++
++#define CALLS_TYPE_BLOCKED_STORE (calls_blocked_store_get_type ())
++G_DECLARE_FINAL_TYPE (CallsBlockedStore, calls_blocked_store,
++                      CALLS, BLOCKED_STORE, GObject)
++
++CallsBlockedStore *calls_blocked_store_get_default         (void);
++
++/* TRUE si `number` coincide (normalizada o cruda) con una entrada bloqueada.
++ * Barato: consulta la caché en memoria. */
++gboolean           calls_blocked_store_is_blocked          (CallsBlockedStore *self,
++                                                            const char        *number);
++
++/* Añade un bloqueo. `label` puede ser NULL (nombre del contacto si había).
++ * Guarda en BD y actualiza la caché; emite "changed" al terminar. */
++void               calls_blocked_store_add                 (CallsBlockedStore *self,
++                                                            const char        *number,
++                                                            const char        *label,
++                                                            const char        *description);
++
++void               calls_blocked_store_set_blocked         (CallsBlockedStore *self,
++                                                            CallsBlockedNumber *entry,
++                                                            gboolean           blocked);
++
++void               calls_blocked_store_remove              (CallsBlockedStore *self,
++                                                            CallsBlockedNumber *entry);
++
++/* Modelo (GeeList no; GListStore de CallsBlockedNumber) en orden de añadido,
++ * para la lista de la UI. */
++GListStore        *calls_blocked_store_get_model           (CallsBlockedStore *self);
++
++/* Normaliza un número para comparar/bloquear (E.PhoneNumber, region local).
++ * El resultado es nuevo y puede ser NULL si no se pudo parsear. */
++char              *calls_blocked_normalize                 (const char        *number);
++
++G_END_DECLS
+diff --git a/src/calls-call-record-row.c b/src/calls-call-record-row.c
+index dec70d7..825f0f7 100644
+--- a/src/calls-call-record-row.c
++++ b/src/calls-call-record-row.c
+@@ -24,6 +24,7 @@
+ 
+ #define G_LOG_DOMAIN "CallsCallRecordRow"
+ 
++#include "calls-blocked-box.h"
+ #include "calls-call-record-row.h"
+ #include "calls-best-match.h"
+ #include "calls-contacts-provider.h"
+@@ -308,6 +309,13 @@ setup_popover_actions (CallsCallRecordRow *self)
+   g_simple_action_set_enabled (G_SIMPLE_ACTION (action_sms), enable_sms);
+   g_simple_action_set_enabled (G_SIMPLE_ACTION (action_copy), enable_copy);
+ 
++  /* spacewar (S3): bloquear aplica a cualquier registro con numero. */
++  {
++    GAction *action_block = g_action_map_lookup_action (self->action_map,
++                                                        "block-number");
++    g_simple_action_set_enabled (G_SIMPLE_ACTION (action_block), enable_copy);
++  }
++
+   contacts_provider = calls_manager_get_contacts_provider (calls_manager_get_default ());
+ 
+   if (calls_contacts_provider_get_can_add_contacts (contacts_provider) &&
+@@ -613,12 +621,38 @@ new_sms_activated (GSimpleAction *action,
+ }
+ 
+ 
++/* spacewar (S3): bloqueo rapido desde la fila del historial (Log L5:
++ * «pestaña propia + bloqueo rápido»). Etiqueta = nombre del contacto si hay. */
++static void
++block_number_activated (GSimpleAction *action,
++                        GVariant      *parameter,
++                        gpointer       data)
++{
++  CallsCallRecordRow *self = CALLS_CALL_RECORD_ROW (data);
++  g_autofree gchar *target = NULL;
++  g_autofree gchar *primary = NULL;
++  const gchar *label = NULL;
++
++  g_object_get (G_OBJECT (self->record), "target", &target, NULL);
++  g_return_if_fail (target);
++
++  if (self->contact) {
++    g_object_get (G_OBJECT (self->contact), "primary-info", &primary, NULL);
++    if (primary && g_strcmp0 (primary, target) != 0)
++      label = primary;
++  }
++
++  calls_blocked_dialog_present (GTK_WIDGET (self), target, label);
++}
++
++
+ static GActionEntry entries[] =
+ {
+   { "delete-call", delete_call_activated },
+   { "copy-number", copy_number_activated },
+   { "new-contact", new_contact_activated },
+   { "new-sms", new_sms_activated },
++  { "block-number", block_number_activated },
+ };
+ 
+ 
+diff --git a/src/calls-main-window.c b/src/calls-main-window.c
+index 9fc1d6a..1992c9d 100644
+--- a/src/calls-main-window.c
++++ b/src/calls-main-window.c
+@@ -27,6 +27,7 @@
+ #include "calls-config.h"
+ 
+ #include "calls-account-overview.h"
++#include "calls-blocked-box.h"
+ #include "calls-contacts-box.h"
+ #include "calls-in-app-notification.h"
+ #include "calls-history-box.h"
+@@ -372,6 +373,13 @@ constructed (GObject *object)
+   page = adw_view_stack_get_page (self->main_stack, widget);
+   adw_view_stack_page_set_icon_name (page, "system-users-symbolic");
+ 
++  /* spacewar (spec S3): numeros bloqueados. Texto en espanol literal (L7). */
++  widget = calls_blocked_box_new ();
++  adw_view_stack_add_titled (self->main_stack, widget,
++                             "blocked", "Bloqueados");
++  page = adw_view_stack_get_page (self->main_stack, widget);
++  adw_view_stack_page_set_icon_name (page, "action-unavailable-symbolic");
++
+   // Add new call box
+   self->new_call = calls_new_call_box_new ();
+   widget = GTK_WIDGET (self->new_call);
+diff --git a/src/calls-manager.c b/src/calls-manager.c
+index a1e96bd..c7e83d8 100644
+--- a/src/calls-manager.c
++++ b/src/calls-manager.c
+@@ -28,6 +28,7 @@
+ #include "calls-config.h"
+ 
+ #include "calls-account.h"
++#include "calls-blocked-store.h"
+ #include "calls-manager.h"
+ #include "calls-message-source.h"
+ #include "calls-plugin-manager.h"
+@@ -259,6 +260,23 @@ add_call (CallsManager *self, CallsCall *call, CallsOrigin *origin)
+ 
+   g_object_set_data (G_OBJECT (call), "call-origin", origin);
+ 
++  /* spacewar (spec S3): entrante de numero bloqueado -> se rechaza sin timbre
++   * y sin notificacion de perdida (decision del usuario, Log L5). Se EMITE
++   * igual `ui-call-added` porque el historial vive de esa senal: la llamada
++   * queda registrada. `silence_ring` corta el timbre por si el modem tarda en
++   * confirmar el rechazo (el ringer suena a los ~100 ms de activarse la UI). */
++  if (calls_call_get_inbound (call) &&
++      calls_blocked_store_is_blocked (calls_blocked_store_get_default (),
++                                      calls_call_get_id (call))) {
++    g_info ("Llamada entrante de numero bloqueado: rechazada en silencio");
++    calls_ui_call_data_silence_ring (call_data);
++    calls_ui_call_data_set_blocked_silent (call_data, TRUE);
++
++    g_signal_emit (self, signals[UI_CALL_ADDDED], 0, call_data);
++    calls_call_hang_up (call);
++    return;
++  }
++
+   g_signal_emit (self, signals[UI_CALL_ADDDED], 0, call_data);
+ }
+ 
+diff --git a/src/calls-notifier.c b/src/calls-notifier.c
+index 8de3d4e..29b1c71 100644
+--- a/src/calls-notifier.c
++++ b/src/calls-notifier.c
+@@ -103,8 +103,12 @@ state_changed_cb (CallsNotifier *self,
+   g_return_if_fail (CUI_IS_CALL (call));
+   g_return_if_fail (old_state != new_state);
+ 
++  /* spacewar (spec S3): las entrantes de numeros bloqueados se rechazan
++   * en silencio y no deben generar aviso de perdida (quedan en historial). */
+   if (old_state == CUI_CALL_STATE_INCOMING &&
+-      new_state == CUI_CALL_STATE_DISCONNECTED)
++      new_state == CUI_CALL_STATE_DISCONNECTED &&
++      !(CALLS_IS_UI_CALL_DATA (call) &&
++        calls_ui_call_data_get_blocked_silent (CALLS_UI_CALL_DATA (call))))
+     notify (self, call);
+ 
+   /* Can use g_list_store_find with newer glib */
+diff --git a/src/calls-ui-call-data.c b/src/calls-ui-call-data.c
+index e7b0e5b..a6926db 100644
+--- a/src/calls-ui-call-data.c
++++ b/src/calls-ui-call-data.c
+@@ -727,6 +727,30 @@ calls_ui_call_data_get_ui_active (CallsUiCallData *self)
+   return self->ui_active;
+ }
+ 
++/* spacewar (spec S3): marca las entrantes de numeros bloqueados para que el
++ * notificador no emita la de perdida. No es propiedad expuesta: solo lo
++ * necesitan el manager (al rechazar) y calls-notifier. */
++void
++calls_ui_call_data_set_blocked_silent (CallsUiCallData *self,
++                                       gboolean         blocked)
++{
++  g_return_if_fail (CALLS_IS_UI_CALL_DATA (self));
++
++  g_object_set_data (G_OBJECT (self),
++                     "calls-blocked-silent",
++                     GINT_TO_POINTER (blocked));
++}
++
++
++gboolean
++calls_ui_call_data_get_blocked_silent (CallsUiCallData *self)
++{
++  g_return_val_if_fail (CALLS_IS_UI_CALL_DATA (self), FALSE);
++
++  return GPOINTER_TO_INT (g_object_get_data (G_OBJECT (self),
++                                             "calls-blocked-silent"));
++}
++
+ /**
+  * calls_ui_call_data_get_call_type:
+  * @self: a #CallsUiCallData
+diff --git a/src/calls-ui-call-data.h b/src/calls-ui-call-data.h
+index 3693bb0..7ff1b9c 100644
+--- a/src/calls-ui-call-data.h
++++ b/src/calls-ui-call-data.h
+@@ -40,6 +40,12 @@ CallsUiCallData         *calls_ui_call_data_new               (CallsCall       *
+ void          calls_ui_call_data_silence_ring      (CallsUiCallData *self);
+ gboolean      calls_ui_call_data_get_silenced      (CallsUiCallData *self);
+ gboolean      calls_ui_call_data_get_ui_active     (CallsUiCallData *self);
++
++/* spacewar (S3): llamada entrante de un numero bloqueado: enmudecida sin
++ * notificacion de perdida, pero registrada en el historial. */
++void          calls_ui_call_data_set_blocked_silent (CallsUiCallData *self,
++                                                     gboolean         blocked);
++gboolean      calls_ui_call_data_get_blocked_silent (CallsUiCallData *self);
+ CallsCallType calls_ui_call_data_get_call_type     (CallsUiCallData *self);
+ const char   *calls_ui_call_data_get_origin_id     (CallsUiCallData *self);
+ char         *calls_ui_call_data_dup_origin_name   (CallsUiCallData *self);
+diff --git a/src/meson.build b/src/meson.build
+index 586ec78..5a4dcf9 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -91,6 +91,8 @@ calls_sources = files(
+   'calls-account.c',
+   'calls-application.c',
+   'calls-best-match.c',
++  'calls-blocked-box.c',
++  'calls-blocked-store.c',
+   'calls-call-record-row.c',
+   'calls-call-record.c',
+   'calls-call-selector-item.c',
+diff --git a/src/ui/call-record-row.ui b/src/ui/call-record-row.ui
+index 811a064..f7fd62f 100644
+--- a/src/ui/call-record-row.ui
++++ b/src/ui/call-record-row.ui
+@@ -82,6 +82,12 @@
+         <attribute name="action">row-history.new-sms</attribute>
+         <attribute name="hidden-when">action-disabled</attribute>
+       </item>
++      <!-- spacewar (S3): bloqueo rapido; texto en espanol literal (L7). -->
++      <item>
++        <attribute name="label">_Bloquear número</attribute>
++        <attribute name="action">row-history.block-number</attribute>
++        <attribute name="hidden-when">action-disabled</attribute>
++      </item>
+     </section>
+   </menu>
+ </interface>

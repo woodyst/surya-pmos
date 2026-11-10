@@ -8,6 +8,8 @@
 | `packages/libcamera/*.patch` | **LGPL-2.1-or-later** — matching libcamera upstream |
 | `packages/libqmi/*.patch` | **GPL-2.0-or-later AND LGPL-2.1-or-later** — matching libqmi upstream |
 | `packages/hexagonrpcd/*.patch` | **GPL-3.0-or-later** — matching hexagonrpc upstream |
+| `packages/calls/*.patch` | **GPL-3.0-or-later** — matching upstream |
+| `packages/gnome-contacts/*.patch` | **GPL-2.0-or-later** — matching upstream |
 | `tools/qmi-loc-idl/**` | **GPL-2.0-or-later** |
 | `packages/*/APKBUILD` | **GPL-2.0-or-later**, as the postmarketOS/Alpine aports they extend |
 | `device/**`, `scripts/**` | Configuration and glue, same terms as the projects they configure |

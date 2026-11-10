@@ -243,4 +243,29 @@ publican bajo los mismos términos que los proyectos que extienden. Ver [`NOTICE
 - [`tools/qmi-loc-idl/`](tools/qmi-loc-idl/) — decodificador de la tabla de interfaz QMI
   LOC del módem: los 470 mensajes, y los tres que se implementaron en
   [`packages/libqmi`](packages/libqmi).
+
+### Parches de usabilidad en Llamadas y Contactos
+
+`packages/calls` (50.0-r101, cinco parches) y `packages/gnome-contacts` (50.0-r100, tres):
+
+- el buscador de contactos ya no congela la app: filtrado en ratos ociosos, nada de filtrar con
+  menos de 3 caracteres y —causa raíz— un blob de búsqueda precalculado por contacto: una tecla es
+  unas pocas `strstr` en vez de una normalización libphonenumber por contacto y por pulsación
+  (los 0001/0002 de gnome-contacts hacen lo equivalente en la lista).
+- una estrella alterna el favorito —la misma propiedad `starred` de EDS por la que ordenan las dos
+  apps, estado compartido—: visible en las filas de Calls (calls 0004) y en la cabecera de la ficha
+  (gnome-contacts 0003).
+- números bloqueados (calls 0005): una tabla propia `blocked.db` (número, E.164, etiqueta, razón,
+  un `blocked` reversible y fecha); la entrante bloqueada se silencia y se rechaza —sin aviso de
+  pérdida, con historial—, con pestaña «Bloqueados», bloqueo rápido en cada fila del historial y una
+  línea «Bloqueado en Llamadas (fecha): razón» en las observaciones del contacto (EDS vía folks),
+  que al desbloquear se reescribe.
+- cada teléfono de la ficha gana un botón **Llamar** (una URI `tel:` que atiende Calls;
+  gnome-contacts 0003).
+
+Son los mismos parches que en el proyecto hermano
+[`spacewar-pmos`](https://github.com/woodyst/spacewar-pmos); el de gnome-contacts se escribió sobre
+51.0 allí y se verificó aquí que aplica limpio sobre 50.0 + 0001 + 0002. ⚠️ Pendiente de compilar e
+instalar en este móvil en el momento de escribir esto.
+
 - [Versión en inglés](README.md).

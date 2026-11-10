@@ -1,0 +1,162 @@
+From 3b5a42dfec74d066330c13e90a85af426d35ee6d Mon Sep 17 00:00:00 2001
+From: spacewar <x@x>
+Date: Tue, 10 Nov 2026 14:45:03 +0100
+Subject: [PATCH] contact-sheet: llamar desde la ficha y estrella de favorito
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+S2: cada fila de telefono gana un boton «Llamar» (phone-symbolic) que lanza
+tel:<numero crudo> via Gtk.UriLauncher; el sistema abre Llamadas, que es el
+x-scheme-handler/tel. El conjunto de no-escapado deja fuera «#» a proposito:
+sin escapar abriria un fragmento URI y partiria el numero.
+
+S4 (mitad agenda): no habia estrella visible (solo el menu hamburguesa); la
+cabecera de la ficha muestra ahora un ToggleButton starred/non-starred,
+bidireccional via notify de is-favourite (los cambios hechos desde Llamadas
+refrescan) y escribiendo por las acciones win.mark/unmark-favorite de siempre.
+---
+ src/contacts-contact-sheet.vala | 102 ++++++++++++++++++++++++++++++++
+ 1 file changed, 102 insertions(+)
+
+diff --git a/src/contacts-contact-sheet.vala b/src/contacts-contact-sheet.vala
+index df807f3..4b59df0 100644
+--- a/src/contacts-contact-sheet.vala
++++ b/src/contacts-contact-sheet.vala
+@@ -13,6 +13,15 @@ using Folks;
+  */
+ public class Contacts.ContactSheet : Gtk.Widget {
+ 
++  // The individual behind the contact shown here, if it is a saved contact
++  private Individual? individual = null;
++  private Gtk.ToggleButton? favorite_button = null;
++  private ulong favourite_notify_id = 0;
++
++  // Set while pushing the state of the contact to the button, so that we
++  // don't take our own update for a click of the user
++  private bool syncing_favorite = false;
++
+   construct {
+     var box_layout = new Gtk.BoxLayout (Gtk.Orientation.VERTICAL);
+     set_layout_manager (box_layout);
+@@ -35,6 +44,12 @@ public class Contacts.ContactSheet : Gtk.Widget {
+   }
+ 
+   public override void dispose () {
++    // The individual outlives the sheet, so drop our handler on it
++    if (this.individual != null && this.favourite_notify_id != 0) {
++      this.individual.notify["is-favourite"].disconnect (this.favourite_notify_id);
++      this.favourite_notify_id = 0;
++    }
++
+     unowned Gtk.Widget? child = null;
+     while ((child = get_first_child ()) != null)
+       child.unparent ();
+@@ -145,6 +160,8 @@ public class Contacts.ContactSheet : Gtk.Widget {
+     var header = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+     header.add_css_class ("contacts-sheet-header");
+ 
++    header.append (create_favorite_button (contact));
++
+     var image_frame = new Avatar.for_contact (PROFILE_SIZE, contact);
+     // image_frame.vexpand = false;
+     // image_frame.valign = Gtk.Align.START;
+@@ -164,6 +181,66 @@ public class Contacts.ContactSheet : Gtk.Widget {
+     return header;
+   }
+ 
++  /**
++   * Star in the top-right corner of the sheet to mark the contact as favorite.
++   *
++   * The state comes from the individual (the same favourite flag that other
++   * apps see), while clicking the star goes through the window actions so the
++   * contact menu keeps working exactly as before.
++   */
++  private Gtk.Widget create_favorite_button (Contact contact) {
++    var button = new Gtk.ToggleButton ();
++    button.valign = Gtk.Align.START;
++    button.halign = Gtk.Align.END;
++    button.add_css_class ("flat");
++    button.toggled.connect (on_favorite_toggled);
++    this.favorite_button = button;
++
++    this.individual = contact.individual;
++    if (this.individual == null) {
++      // A contact that is not saved yet has nothing to favorite
++      button.visible = false;
++      return button;
++    }
++
++    update_favorite_button ();
++    this.favourite_notify_id = this.individual.notify["is-favourite"].connect (on_favourite_notify);
++
++    return button;
++  }
++
++  private void update_favorite_button () {
++    if (this.favorite_button == null || this.individual == null)
++      return;
++
++    var favorite = this.individual.is_favourite;
++
++    this.syncing_favorite = true;
++    this.favorite_button.active = favorite;
++    this.syncing_favorite = false;
++
++    this.favorite_button.icon_name = favorite ? "starred-symbolic" : "non-starred-symbolic";
++
++    // Textos de la interfaz en español (fork personal, sin ficheros .po)
++    var label = favorite ? "Quitar de favoritos" : "Marcar como favorito";
++    this.favorite_button.tooltip_text = label;
++    this.favorite_button.update_property (Gtk.AccessibleProperty.LABEL, label);
++  }
++
++  private void on_favourite_notify (Object object, ParamSpec pspec) {
++    update_favorite_button ();
++  }
++
++  private void on_favorite_toggled (Gtk.ToggleButton button) {
++    // Ignore the state we set from the contact itself
++    if (this.syncing_favorite)
++      return;
++
++    // Write the favorite through the window actions, the same path that the
++    // contact menu uses
++    activate_action_variant (button.active ? "win.mark-favorite" : "win.unmark-favorite", null);
++  }
++
+   private Gtk.Widget create_widget_for_roles (Chunk chunk)
+       requires (chunk is RolesChunk) {
+     unowned var roles_chunk = (RolesChunk) chunk;
+@@ -234,6 +311,31 @@ public class Contacts.ContactSheet : Gtk.Widget {
+                                      phone.raw_number,
+                                      phone.get_phone_type ().display_name);
+       row.set_title_direction (Gtk.TextDirection.LTR);
++
++      // Dial the number as it is stored (not a normalized form). Calls is the
++      // handler of 'tel:' on the phone and unescapes the number again, so
++      // spaces and other characters not allowed in an URI are escaped here.
++      // El segundo arg es el CONJUNTO literal de caracteres que NO se escapan
++      // (no un patron): «#» queda fuera a proposito, sin escapar abre un
++      // fragmento URI y partiría el número.
++      var escaped = Uri.escape_string (phone.raw_number, "+*,-.()", false);
++      var dial_number = "tel:" + (escaped != null ? escaped : phone.raw_number);
++      var button = row.add_button ("phone-symbolic");
++      // Texto de la interfaz en español (fork personal, sin ficheros .po)
++      button.tooltip_text = "Llamar";
++      button.update_property (Gtk.AccessibleProperty.LABEL, "Llamar");
++      button.clicked.connect (() => {
++        unowned var window = button.get_root () as Gtk.Window;
++        Gtk.UriLauncher call_launcher = new Gtk.UriLauncher (dial_number);
++        call_launcher.launch.begin (window, null, (obj, res) => {
++          try {
++            call_launcher.launch.end (res);
++          } catch (Error error) {
++            warning ("Could not start call: %s", error.message);
++          }
++        });
++      });
++
+       group.add (row);
+     }
+ 
