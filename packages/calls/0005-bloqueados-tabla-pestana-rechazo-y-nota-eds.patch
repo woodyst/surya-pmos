@@ -1,4 +1,4 @@
-From 87170030dec0f7031521211cc6a75d3a5d783d3d Mon Sep 17 00:00:00 2001
+From 073d41abbfacea2e2a2ca9260e8da191f04e0447 Mon Sep 17 00:00:00 2001
 From: spacewar <x@x>
 Date: Tue, 10 Nov 2026 15:16:09 +0100
 Subject: [PATCH 3/3] bloqueados: tabla propia, pestana, rechazo silencioso y
@@ -27,11 +27,12 @@ Spec S3 (odd/tasks/llamadas-contactos.md), decisiones del usuario del Log L5:
 Comparacion de numeros por E.PhoneNumber (LOCALREGION): normalizado o
 crudo exacto; solo ese numero, no el contacto entero.
 ---
- src/calls-blocked-box.c     | 627 ++++++++++++++++++++++++++++
+ src/calls-blocked-box.c     | 664 ++++++++++++++++++++++++++++++
  src/calls-blocked-box.h     |  18 +
- src/calls-blocked-store.c   | 792 ++++++++++++++++++++++++++++++++++++
+ src/calls-blocked-store.c   | 796 ++++++++++++++++++++++++++++++++++++
  src/calls-blocked-store.h   |  45 ++
  src/calls-call-record-row.c |  34 ++
+ src/calls-contacts-box.c    |   8 +-
  src/calls-main-window.c     |   8 +
  src/calls-manager.c         |  18 +
  src/calls-notifier.c        |   6 +-
@@ -39,7 +40,7 @@ crudo exacto; solo ese numero, no el contacto entero.
  src/calls-ui-call-data.h    |   6 +
  src/meson.build             |   2 +
  src/ui/call-record-row.ui   |   6 +
- 12 files changed, 1585 insertions(+), 1 deletion(-)
+ 13 files changed, 1633 insertions(+), 2 deletions(-)
  create mode 100644 src/calls-blocked-box.c
  create mode 100644 src/calls-blocked-box.h
  create mode 100644 src/calls-blocked-store.c
@@ -47,10 +48,10 @@ crudo exacto; solo ese numero, no el contacto entero.
 
 diff --git a/src/calls-blocked-box.c b/src/calls-blocked-box.c
 new file mode 100644
-index 0000000..8a8be09
+index 0000000..5983694
 --- /dev/null
 +++ b/src/calls-blocked-box.c
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,664 @@
 +/* calls-blocked-box.c
 + *
 + * Copyright 2026 spacewar
@@ -81,6 +82,7 @@ index 0000000..8a8be09
 +#include "calls-manager.h"
 +
 +#include <folks/folks.h>
++#include <gee-0.8/gee.h>
 +
 +#include <time.h>
 +
@@ -94,19 +96,25 @@ index 0000000..8a8be09
 +               FolksPersona   **editable_out)
 +{
 +  GString *text = g_string_new (NULL);
-+  g_autoptr (GeeList) personas = NULL;
++  g_autoptr (GeeSet) personas = NULL;
++  GeeIterator *iter;
 +
 +  if (editable_out)
 +    *editable_out = NULL;
 +
++  /* En folks 0.16 «personas» es un GeeSet (era GeeList): se itera igual que
++   * los telefonos de find_individual_by_number. */
 +  g_object_get (G_OBJECT (individual), "personas", &personas, NULL);
 +  if (!personas)
 +    return g_string_free (text, FALSE);
 +
-+  for (guint i = 0; i < gee_list_get_size (personas); i++) {
-+    g_autoptr (FolksAbstractPersona) persona = gee_list_get (personas, i);
++  iter = gee_iterable_iterator (GEE_ITERABLE (personas));
++  while (gee_iterator_next (iter)) {
++    /* FolksAbstractPersona no tiene autoptr en este folks; FolksPersona si. */
++    g_autoptr (FolksPersona) persona = gee_iterator_get (iter);
 +    gboolean read_only = TRUE;
-+    GList *notes;
++    GeeSet *notes;
++    GeeIterator *notes_iter;
 +
 +    if (!FOLKS_IS_PERSONA (persona))
 +      continue;
@@ -118,37 +126,46 @@ index 0000000..8a8be09
 +    if (editable_out && !*editable_out)
 +      *editable_out = FOLKS_PERSONA (g_object_ref (persona));
 +
++    /* get_notes devuelve GeeSet (antes GList) prestado: solo se recorre. */
 +    notes = folks_note_details_get_notes (FOLKS_NOTE_DETAILS (persona));
-+    /* Lista ajena: solo se recorre. */
-+    for (GList *l = notes; l; l = l->next) {
++    if (!notes)
++      continue;
++
++    notes_iter = gee_iterable_iterator (GEE_ITERABLE (notes));
++    while (gee_iterator_next (notes_iter)) {
++      g_autoptr (FolksNoteFieldDetails) note = gee_iterator_get (notes_iter);
 +      g_autofree char *value = NULL;
 +
-+      if (!g_object_class_find_property (G_OBJECT_GET_CLASS (l->data), "value"))
++      if (!G_IS_OBJECT (note) ||
++          !g_object_class_find_property (G_OBJECT_GET_CLASS (note), "value"))
 +        continue;
 +
-+      g_object_get (G_OBJECT (l->data), "value", &value, NULL);
++      g_object_get (G_OBJECT (note), "value", &value, NULL);
 +      if (value && *value) {
 +        if (text->len)
 +          g_string_append_c (text, '\n');
 +        g_string_append (text, value);
 +      }
 +    }
++    g_clear_object (&notes_iter);
 +  }
++  g_clear_object (&iter);
 +
 +  return g_string_free (text, FALSE);
 +}
 +
 +
++/* folks 0.16 quito Folks.Persona.commit(): lo que persiste los cambios del
++ * backend es el flush de la persona-store. Si falla, aviso y sigo: la tabla de
++ * bloqueos es lo canonico (spec S3). */
 +static void
-+commit_cb (FolksPersona *persona,
-+           GAsyncResult *res,
-+           gpointer      unused)
++flush_cb (GObject      *store,
++          GAsyncResult *res,
++          gpointer      unused)
 +{
-+  g_autoptr (GError) error = NULL;
-+
-+  if (!folks_persona_commit_finish (persona, res, &error))
-+    g_warning ("No se pudieron guardar las observaciones del contacto: %s",
-+               error ? error->message : "desconocido");
++  /* flush_finish es void en este folks: no propaga error; si huele mal ya lo
++   * avisara el backend por su cuenta. */
++  folks_persona_store_flush_finish (FOLKS_PERSONA_STORE (store), res);
 +}
 +
 +
@@ -156,23 +173,29 @@ index 0000000..8a8be09
 +write_notes (FolksPersona *persona,
 +             const char   *text)
 +{
-+  GList *notes = NULL;
-+  GObject *field;
++  /* set_notes pide GeeSet<NoteFieldDetails> (en C era GList en folks viejos).
++   * gee_hash_set_new quiere las 9 funciones del constructor Vala: con todo
++   * NULL se queda con hash/igualdad de puntero, suficiente para un set de
++   * una sola entrada. */
++  g_autoptr (GeeSet) notes = (GeeSet *) gee_hash_set_new (FOLKS_TYPE_NOTE_FIELD_DETAILS,
++                                                          NULL, NULL, NULL, NULL,
++                                                          NULL, NULL, NULL, NULL);
++  g_autoptr (FolksNoteFieldDetails) field = NULL;
++  FolksPersonaStore *store;
 +
 +  /* FolksNoteFieldDetails comparte con los demas FieldDetails la propiedad
 +   * «value»; construirla por g_object_new evita depender del constructor. */
 +  field = g_object_new (FOLKS_TYPE_NOTE_FIELD_DETAILS, "value", text, NULL);
-+  notes = g_list_append (notes, field);
++  gee_abstract_collection_add (GEE_ABSTRACT_COLLECTION (notes),
++                               g_object_ref (field));
 +
 +  folks_note_details_set_notes (FOLKS_NOTE_DETAILS (persona), notes);
 +
-+  /* Propiedad Vala `List<NoteFieldDetails>`: no esta claro si el setter toma o
-+   * no la posesion de la lista. Erramos hacia el lado que no revienta: nada de
-+   * free/unref aqui; a lo sumo una fuga de una linea por bloqueo. */
-+
-+  /* El commit es lo que escribe en EDS; si el backend no puede, aviso y
-+   * sigo: la tabla de bloqueos es lo canonico (spec S3). */
-+  folks_persona_commit (persona, NULL, (GAsyncReadyCallback) commit_cb, NULL);
++  store = folks_persona_get_store (persona);
++  if (store)
++    folks_persona_store_flush (store, flush_cb, NULL);
++  else
++    g_warning ("El contacto no tiene almacen donde guardar la nota de bloqueo");
 +
 +  return TRUE;
 +}
@@ -185,7 +208,7 @@ index 0000000..8a8be09
 +{
 +  CallsContactsProvider *provider;
 +  g_autoptr (GeeCollection) individuals = NULL;
-+  g_autoptr (GeeIterator) iter = NULL;
++  GeeIterator *iter;
 +  g_autofree char *normalized = calls_blocked_normalize (number);
 +
 +  provider = calls_manager_get_contacts_provider (calls_manager_get_default ());
@@ -197,8 +220,8 @@ index 0000000..8a8be09
 +    return NULL;
 +
 +  iter = gee_iterable_iterator (GEE_ITERABLE (individuals));
-+  while (gee_iterator_has_next (iter)) {
-+    g_autoptr (FolksIndividual) individual = gee_iterator_next (iter);
++  while (gee_iterator_next (iter)) {
++    g_autoptr (FolksIndividual) individual = gee_iterator_get (iter);
 +    g_autoptr (GeeSet) phones = NULL;
 +    GeeIterator *phone_iter;
 +
@@ -245,7 +268,9 @@ index 0000000..8a8be09
 +  g_autofree char *buffer = g_malloc (16);
 +
 +  g_date_set_time_t (date, time (NULL));
-+  g_strchomp (g_date_strftime (buffer, 16, "%x", date));
++  /* g_date_strftime devuelve numero de bytes, no la cadena. */
++  if (g_date_strftime (buffer, 16, "%x", date))
++    g_strchomp (buffer);
 +  return g_steal_pointer (&buffer);
 +}
 +
@@ -260,7 +285,7 @@ index 0000000..8a8be09
 +  g_autoptr (FolksPersona) persona = NULL;
 +  g_autofree char *existing = NULL;
 +  g_autofree char *date = NULL;
-+  GString *text;
++  g_autofree char *text = NULL;
 +
 +  if (!individual)
 +    return;
@@ -282,7 +307,6 @@ index 0000000..8a8be09
 +                            reason && *reason ? reason : "(sin razon)");
 +
 +  write_notes (persona, text);
-+  g_free (text);
 +}
 +
 +
@@ -357,14 +381,15 @@ index 0000000..8a8be09
 +    adw_preferences_group_remove (ADW_PREFERENCES_GROUP (self->group),
 +                                  GTK_WIDGET (l->data));
 +
-+  g_list_clear (&self->rows);
++  g_list_free (self->rows);
++  self->rows = NULL;
 +}
 +
 +
 +static gboolean
-+blocked_switch_state_set_cb (AdwSwitch          *switch_,
-+                             gboolean            state,
-+                             CallsBlockedBox    *self)
++blocked_switch_state_set_cb (GtkSwitch       *switch_,
++                             gboolean         state,
++                             CallsBlockedBox *self)
 +{
 +  CallsBlockedNumber *entry = g_object_get_data (G_OBJECT (switch_), "entry");
 +
@@ -436,9 +461,12 @@ index 0000000..8a8be09
 +    adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle);
 +  }
 +
-+  switch_ = adw_switch_new ();
++  /* AdwSwitch ya no existe en libadwaita 1.10 (se quedo con AdwSwitchRow, que
++   * es una fila entera y no encaja con el boton de borrado): GtkSwitch, que si
++   * esta y en GTK 4.24 luce igual. */
++  switch_ = gtk_switch_new ();
 +  gtk_widget_set_valign (switch_, GTK_ALIGN_CENTER);
-+  adw_switch_set_active (ADW_SWITCH (switch_), blocked);
++  gtk_switch_set_active (GTK_SWITCH (switch_), blocked);
 +  g_object_set_data_full (G_OBJECT (switch_), "entry",
 +                          g_object_ref (entry), g_object_unref);
 +  g_signal_connect (switch_, "state-set",
@@ -502,7 +530,8 @@ index 0000000..8a8be09
 +{
 +  CallsBlockedBox *self = CALLS_BLOCKED_BOX (object);
 +
-+  g_list_clear (&self->rows);
++  g_list_free (self->rows);
++  self->rows = NULL;
 +
 +  G_OBJECT_CLASS (calls_blocked_box_parent_class)->finalize (object);
 +}
@@ -533,7 +562,11 @@ index 0000000..8a8be09
 +
 +  clamp = adw_clamp_new ();
 +  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 600);
-+  adw_clamp_set_margin (ADW_CLAMP (clamp), 12);
++  /* adw_clamp_set_margin ya no esta en libadwaita 1.10: margen por el widget. */
++  gtk_widget_set_margin_start (outer, 12);
++  gtk_widget_set_margin_end (outer, 12);
++  gtk_widget_set_margin_top (outer, 12);
++  gtk_widget_set_margin_bottom (outer, 12);
 +  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scrolled), clamp);
 +
 +  outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
@@ -577,13 +610,15 @@ index 0000000..8a8be09
 +dialog_confirm_clicked_cb (GtkButton *button,
 +                           gpointer   dialog)
 +{
-+  GtkWidget *number_row = g_object_get_data (G_OBJECT (dialog), "number-row");
-+  GtkWidget *reason_row = g_object_get_data (G_OBJECT (dialog), "reason-row");
++  GtkWidget *number_entry = g_object_get_data (G_OBJECT (dialog), "number-row");
++  GtkWidget *reason_entry = g_object_get_data (G_OBJECT (dialog), "reason-row");
 +  const char *number;
 +  const char *reason;
 +
-+  number = adw_entry_row_get_text (ADW_ENTRY_ROW (number_row));
-+  reason = adw_entry_row_get_text (ADW_ENTRY_ROW (reason_row));
++  /* AdwEntryRow se quedo sin API C del texto en libadwaita 1.10: GtkEntry a
++   * secas, cuya texto es gtk_editable_get_text(). */
++  number = gtk_editable_get_text (GTK_EDITABLE (number_entry));
++  reason = gtk_editable_get_text (GTK_EDITABLE (reason_entry));
 +
 +  if (!number || !*number)
 +    return;
@@ -599,16 +634,6 @@ index 0000000..8a8be09
 +}
 +
 +
-+static void
-+dialog_opened_notify_cb (GtkWidget *dialog,
-+                         GParamSpec *pspec,
-+                         gpointer    unused)
-+{
-+  if (!adw_dialog_get_is_opened (ADW_DIALOG (dialog)))
-+    gtk_widget_destroy (dialog);
-+}
-+
-+
 +void
 +calls_blocked_dialog_present (GtkWidget  *parent_widget,
 +                              const char *number,
@@ -620,14 +645,22 @@ index 0000000..8a8be09
 +  GtkWidget *header;
 +  GtkWidget *confirm;
 +  GtkWidget *clamp;
-+  GtkWidget *group;
-+  GtkWidget *number_row;
-+  GtkWidget *reason_row;
++  GtkWidget *box;
++  GtkWidget *entry;
++  GtkWidget *old;
 +
-+  window = gtk_widget_get_root (parent_widget);
++  window = GTK_WIDGET (gtk_widget_get_root (parent_widget));
 +  g_return_if_fail (GTK_IS_WINDOW (window));
 +
-+  dialog = adw_dialog_new ();
++  /* gtk_widget_destroy ya no esta en GTK 4.20+: en vez de destruir al cerrar,
++   * la ventana es la duena del ultimo dialogo (data con ref); al abrir otro se
++   * cierra y se suelta el anterior. */
++  old = g_object_get_data (G_OBJECT (window), "blocked-dialog");
++  if (old)
++    adw_dialog_close (ADW_DIALOG (old));
++
++  /* adw_dialog_new devuelve AdwDialog *, no GtkWidget *. */
++  dialog = GTK_WIDGET (adw_dialog_new ());
 +  adw_dialog_set_title (ADW_DIALOG (dialog), "Bloquear número");
 +
 +  toolbar = adw_toolbar_view_new ();
@@ -642,41 +675,46 @@ index 0000000..8a8be09
 +
 +  clamp = adw_clamp_new ();
 +  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 400);
-+  adw_clamp_set_margin (ADW_CLAMP (clamp), 12);
 +
-+  group = adw_preferences_group_new ();
++  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
++  gtk_widget_set_margin_start (box, 18);
++  gtk_widget_set_margin_end (box, 18);
++  gtk_widget_set_margin_top (box, 18);
++  gtk_widget_set_margin_bottom (box, 18);
 +
-+  number_row = adw_entry_row_new ();
-+  adw_entry_row_set_title (ADW_ENTRY_ROW (number_row), "Número");
-+  adw_entry_row_set_input_purpose (ADW_ENTRY_ROW (number_row),
-+                                   GTK_INPUT_PURPOSE_PHONE);
++  entry = gtk_label_new ("Número");
++  gtk_widget_set_halign (entry, GTK_ALIGN_START);
++  gtk_box_append (GTK_BOX (box), entry);
++
++  entry = gtk_entry_new ();
++  gtk_entry_set_input_purpose (GTK_ENTRY (entry), GTK_INPUT_PURPOSE_PHONE);
 +  if (number)
-+    adw_entry_row_set_text (ADW_ENTRY_ROW (number_row), number);
-+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), number_row);
-+
-+  reason_row = adw_entry_row_new ();
-+  adw_entry_row_set_title (ADW_ENTRY_ROW (reason_row), "Razón");
-+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), reason_row);
-+
-+  adw_clamp_set_child (ADW_CLAMP (clamp), group);
-+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), clamp);
-+  adw_dialog_set_child (ADW_DIALOG (dialog), toolbar);
-+
++    gtk_editable_set_text (GTK_EDITABLE (entry), number);
 +  g_object_set_data_full (G_OBJECT (dialog), "number-row",
-+                          g_object_ref (number_row), g_object_unref);
++                          g_object_ref (entry), g_object_unref);
++  gtk_box_append (GTK_BOX (box), entry);
++
++  entry = gtk_label_new ("Razón");
++  gtk_widget_set_halign (entry, GTK_ALIGN_START);
++  gtk_widget_set_margin_top (entry, 6);
++  gtk_box_append (GTK_BOX (box), entry);
++
++  entry = gtk_entry_new ();
 +  g_object_set_data_full (G_OBJECT (dialog), "reason-row",
-+                          g_object_ref (reason_row), g_object_unref);
++                          g_object_ref (entry), g_object_unref);
++  gtk_box_append (GTK_BOX (box), entry);
++
 +  if (label && *label)
 +    g_object_set_data_full (G_OBJECT (dialog), "label",
 +                            g_strdup (label), g_free);
 +
-+  /* El dialogo vive desde aqui hasta que se cierra: present lo mete en el
-+   * arbol y el notify de "opened" lo destruye al desaparecer. */
-+  g_object_ref_sink (dialog);
-+  adw_dialog_present (ADW_DIALOG (dialog), window);
-+  g_signal_connect (dialog, "notify::opened",
-+                    G_CALLBACK (dialog_opened_notify_cb), NULL);
-+  g_object_unref (dialog);
++  adw_clamp_set_child (ADW_CLAMP (clamp), box);
++  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), clamp);
++  adw_dialog_set_child (ADW_DIALOG (dialog), toolbar);
++
++  g_object_set_data_full (G_OBJECT (window), "blocked-dialog",
++                          g_object_ref_sink (dialog), g_object_unref);
++  adw_dialog_present (ADW_DIALOG (dialog), GTK_WIDGET (window));
 +}
 diff --git a/src/calls-blocked-box.h b/src/calls-blocked-box.h
 new file mode 100644
@@ -704,10 +742,10 @@ index 0000000..fb873c4
 +G_END_DECLS
 diff --git a/src/calls-blocked-store.c b/src/calls-blocked-store.c
 new file mode 100644
-index 0000000..d5dc507
+index 0000000..d0de936
 --- /dev/null
 +++ b/src/calls-blocked-store.c
-@@ -0,0 +1,792 @@
+@@ -0,0 +1,796 @@
 +/* calls-blocked-store.c
 + *
 + * Copyright 2026 spacewar
@@ -981,19 +1019,22 @@ index 0000000..d5dc507
 +char *
 +calls_blocked_normalize (const char *number)
 +{
-+  g_autoptr (EPhoneNumber) parsed = NULL;
-+  const char *e164;
++  EPhoneNumber *parsed;
++  g_autofree char *e164 = NULL;
 +
 +  if (!number || !*number)
 +    return NULL;
 +
-+  parsed = e_phone_number_from_string (number,
-+                                       E_PHONE_NUMBER_COUNTRY_CODE_LOCALREGION);
++  /* EDS nuevo: from_string(cadena, region, error); region NULL = la del locale
++   * (lo que antes era COUNTRY_CODE_LOCALREGION) — mismos numeros locales, mis-
++   * mo E.164. Y el E.164 ahora es to_string(FORMAT_E164), de propiedad. */
++  parsed = e_phone_number_from_string (number, NULL, NULL);
 +  if (!parsed)
 +    return NULL;
 +
-+  e164 = e_phone_number_get_e164_number (parsed);
-+  return e164 ? g_strdup (e164) : NULL;
++  e164 = e_phone_number_to_string (parsed, E_PHONE_NUMBER_FORMAT_E164);
++  e_phone_number_free (parsed);
++  return g_steal_pointer (&e164);
 +}
 +
 +
@@ -1122,7 +1163,8 @@ index 0000000..d5dc507
 +  for (l = self->pending_saves; l; l = l->next) {
 +    CallsBlockedNumber *entry = l->data;
 +
-+    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++    /* gom nuevo: save_async(resource, callback, data), sin cancellable */
++    gom_resource_save_async (GOM_RESOURCE (entry),
 +                             (GAsyncReadyCallback) save_cb,
 +                             g_object_ref (self));
 +  }
@@ -1158,7 +1200,7 @@ index 0000000..d5dc507
 +                  "description", description,
 +                  NULL);
 +    if (self->repository)
-+      gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++      gom_resource_save_async (GOM_RESOURCE (entry),
 +                               (GAsyncReadyCallback) save_cb,
 +                               g_object_ref (self));
 +    emit_changed (self);
@@ -1178,7 +1220,7 @@ index 0000000..d5dc507
 +  cache_insert (self, entry);
 +
 +  if (self->repository)
-+    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++    gom_resource_save_async (GOM_RESOURCE (entry),
 +                             (GAsyncReadyCallback) save_cb,
 +                             g_object_ref (self));
 +  else
@@ -1201,7 +1243,7 @@ index 0000000..d5dc507
 +  g_object_set (G_OBJECT (entry), "blocked", blocked, NULL);
 +
 +  if (self->repository)
-+    gom_resource_save_async (GOM_RESOURCE (entry), NULL,
++    gom_resource_save_async (GOM_RESOURCE (entry),
 +                             (GAsyncReadyCallback) save_cb,
 +                             g_object_ref (self));
 +
@@ -1219,7 +1261,7 @@ index 0000000..d5dc507
 +  g_return_if_fail (CALLS_IS_BLOCKED_NUMBER (entry));
 +
 +  if (self->repository)
-+    gom_resource_delete_async (GOM_RESOURCE (entry), NULL,
++    gom_resource_delete_async (GOM_RESOURCE (entry),
 +                               (GAsyncReadyCallback) remove_cb,
 +                               g_object_ref (self));
 +
@@ -1616,6 +1658,32 @@ index dec70d7..825f0f7 100644
  };
  
  
+diff --git a/src/calls-contacts-box.c b/src/calls-contacts-box.c
+index 2bcd0d2..09d0a88 100644
+--- a/src/calls-contacts-box.c
++++ b/src/calls-contacts-box.c
+@@ -31,6 +31,11 @@
+ 
+ #include <adwaita.h>
+ #include <folks/folks.h>
++#include <gee-0.8/gee.h>
++
++/* libgee no trae autoptr para GeeList (si para GeeSet/Collection en
++ * calls-contacts-provider.h); hace falta para el GeeList de «aliases». */
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (GeeList, g_object_unref)
+ 
+ struct _CallsContactsBox {
+   AdwBin            parent_instance;
+@@ -176,7 +181,8 @@ contact_blob_new (FolksIndividual *individual)
+ 
+     g_object_get (individual, "aliases", &aliases, NULL);
+     if (aliases) {
+-      guint n = gee_list_get_size (aliases);
++      /* libgee nuevo: el tamano vive en GeeCollection, no en GeeList */
++      guint n = (guint) gee_collection_get_size (GEE_COLLECTION (aliases));
+       guint i;
+ 
+       for (i = 0; i < n; i++) {
 diff --git a/src/calls-main-window.c b/src/calls-main-window.c
 index 9fc1d6a..1992c9d 100644
 --- a/src/calls-main-window.c

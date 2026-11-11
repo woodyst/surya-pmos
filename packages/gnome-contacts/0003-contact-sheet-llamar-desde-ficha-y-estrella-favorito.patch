@@ -1,4 +1,4 @@
-From 3b5a42dfec74d066330c13e90a85af426d35ee6d Mon Sep 17 00:00:00 2001
+From 3b316ba499fe8b2319b0e99e28c3f0541240206e Mon Sep 17 00:00:00 2001
 From: spacewar <x@x>
 Date: Tue, 10 Nov 2026 14:45:03 +0100
 Subject: [PATCH] contact-sheet: llamar desde la ficha y estrella de favorito
@@ -20,7 +20,7 @@ refrescan) y escribiendo por las acciones win.mark/unmark-favorite de siempre.
  1 file changed, 102 insertions(+)
 
 diff --git a/src/contacts-contact-sheet.vala b/src/contacts-contact-sheet.vala
-index df807f3..4b59df0 100644
+index df807f3..2027f4e 100644
 --- a/src/contacts-contact-sheet.vala
 +++ b/src/contacts-contact-sheet.vala
 @@ -13,6 +13,15 @@ using Folks;
@@ -30,7 +30,7 @@ index df807f3..4b59df0 100644
 +  // The individual behind the contact shown here, if it is a saved contact
 +  private Individual? individual = null;
 +  private Gtk.ToggleButton? favorite_button = null;
-+  private ulong favourite_notify_id = 0;
++
 +
 +  // Set while pushing the state of the contact to the button, so that we
 +  // don't take our own update for a click of the user
@@ -44,9 +44,9 @@ index df807f3..4b59df0 100644
  
    public override void dispose () {
 +    // The individual outlives the sheet, so drop our handler on it
-+    if (this.individual != null && this.favourite_notify_id != 0) {
-+      this.individual.notify["is-favourite"].disconnect (this.favourite_notify_id);
-+      this.favourite_notify_id = 0;
++    // (idiom of contacts-contact-list: disconnect by delegate)
++    if (this.individual != null) {
++      this.individual.notify["is-favourite"].disconnect (on_favourite_notify);
 +    }
 +
      unowned Gtk.Widget? child = null;
@@ -88,7 +88,7 @@ index df807f3..4b59df0 100644
 +    }
 +
 +    update_favorite_button ();
-+    this.favourite_notify_id = this.individual.notify["is-favourite"].connect (on_favourite_notify);
++    this.individual.notify["is-favourite"].connect (on_favourite_notify);
 +
 +    return button;
 +  }
